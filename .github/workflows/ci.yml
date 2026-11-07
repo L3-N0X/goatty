@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+  RUST_LOG: rio_vt=error,warn
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  check:
+    name: clippy + tests (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries for GPUI
+        run: ./scripts/ci-deps.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --locked
+      - name: Benchmarks (smoke, small)
+        # Keeps the examples compiling and catches gross regressions; the
+        # numbers on shared runners are not comparable to docs/.
+        run: |
+          cargo build --release --locked -p goatty-daemon
+          cargo run --release --locked -p goatty-term --example vtbench
+          FLOOD_MB=50 cargo run --release --locked -p goatty-daemon --example netbench
+          FLOOD_MB=50 cargo run --release --locked -p goatty-daemon --example netbench -- proxy

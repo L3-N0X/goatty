@@ -1,0 +1,17 @@
+[package]
+name = "goatty-term"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "goatty's TerminalEngine: a thin, UI-agnostic wrapper around rio-vt plus PTY helpers"
+
+[dependencies]
+rio-vt.workspace = true
+portable-pty.workspace = true
+parking_lot.workspace = true
+anyhow.workspace = true
+log.workspace = true
+flume.workspace = true
+
+[[example]]
+name = "vtbench"

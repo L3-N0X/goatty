@@ -1,0 +1,14 @@
+[package]
+name = "goatty-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Transport-independent goattyd client: local socket, SSH, any stdio command"
+
+[dependencies]
+goatty-proto.workspace = true
+parking_lot.workspace = true
+anyhow.workspace = true
+log.workspace = true
+flume.workspace = true
+libc.workspace = true

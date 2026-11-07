@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# Terminal core — pinned exactly; API still evolving (see plan §13).
+rio-vt = { version = "=0.5.29", default-features = false }
+portable-pty = "0.9.0"
+# GPUI from Zed main, pinned. Bump deliberately: `ZED_REV` below + `cargo update -p gpui`.
+# (crates.io gpui 0.2.2 never recreates its Vulkan swapchain after
+# VK_ERROR_OUT_OF_DATE_KHR, which froze the window on niri/Wayland.)
+gpui = { git = "https://github.com/zed-industries/zed", rev = "b5cd310b3b54dfc659fcc06453e6358843dfe216" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "b5cd310b3b54dfc659fcc06453e6358843dfe216", features = ["wayland", "x11"] }
+parking_lot = "0.12"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+serde_bytes = "0.11"
+libc = "0.2"
+log = "0.4"
+env_logger = "0.11"
+flume = "0.11"
+
+goatty-term = { path = "crates/goatty-term" }
+goatty-proto = { path = "crates/goatty-proto" }
+goatty-client = { path = "crates/goatty-client" }
+
+[profile.dev]
+# Terminal parsing/rendering is unusable at opt-level 0; keep deps fast.
+opt-level = 1
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+debug = "line-tables-only"

@@ -1,0 +1,13 @@
+name: Feature / task
+description: New functionality, a plugin idea, or an open task
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What and why
+    validations:
+      required: true
+  - type: textarea
+    id: todo
+    attributes:
+      label: Tasks / acceptance criteria

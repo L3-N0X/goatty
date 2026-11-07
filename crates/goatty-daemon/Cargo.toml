@@ -1,0 +1,26 @@
+[package]
+name = "goatty-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "goattyd: owns PTYs and sessions so shells outlive the GUI"
+
+[[bin]]
+name = "goattyd"
+path = "src/main.rs"
+
+[dependencies]
+goatty-term.workspace = true
+goatty-proto.workspace = true
+goatty-client.workspace = true
+parking_lot.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+flume.workspace = true
+
+[dev-dependencies]
+env_logger.workspace = true
+anyhow.workspace = true
+parking_lot.workspace = true
+goatty-term.workspace = true

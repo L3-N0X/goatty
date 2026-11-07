@@ -1,0 +1,18 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    # rio-vt and gpui are pinned on purpose (see Cargo.toml); bump them by hand.
+    ignore:
+      - dependency-name: rio-vt
+      - dependency-name: gpui
+      - dependency-name: gpui_platform
+    groups:
+      cargo:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

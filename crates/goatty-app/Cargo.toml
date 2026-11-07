@@ -1,0 +1,23 @@
+[package]
+name = "goatty-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "goatty desktop client (GPUI)"
+
+[[bin]]
+name = "goatty"
+path = "src/main.rs"
+
+[dependencies]
+gpui.workspace = true
+gpui_platform.workspace = true
+goatty-term.workspace = true
+goatty-proto.workspace = true
+parking_lot.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+flume.workspace = true
+libc.workspace = true
+goatty-client.workspace = true

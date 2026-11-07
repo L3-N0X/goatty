@@ -1,0 +1,26 @@
+name: Bug report
+description: Something doesn't work or looks wrong
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: "goatty --ssh myhost, run htop, resize the window…"
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      placeholder: "OS / compositor / GPU, goatty version or commit, local or --ssh"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "RUST_LOG=debug output, $XDG_RUNTIME_DIR/goatty/goattyd.log"
+      render: text
