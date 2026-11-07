@@ -18,19 +18,11 @@ pub struct ShellCommand {
 }
 
 impl ShellCommand {
-    /// A login shell: `program` if given (goatty's shell setting), else zsh
-    /// if installed, else `$SHELL`, else /bin/sh. Login shells are what users
-    /// expect from a new terminal window on Linux desktops.
-    pub fn login_shell(program: Option<&str>) -> Self {
-        let program =
-            program.map(str::to_owned).or_else(|| which("zsh")).or_else(|| std::env::var("SHELL").ok()).unwrap_or_else(|| "/bin/sh".into());
-        Self { program, args: vec!["-l".into()], cwd: std::env::var_os("HOME").map(PathBuf::from), env: vec![] }
+    /// `program args` with extra `env`, started in `$HOME`. Which shell to
+    /// run is `goatty-shell`'s decision (`Launcher::launch`).
+    pub fn new(program: String, args: Vec<String>, env: Vec<(String, String)>) -> Self {
+        Self { program, args, cwd: std::env::var_os("HOME").map(PathBuf::from), env }
     }
-}
-
-fn which(bin: &str) -> Option<String> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|d| d.join(bin)).find(|p| p.is_file()).map(|p| p.to_string_lossy().into_owned())
 }
 
 fn pty_size(s: TermSize) -> PtySize {

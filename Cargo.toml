@@ -29,12 +29,17 @@ env_logger = "0.11"
 flume = "0.11"
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
+# Managed tool installs (goatty-shell): verify + unpack release archives.
+sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
 
 goatty-term = { path = "crates/goatty-term" }
 goatty-proto = { path = "crates/goatty-proto" }
 goatty-client = { path = "crates/goatty-client" }
 goatty-config = { path = "crates/goatty-config" }
 goatty-daemon = { path = "crates/goatty-daemon" }
+goatty-shell = { path = "crates/goatty-shell" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

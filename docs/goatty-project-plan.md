@@ -452,6 +452,8 @@ Move PTY ownership into `goattyd`. Add reconnection after closing the GUI, persi
 
 Add the managed Zsh startup configuration, shell integration, completion, autosuggestions, syntax highlighting, Starship and Atuin. Make the initial setup one-click and provide a diagnostic screen for missing tools or failed integrations.
 
+> **Update (7 Nov 2026):** the managed zsh, shell integration (shell side), pinned user-space tool installs and CLI diagnostics (`goattyd shell status|install`, `goatty-setup` in the shell) are in `crates/goatty-shell`. See [`managed-zsh.md`](managed-zsh.md). The GUI first-run prompt and diagnostics screen are still open (see the Stage 3 milestone).
+
 ### Stage 4 — Profile engine and settings GUI
 
 Make the profile the source of truth. Add configuration compilation, validation, previews, diff display, atomic activation, backup/rollback and profile import/export. Implement the first settings pages for appearance, shell, prompt, history, shortcuts and workspaces.

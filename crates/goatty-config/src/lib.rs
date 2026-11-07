@@ -12,6 +12,8 @@
 //! | `GOATTY_FONT_SIZE` | [`FontSettings::size`]                   |
 //! | `GOATTY_RENDER`    | [`TerminalSettings::renderer`] (`shaped` or `glyphs`) |
 //! | `GOATTY_SHELL`     | [`ShellSettings::program`]               |
+//! | `GOATTY_SHELL_MANAGED` | [`ShellSettings::managed`] (`0`/`1`) |
+//! | `GOATTY_ZSH_USER_RC` | [`ZshSettings::user_rc`] (`0`/`1`)     |
 //! | `GOATTY_STATS`     | [`DebugSettings::stats`] (any value)     |
 //!
 //! `GOATTY_SOCKET` is not a setting: it says where a daemon lives and is
@@ -112,11 +114,61 @@ impl Default for TerminalSettings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ShellSettings {
     /// Shell program. `None`: zsh if installed, else `$SHELL`, else /bin/sh.
     pub program: Option<String>,
+    /// Run zsh with goatty's managed configuration (plugins, prompt,
+    /// history, shell integration; see `goatty-shell`). `false`: plain zsh
+    /// with only the user's own dotfiles. Other shells are always launched
+    /// as they are.
+    pub managed: bool,
+    pub zsh: ZshSettings,
+}
+
+impl Default for ShellSettings {
+    fn default() -> Self {
+        Self { program: None, managed: true, zsh: ZshSettings::default() }
+    }
+}
+
+/// What goatty's managed zsh loads. Each feature is skipped quietly when
+/// its tool isn't installed (`goattyd shell status` shows what's missing).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ZshSettings {
+    /// Source the user's `.zshenv` and `.zprofile` (environment: PATH,
+    /// EDITOR, ...). Zsh reads these for every terminal, so this is on.
+    pub user_env: bool,
+    /// Also source the user's `.zshrc`. Off: most `.zshrc` files load their
+    /// own prompt and plugins, which would fight goatty's.
+    pub user_rc: bool,
+    pub autosuggestions: bool,
+    pub syntax_highlighting: bool,
+    /// Starship prompt. Off, or when missing: a small built-in prompt.
+    pub starship: bool,
+    /// Atuin history search on Ctrl+R.
+    pub atuin: bool,
+    /// fzf key bindings (Ctrl+T, Alt+C) when fzf is installed.
+    pub fzf: bool,
+    /// OSC 133 prompt marks and OSC 7 working directory reports.
+    pub integration: bool,
+}
+
+impl Default for ZshSettings {
+    fn default() -> Self {
+        Self {
+            user_env: true,
+            user_rc: false,
+            autosuggestions: true,
+            syntax_highlighting: true,
+            starship: true,
+            atuin: true,
+            fzf: true,
+            integration: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -152,9 +204,23 @@ impl Settings {
         if let Some(sh) = var("GOATTY_SHELL").filter(|s| !s.is_empty()) {
             self.shell.program = Some(sh);
         }
+        if let Some(b) = var("GOATTY_SHELL_MANAGED").as_deref().and_then(parse_bool) {
+            self.shell.managed = b;
+        }
+        if let Some(b) = var("GOATTY_ZSH_USER_RC").as_deref().and_then(parse_bool) {
+            self.shell.zsh.user_rc = b;
+        }
         if var("GOATTY_STATS").is_some() {
             self.debug.stats = true;
         }
+    }
+}
+
+fn parse_bool(s: &str) -> Option<bool> {
+    match s.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
     }
 }
 
@@ -176,6 +242,16 @@ mod tests {
         assert_eq!(s.terminal.renderer, Renderer::Shaped);
         assert!(s.debug.stats);
         assert_eq!(s.shell.program, None);
+        assert!(s.shell.managed);
+        assert!(!s.shell.zsh.user_rc);
+    }
+
+    #[test]
+    fn shell_toggles() {
+        let s = with(&[("GOATTY_SHELL_MANAGED", "0"), ("GOATTY_ZSH_USER_RC", "yes")]);
+        assert!(!s.shell.managed);
+        assert!(s.shell.zsh.user_rc);
+        assert!(with(&[("GOATTY_SHELL_MANAGED", "maybe")]).shell.managed);
     }
 
     #[test]

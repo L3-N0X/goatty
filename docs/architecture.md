@@ -6,16 +6,18 @@ How the code is laid out, and where each upcoming stage's work goes. For the pro
 
 ```
                  goatty-config      (settings: defaults + GOATTY_* env; Stage 4 profiles plug in here)
-                   ▲        ▲
-goatty-term ◄──────┼────────┼───────────────┐   (the only crate that touches rio-vt)
-   ▲               │        │               │
-   │   goatty-proto│        │               │   (wire protocol: messages, framing, socket path)
-   │      ▲        │        │               │
-   │   goatty-client        │               │   (Connection, Control, transports; no UI)
-   │      ▲     ▲           │               │
-   │      │     └──── goatty-daemon ────────┘   (lib + bin `goattyd`)
-   │      │
-   └── goatty-app                               (GPUI client, bin `goatty`)
+                   ▲        ▲   ▲
+                   │        │   goatty-shell    (managed zsh: generated ZDOTDIR, tool installs, diagnostics)
+                   │        │      ▲      ▲
+goatty-term ◄──────┼────────┼──────┼──────┼─┐   (the only crate that touches rio-vt)
+   ▲               │        │      │      │ │
+   │   goatty-proto│        │      │      │ │   (wire protocol: messages, framing, socket path)
+   │      ▲        │        │      │      │ │
+   │   goatty-client        │      │      │ │   (Connection, Control, transports; no UI)
+   │      ▲     ▲           │      │      │ │
+   │      │     └──── goatty-daemon ──────┘─┘   (lib + bin `goattyd`)
+   │      │                        │
+   └── goatty-app ─────────────────┘            (GPUI client, bin `goatty`)
 ```
 
 Rules:
@@ -23,6 +25,7 @@ Rules:
 - **rio-vt stays inside `goatty-term`.** Other crates use `Terminal`, `Frame`, `TermSize`, `TermMode` and the input encoders. `Terminal::with_term` is crate-private on purpose.
 - **`goatty-proto` has no I/O beyond framing.** Transports live in `goatty-client`.
 - **`goatty-client` has no UI dependencies.** The app, the daemon's CLI, tests and benchmarks all use it.
+- **Which shell a session runs is `goatty-shell`'s decision** (`Launcher::launch`). goattyd and `goatty --local` both use it; `goatty-term` only spawns what it's given. `goatty-shell` has no rio-vt or UI dependency.
 - **Settings come from `goatty-config`.** Don't read `GOATTY_*` variables elsewhere (the exception is `GOATTY_SOCKET`, which is a location, not a setting, and lives in `goatty_proto::socket_path`).
 
 ## Daemon (`crates/goatty-daemon`)
@@ -36,6 +39,20 @@ Rules:
 | `main.rs`    | clap CLI; control commands go through `goatty_client::Control`           |
 
 Threads per session: `s{id}-reader` (PTY → terminal → subscribers) and `s{id}-replies` (query answers → PTY). Per connection: a reader (the accept thread's spawn) and `c{conn}-writer`.
+
+## Shell environment (`crates/goatty-shell`)
+
+| Module    | Owns                                                                    |
+|-----------|-------------------------------------------------------------------------|
+| `launch`  | `Launcher`: resolve the shell program, write the managed ZDOTDIR, build the `Launch` (program, args, env) |
+| `zsh`     | render `settings.zsh` + the static startup files in `zsh/`, write them atomically |
+| `tools`   | pinned tool catalog (versions, URLs, sha256), finding system/managed copies |
+| `install` | download (curl/wget), verify, unpack, activate symlinks, uninstall      |
+| `doctor`  | start a real managed shell and parse `goatty-status`                    |
+| `cmd`     | `goattyd shell status|install|uninstall|dismiss`                        |
+| `dirs`    | XDG locations under `goatty/`                                           |
+
+Design and startup sequence: [`managed-zsh.md`](managed-zsh.md). The zsh behaviour is tested against real zsh in `tests/zsh_startup.rs` (sandboxed `$HOME`, PTY for OSC 133/7).
 
 ## App (`crates/goatty-app`)
 
@@ -68,7 +85,10 @@ Input: GPUI dispatches a bound action before the view's raw `on_key_down`. Short
 | Kitty keyboard (#22)                   | `goatty-term/src/input.rs`, fed from `terminal/keys.rs`               |
 | Cursor/ligature settings (#23, #25)    | `goatty-config` field → read in `TerminalView::new`                   |
 | URL detection (#27)                    | `goatty-term` (detect on `Frame` rows) + view (hover/click)           |
-| Shell integration (#28)                | `goatty-term` listener (OSC 133/7 → `UiEvent`) + daemon `SessionInfo` |
+| Shell integration, terminal side (#28) | `goatty-term` listener (OSC 133/7 → `UiEvent`) + daemon `SessionInfo`; the zsh side is in `goatty-shell/zsh/integration.zsh` |
+| Managed zsh features, tool versions    | `goatty-shell/zsh/zshrc.zsh` (load order matters, see `managed-zsh.md`), `goatty-shell/src/tools.rs` |
+| GUI first-run / shell diagnostics      | daemon API for `goatty_shell::cmd`-style status/install (new wire messages), then a GPUI view |
+| Bash/Fish adapters (Stage 6)           | `goatty-shell`: a sibling of `zsh.rs` + its startup files; `Launcher::launch` picks by program |
 | Settings file / profiles (Stage 4)     | `goatty-config` loads and migrates; app replaces the `AppSettings` global; views observe it |
 | systemd user service (#7)              | `goatty-daemon` (`server::serve` already takes the socket path)       |
 | New wire messages                      | `goatty-proto/src/msg.rs` (bump `PROTOCOL_VERSION`), handle in `goatty-daemon/src/client.rs` and `goatty-client/src/connection.rs` |

@@ -12,6 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use goatty_config::Settings;
 use goatty_proto::{HostInfo, SessionId, SessionInfo, WinSize};
+use goatty_shell::Launcher;
 use goatty_term::pty::{Pty, ShellCommand};
 use goatty_term::{Palette, Terminal};
 use parking_lot::Mutex;
@@ -21,6 +22,8 @@ use crate::session::{Session, pump_output, to_size};
 /// The session registry shared by every connection.
 pub(crate) struct Daemon {
     pub(crate) settings: Settings,
+    /// Picks each session's shell and writes the managed zsh config.
+    launcher: Launcher,
     /// Removed on shutdown.
     pub(crate) socket: PathBuf,
     pub(crate) sessions: Mutex<HashMap<SessionId, Arc<Session>>>,
@@ -30,7 +33,9 @@ pub(crate) struct Daemon {
 
 impl Daemon {
     fn new(settings: Settings, socket: PathBuf) -> Self {
-        Self { settings, socket, sessions: Mutex::default(), next_session: AtomicU64::new(0), next_conn: AtomicU64::new(0) }
+        // `goatty-setup` in a managed shell runs this goattyd's `shell install`.
+        let launcher = Launcher::from_env(std::env::current_exe().ok());
+        Self { settings, launcher, socket, sessions: Mutex::default(), next_session: AtomicU64::new(0), next_conn: AtomicU64::new(0) }
     }
 
     pub(crate) fn get(&self, id: SessionId) -> Option<Arc<Session>> {
@@ -39,7 +44,8 @@ impl Daemon {
 
     pub(crate) fn create(self: &Arc<Self>, ws: WinSize, cwd: Option<String>) -> Result<Arc<Session>> {
         let size = to_size(ws);
-        let mut cmd = ShellCommand::login_shell(self.settings.shell.program.as_deref());
+        let launch = self.launcher.launch(&self.settings.shell);
+        let mut cmd = ShellCommand::new(launch.program, launch.args, launch.env);
         if let Some(cwd) = cwd.filter(|c| std::path::Path::new(c).is_dir()) {
             cmd.cwd = Some(cwd.into());
         }
@@ -56,7 +62,12 @@ impl Daemon {
             subs: Mutex::new(Vec::new()),
             created_unix: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
         });
-        log::info!("session {id}: spawned {} (pid {:?})", cmd.program, session.pty.lock().pid());
+        log::info!(
+            "session {id}: spawned {}{} (pid {:?})",
+            cmd.program,
+            if launch.managed { " with goatty's managed config" } else { "" },
+            session.pty.lock().pid()
+        );
 
         // Query replies → PTY.
         {
