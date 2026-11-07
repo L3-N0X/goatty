@@ -5,10 +5,15 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "goatty settings: typed defaults plus environment overrides (the seam for the Stage 4 profile engine)"
+description = "goatty settings: versioned client/host JSON documents, themes, keybindings, profiles"
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
+serde_path_to_error.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

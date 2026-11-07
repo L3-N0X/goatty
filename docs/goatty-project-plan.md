@@ -458,6 +458,8 @@ Add the managed Zsh startup configuration, shell integration, completion, autosu
 
 Make the profile the source of truth. Add configuration compilation, validation, previews, diff display, atomic activation, backup/rollback and profile import/export. Implement the first settings pages for appearance, shell, prompt, history, shortcuts and workspaces.
 
+> **Update (7 Nov 2026):** done in its first form, see [`profiles.md`](profiles.md). The profile is split into client and host documents. Host settings compile into validated, atomically activated generations with rollback. Diffs preview changes before applying. Settings files are saved with backups. Profiles import and export. A settings window covers appearance, shell, prompt, history, shortcuts, workspace and profile. Follow-ups are in the Stage 4 milestone.
+
 ### Stage 5 — Plugin system
 
 Define and document the plugin manifest, settings schema, package model, shell adapter interface and permission model. Publish a small built-in registry: Git, fzf, Atuin, zoxide, Docker CLI integration, Python and Node.js. Add community registry support only after the first-party flow is reliable.

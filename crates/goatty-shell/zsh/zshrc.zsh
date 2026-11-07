@@ -29,13 +29,12 @@ setopt auto_cd auto_pushd pushd_ignore_dups pushd_silent
 setopt interactive_comments no_beep
 setopt complete_in_word always_to_end
 
-# --- History ----------------------------------------------------------------
+# --- History (settings: history.*) -------------------------------------------
 # Same file plain zsh would use, so existing history keeps working.
 : ${HISTFILE:=${_goatty_user_zdotdir:-$HOME}/.zsh_history}
-(( HISTSIZE >= 100000 )) || HISTSIZE=100000
-(( SAVEHIST >= 100000 )) || SAVEHIST=100000
-setopt extended_history inc_append_history hist_expire_dups_first
-setopt hist_ignore_dups hist_ignore_space hist_reduce_blanks hist_verify
+HISTSIZE=$_goatty_hist_size
+SAVEHIST=$_goatty_hist_size
+setopt $_goatty_hist_opts
 
 # --- PATH -------------------------------------------------------------------
 # Tools goatty installed (goatty-setup) come after the system's, so an
@@ -108,9 +107,9 @@ else
   _goatty_skip fzf
 fi
 
-# --- Atuin: searchable history on Ctrl+R; Up stays plain history ------------
+# --- Atuin: searchable history on Ctrl+R (Up too if history.atuin_up_arrow) --
 if _goatty_on atuin && (( $+commands[atuin] )); then
-  eval "$(atuin init zsh --disable-up-arrow)"
+  eval "$(atuin init zsh $_goatty_atuin_flags)"
   _goatty_ok atuin $commands[atuin]
 else
   _goatty_skip atuin
@@ -128,8 +127,9 @@ fi
 
 # --- Prompt -----------------------------------------------------------------
 if _goatty_on starship && (( $+commands[starship] )); then
-  # goatty's curated config, unless the user has their own.
-  if [[ -z $STARSHIP_CONFIG && ! -e ${XDG_CONFIG_HOME:-$HOME/.config}/starship.toml ]]; then
+  # goatty's config (from the prompt.* settings), unless the user has their
+  # own and prompt.prefer_user_config is on.
+  if (( ! _goatty_prompt_user_config )) || [[ -z $STARSHIP_CONFIG && ! -e ${XDG_CONFIG_HOME:-$HOME/.config}/starship.toml ]]; then
     builtin export STARSHIP_CONFIG=$_goatty_dir/starship.toml
   fi
   eval "$(starship init zsh)"
@@ -139,7 +139,11 @@ else
   if (( ! _goatty_user_rc )); then
     # Small built-in prompt: directory, then a marker that turns red when
     # the last command failed.
-    PROMPT='%F{blue}%~%f %(?.%F{green}.%F{red})%(!.#.❯)%f '
+    if (( _goatty_prompt_two_line )); then
+      PROMPT='%F{blue}%~%f'$'\n''%(?.%F{green}.%F{red})%(!.#.❯)%f '
+    else
+      PROMPT='%F{blue}%~%f %(?.%F{green}.%F{red})%(!.#.❯)%f '
+    fi
     RPROMPT=
   fi
 fi

@@ -1,12 +1,18 @@
-//! Actions and their default key bindings.
+//! Actions and their key bindings.
 //!
 //! Shortcuts are GPUI actions bound in the `Terminal` key context, not
-//! hard-coded key matches, so the Stage 4 keybinding editor can rebind them
-//! and menus/command palettes can trigger them. GPUI dispatches a bound
-//! action *before* the view's raw key handler, so anything bound here never
-//! reaches the shell.
+//! hard-coded key matches, so the settings window can rebind them and menus
+//! can trigger them. GPUI dispatches a bound action *before* the view's raw
+//! key handler, so anything bound here never reaches the shell.
+//!
+//! The table of bindable actions and their default keys is data in
+//! `goatty_config::keys`; this module maps names to GPUI actions and loads
+//! the user's bindings (invalid keystrokes are reported, not fatal).
 
-use gpui::{App, KeyBinding, actions};
+use std::collections::BTreeMap;
+use std::rc::Rc;
+
+use gpui::{Action, App, KeyBinding, KeyBindingContextPredicate, actions};
 
 /// Key context set by the terminal view.
 pub const TERMINAL_CONTEXT: &str = "Terminal";
@@ -26,36 +32,76 @@ actions!(
         ScrollPageDown,
         IncreaseFontSize,
         DecreaseFontSize,
+        /// Back to the font size from the settings.
+        ResetFontSize,
+        /// Open (or focus) the settings window.
+        OpenSettings,
     ]
 );
 
-pub fn bind_default_keys(cx: &mut App) {
-    cx.bind_keys(default_bindings());
+/// The GPUI action for a settings name (`goatty_config::keys::ACTIONS`).
+pub fn action_by_name(name: &str) -> Option<Box<dyn Action>> {
+    Some(match name {
+        "copy" => Box::new(Copy),
+        "copy_or_interrupt" => Box::new(CopyOrInterrupt),
+        "paste" => Box::new(Paste),
+        "scroll_page_up" => Box::new(ScrollPageUp),
+        "scroll_page_down" => Box::new(ScrollPageDown),
+        "increase_font_size" => Box::new(IncreaseFontSize),
+        "decrease_font_size" => Box::new(DecreaseFontSize),
+        "reset_font_size" => Box::new(ResetFontSize),
+        "open_settings" => Box::new(OpenSettings),
+        _ => return None,
+    })
 }
 
-fn default_bindings() -> Vec<KeyBinding> {
-    let ctx = Some(TERMINAL_CONTEXT);
-    vec![
-        KeyBinding::new("ctrl-shift-c", Copy, ctx),
-        KeyBinding::new("ctrl-c", CopyOrInterrupt, ctx),
-        KeyBinding::new("ctrl-shift-v", Paste, ctx),
-        KeyBinding::new("ctrl-v", Paste, ctx),
-        KeyBinding::new("shift-pageup", ScrollPageUp, ctx),
-        KeyBinding::new("shift-pagedown", ScrollPageDown, ctx),
-        // Layouts report Shift+= as "=" or "+"; bind both spellings.
-        KeyBinding::new("ctrl-shift-=", IncreaseFontSize, ctx),
-        KeyBinding::new("ctrl-shift-+", IncreaseFontSize, ctx),
-        KeyBinding::new("ctrl-shift--", DecreaseFontSize, ctx),
-        KeyBinding::new("ctrl-shift-_", DecreaseFontSize, ctx),
-    ]
+/// Terminal bindings for the given overrides, plus problems found.
+pub fn terminal_bindings(overrides: &BTreeMap<String, Option<String>>, cx: &App) -> (Vec<KeyBinding>, Vec<String>) {
+    let ctx = KeyBindingContextPredicate::parse(TERMINAL_CONTEXT).ok().map(Rc::new);
+    let mut bindings = Vec::new();
+    let mut errors = Vec::new();
+    for (key, name) in goatty_config::keys::effective_bindings(overrides) {
+        let Some(action) = action_by_name(&name) else {
+            errors.push(format!("keybindings.{key}: unknown action {name:?}"));
+            continue;
+        };
+        match KeyBinding::load(&key, action, ctx.clone(), false, None, cx) {
+            Ok(b) => bindings.push(b),
+            Err(e) => errors.push(format!("keybindings.{key}: {e}")),
+        }
+    }
+    (bindings, errors)
+}
+
+/// Replace every key binding: the terminal's (from settings) plus the
+/// fixed ones of goatty's own UI. Returns problems with user bindings.
+pub fn apply_keybindings(overrides: &BTreeMap<String, Option<String>>, cx: &mut App) -> Vec<String> {
+    let (terminal, errors) = terminal_bindings(overrides, cx);
+    for e in &errors {
+        log::warn!("{e}");
+    }
+    cx.clear_key_bindings();
+    cx.bind_keys(terminal);
+    cx.bind_keys(crate::ui::text_input::bindings());
+    cx.bind_keys(crate::settings_window::bindings());
+    errors
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn default_bindings_parse() {
-        // `KeyBinding::new` panics on an invalid keystroke; catch that here
-        // instead of at startup.
-        assert_eq!(super::default_bindings().len(), 10);
+    fn every_action_has_a_gpui_action() {
+        for a in goatty_config::keys::ACTIONS {
+            assert!(action_by_name(a.name).is_some(), "{}", a.name);
+        }
+    }
+
+    #[test]
+    fn default_keys_parse() {
+        for (key, _) in goatty_config::keys::DEFAULT_BINDINGS {
+            assert!(gpui::Keystroke::parse(key).is_ok(), "{key}");
+        }
     }
 }

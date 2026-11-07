@@ -1,28 +1,20 @@
-//! GPUI bootstrap: settings global, key bindings, the main window.
+//! GPUI bootstrap: settings, key bindings, the main window.
 
 use std::sync::Arc;
 
-use goatty_config::Settings;
-use gpui::{App, AppContext, Bounds, Global, WindowBounds, WindowOptions, px, size};
+use gpui::{App, AppContext, Bounds, WindowBounds, WindowOptions, px, size};
 
+use crate::actions::OpenSettings;
 use crate::session::Session;
+use crate::settings::AppSettings;
+use crate::settings_window::{self, HostLink};
 use crate::workspace::Workspace;
 
-/// Settings shared by every view. Read with `cx.global::<AppSettings>()`.
-/// Stage 4 replaces it when the user edits settings; views that care
-/// observe the global.
-pub struct AppSettings(pub Arc<Settings>);
-
-impl Global for AppSettings {}
-
-pub fn run(mut settings: Settings, session: Arc<Session>) {
+pub fn run(session: Arc<Session>, link: HostLink, open_settings: Option<String>) {
     gpui_platform::application().run(move |cx: &mut App| {
-        // Resolve the font once, against what's actually installed.
-        let family = settings.font.resolve_family(&cx.text_system().all_font_names());
-        log::info!("font: {family} {}px", settings.font.size);
-        settings.font.family = Some(family);
-        cx.set_global(AppSettings(Arc::new(settings)));
-        crate::actions::bind_default_keys(cx);
+        AppSettings::init(cx);
+        settings_window::set_host_link(cx, Some(link));
+        cx.on_action(|_: &OpenSettings, cx| settings_window::open(cx));
 
         let bounds = Bounds::centered(None, size(px(960.), px(600.)), cx);
         cx.open_window(
@@ -37,7 +29,17 @@ pub fn run(mut settings: Settings, session: Arc<Session>) {
             },
         )
         .expect("open window");
-        cx.on_window_closed(|cx, _| cx.quit()).detach();
+        if let Some(page) = open_settings {
+            settings_window::open_at(cx, settings_window::Page::from_name(&page));
+        }
+        // Quit with the last window (the settings window may outlive the
+        // terminal window briefly, or close first).
+        cx.on_window_closed(|cx, _| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
         cx.activate(true);
     });
 }

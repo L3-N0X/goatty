@@ -4,11 +4,11 @@ goatty sessions run zsh with a configuration goatty generates: autosuggestions, 
 
 ## How a session starts
 
-goattyd (or `goatty --local`) asks `goatty_shell::Launcher` for the shell. If it's zsh and `shell.managed` is on (the default), the launcher rewrites the managed ZDOTDIR (only the files that changed, each one atomically) and starts `zsh -l` with:
+goattyd (or `goatty --local`) asks `goatty_shell::Launcher` for the shell, using the host settings (`~/.config/goatty/host.json`, re-read for every session). If it's zsh and `shell.managed` is on (the default), the launcher makes sure the active *generation* matches those settings: if not, it builds, validates and activates a new one (see [`profiles.md`](profiles.md)). It then starts `zsh -l` with:
 
 | Variable              | Value                                              |
 |-----------------------|----------------------------------------------------|
-| `ZDOTDIR`             | `~/.local/share/goatty/zsh`                        |
+| `ZDOTDIR`             | `~/.local/share/goatty/current/zsh`                |
 | `GOATTY_ORIG_ZDOTDIR` | the user's `ZDOTDIR`, only if goattyd's environment had one |
 
 zsh then reads the startup files from goatty's directory:
@@ -43,11 +43,14 @@ Rules that came out of testing against real zsh (`crates/goatty-shell/tests/zsh_
 ## Files and directories
 
 ```
-~/.local/share/goatty/zsh/      generated ZDOTDIR (goatty rewrites it: don't edit)
-  settings.zsh                  paths, feature list, plugin search paths
-  .zshenv .zprofile .zshrc      static, from crates/goatty-shell/zsh/
-  integration.zsh               OSC 133 + OSC 7
-  starship.toml                 goatty's prompt, used only without ~/.config/starship.toml / STARSHIP_CONFIG
+~/.config/goatty/host.json      the host settings (edit in the settings window)
+~/.local/share/goatty/generations/<n>/   one built configuration each (newest 10 kept):
+  zsh/settings.zsh              paths, feature list, history options, plugin search paths
+  zsh/.zshenv .zprofile .zshrc  static, from crates/goatty-shell/zsh/
+  zsh/integration.zsh           OSC 133 + OSC 7
+  zsh/starship.toml             generated from the prompt settings; used unless you prefer your own starship.toml
+  host.json, info.json          the settings it was built from, when
+~/.local/share/goatty/current → generations/<n>   the active one
 ~/.local/share/goatty/tools/<tool>/<version>/   managed installs
 ~/.local/share/goatty/bin/<exe>                 → active managed binary (appended to the shell's PATH)
 ~/.local/share/goatty/plugins/<tool>            → active managed zsh plugin
@@ -60,16 +63,19 @@ XDG variables are respected. History stays in the file plain zsh would use (`${Z
 
 ## Features and settings
 
-`goatty_config::ShellSettings` (env overrides until the Stage 4 settings file, #35):
+`goatty_config::HostSettings`, edited on the settings window's Shell, Prompt and History pages (or in `host.json`):
 
-| Setting                     | Default | Env                         |
-|-----------------------------|---------|-----------------------------|
-| `shell.managed`             | on      | `GOATTY_SHELL_MANAGED=0/1`  |
+| Setting | Default | Env |
+|---|---|---|
+| `shell.program` | zsh if installed | `GOATTY_SHELL` |
+| `shell.managed` | on | `GOATTY_SHELL_MANAGED=0/1` |
 | `shell.zsh.user_env` (`.zshenv`, `.zprofile`) | on | |
-| `shell.zsh.user_rc` (`.zshrc`) | off  | `GOATTY_ZSH_USER_RC=0/1`    |
-| `autosuggestions`, `syntax_highlighting`, `starship`, `atuin`, `fzf`, `integration` | on | |
+| `shell.zsh.user_rc` (`.zshrc`) | off | `GOATTY_ZSH_USER_RC=0/1` |
+| `shell.zsh.{autosuggestions, syntax_highlighting, fzf, integration}` | on | |
+| `prompt.starship`, `prompt.style` (`rich`/`minimal`), `prompt.two_line`, `prompt.newline_before`, `prompt.duration_threshold_ms` (2000; 0 = never), `prompt.prefer_user_config` | on, rich, on, off, 2000, on | |
+| `history.size` (100 000), `history.ignore_duplicates`, `history.ignore_space`, `history.share_between_sessions`, `history.atuin`, `history.atuin_up_arrow` | 100 000, on, on, off, on, off | |
 
-`.zshrc` is off by default because most `.zshrc` files load their own prompt and plugins, which would fight goatty's. With it on, it runs after compinit and before goatty's plugins, so goatty's prompt still wins. Turn off `starship` to keep your own prompt.
+`.zshrc` is off by default because most `.zshrc` files load their own prompt and plugins, which would fight goatty's. With it on, it runs after compinit and before goatty's plugins, so goatty's prompt still wins. Turn off `prompt.starship` to keep your own prompt. The `minimal` prompt style uses plain characters only, for fonts without Nerd Font symbols (#46).
 
 Each feature checks for its tool at shell startup and is skipped if the tool is missing. Binaries come from `$commands`, which sees the PATH after the user's `.zprofile` ran; zsh plugins come from a list of distro/Homebrew/NixOS paths, then the managed copy. A system install always wins over a managed one.
 

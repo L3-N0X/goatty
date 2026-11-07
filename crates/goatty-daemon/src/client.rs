@@ -9,6 +9,7 @@ use std::sync::atomic::Ordering;
 
 use anyhow::Result;
 use goatty_proto::{ClientMsg, Frame, PROTOCOL_VERSION, ServerMsg, SessionId, encode, read_msg};
+use goatty_term::Palette;
 
 use crate::server::Daemon;
 use crate::session::{Session, Subscriber};
@@ -117,6 +118,19 @@ pub(crate) fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                 ClientMsg::Shutdown { req } => {
                     reply(ServerMsg::Ok { req });
                     daemon.shutdown();
+                }
+                ClientMsg::GetHostSettings { req } => reply(crate::settings::get(&daemon, req)),
+                ClientMsg::SetHostSettings { req, json, apply } => reply(crate::settings::set(&daemon, req, &json, apply)),
+                ClientMsg::ListGenerations { req } => reply(crate::settings::generations(&daemon, req)),
+                ClientMsg::Rollback { req, generation } => reply(crate::settings::rollback(&daemon, req, generation)),
+                ClientMsg::SetPalette { session, colors } => {
+                    // Any client of the session may set it (last one wins);
+                    // it only affects answers to color queries.
+                    match (daemon.get(session), Palette::from_rgb_list(&colors, true)) {
+                        (Some(s), Some(p)) => s.term.set_palette(Arc::new(p)),
+                        (_, None) => log::debug!("connection {conn}: bad palette ({} colors)", colors.len()),
+                        (None, _) => {}
+                    }
                 }
             }
         }

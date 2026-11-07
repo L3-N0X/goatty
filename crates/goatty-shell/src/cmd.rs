@@ -8,10 +8,11 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use goatty_config::ShellSettings;
+use goatty_config::{Effective, HostSettings, store};
 
 use crate::dirs::Dirs;
 use crate::doctor::{self, State};
+use crate::generation;
 use crate::install;
 use crate::launch::Launcher;
 use crate::tools::{self, Location, TOOLS, Tool};
@@ -36,9 +37,10 @@ fn dirs_of(launcher: &Launcher) -> Result<&Dirs> {
 }
 
 /// `goattyd shell status`: configuration, what a real shell loads, startup time.
-pub fn status(shell: &ShellSettings, launcher: &Launcher) -> Result<()> {
+pub fn status(host: &Effective<HostSettings>, launcher: &Launcher) -> Result<()> {
     let dirs = dirs_of(launcher)?;
-    let launch = launcher.launch(shell);
+    let shell = &host.value.shell;
+    let launch = launcher.launch(host);
     println!("goatty shell");
     println!("  program     {}", launch.program);
     if !launch.managed {
@@ -52,7 +54,16 @@ pub fn status(shell: &ShellSettings, launcher: &Launcher) -> Result<()> {
         return Ok(());
     }
     let z = &shell.zsh;
-    println!("  config      {} (generated)", tilde(&dirs.zsh_dir()));
+    match generation::current(dirs) {
+        Some(n) => println!("  config      {} (generation {n}; `goattyd shell generations`)", tilde(&dirs.zsh_dir())),
+        None => println!("  config      {} (not built)", tilde(&dirs.zsh_dir())),
+    }
+    for issue in &host.file.issues {
+        println!("  settings    \u{26a0} {issue}");
+    }
+    if !host.env_overrides.is_empty() {
+        println!("  overridden  by {}", host.env_overrides.join(", "));
+    }
     let home_or = |name: &str| format!("{}/{name}", std::env::var("ZDOTDIR").map(|d| tilde(Path::new(&d))).unwrap_or_else(|_| "~".into()));
     println!("  your files  {}: {}", [".zshenv", ".zprofile"].map(home_or).join(", "), if z.user_env { "sourced" } else { "not sourced" });
     println!(
@@ -117,8 +128,8 @@ fn describe_ok(feature: &str, detail: &str, dirs: &Dirs) -> String {
 
 /// Default tools the managed shell reports missing. Falls back to
 /// goattyd's own `PATH` when the shell can't be probed.
-fn missing_defaults(shell: &ShellSettings, launcher: &Launcher, dirs: &Dirs) -> Vec<&'static Tool> {
-    let launch = launcher.launch(shell);
+fn missing_defaults(host: &Effective<HostSettings>, launcher: &Launcher, dirs: &Dirs) -> Vec<&'static Tool> {
+    let launch = launcher.launch(host);
     match doctor::probe(&launch, PROBE_TIMEOUT) {
         Ok(p) => p.missing().filter_map(tools::find).filter(|t| t.default).collect(),
         Err(e) => {
@@ -145,9 +156,9 @@ fn resolve_names(names: &[String]) -> Result<Vec<&'static Tool>> {
 
 /// `goattyd shell install [TOOL...]`: no names installs the default tools
 /// the shell is missing. Asks before downloading unless `yes`.
-pub fn install(shell: &ShellSettings, launcher: &Launcher, names: &[String], yes: bool) -> Result<()> {
+pub fn install(host: &Effective<HostSettings>, launcher: &Launcher, names: &[String], yes: bool) -> Result<()> {
     let dirs = dirs_of(launcher)?;
-    let requested = if names.is_empty() { missing_defaults(shell, launcher, dirs) } else { resolve_names(names)? };
+    let requested = if names.is_empty() { missing_defaults(host, launcher, dirs) } else { resolve_names(names)? };
     let target = tools::current_target();
     let mut plan = Vec::new();
     for t in requested {
@@ -233,4 +244,55 @@ pub fn dismiss(launcher: &Launcher) -> Result<()> {
     std::fs::write(&marker, "")?;
     println!("goatty won't mention missing tools again (`goattyd shell status` still lists them; delete {} to undo).", tilde(&marker));
     Ok(())
+}
+
+/// `goattyd shell generations`: the built configurations, newest last.
+pub fn generations(launcher: &Launcher) -> Result<()> {
+    let dirs = dirs_of(launcher)?;
+    let list = generation::list(dirs);
+    if list.is_empty() {
+        println!("No generations yet: one is built when the first managed shell starts.");
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    for g in list {
+        let age = now.saturating_sub(g.created_unix);
+        let ago = match age {
+            0..60 => format!("{age}s ago"),
+            60..3600 => format!("{}m ago", age / 60),
+            3600..86400 => format!("{}h ago", age / 3600),
+            _ => format!("{}d ago", age / 86400),
+        };
+        println!("{} {:>4}  {ago:<10} {}", if g.active { "*" } else { " " }, g.number, tilde(&g.path));
+    }
+    Ok(())
+}
+
+/// `goattyd shell diff`: what the next session's configuration would change.
+pub fn diff(host: &Effective<HostSettings>, launcher: &Launcher) -> Result<()> {
+    let diffs = launcher.preview(&host.value);
+    if diffs.is_empty() {
+        println!("The active generation matches the current settings.");
+    }
+    for d in diffs {
+        print!("{}", d.unified);
+    }
+    Ok(())
+}
+
+/// `goattyd shell rollback [N]`: activate an older generation and restore
+/// the host settings it was built from (the current file is backed up).
+pub fn rollback(launcher: &Launcher, host_file: &Path, to: Option<u32>) -> Result<()> {
+    let dirs = dirs_of(launcher)?;
+    let g = rollback_to(dirs, host_file, to)?;
+    println!("Generation {} is active again and {} has its settings. New sessions use it.", g.number, tilde(host_file));
+    Ok(())
+}
+
+/// Roll back and restore the settings file. Shared with the daemon API.
+pub fn rollback_to(dirs: &Dirs, host_file: &Path, to: Option<u32>) -> Result<generation::Generation> {
+    let g = generation::rollback(dirs, to)?;
+    if let Some(json) = g.settings_json() {
+        store::write_text(host_file, &json).with_context(|| format!("restore {}", host_file.display()))?;
+    }
+    Ok(g)
 }

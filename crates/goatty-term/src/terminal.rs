@@ -51,8 +51,12 @@ pub(crate) struct Inner {
 #[derive(Clone)]
 pub struct Terminal {
     pub(crate) inner: Arc<Inner>,
-    pub palette: Arc<Palette>,
+    /// Shared with the listener, which answers color queries from it.
+    palette: SharedPalette,
 }
+
+/// A palette that can be swapped while the terminal runs (theme changes).
+pub(crate) type SharedPalette = Arc<parking_lot::RwLock<Arc<Palette>>>;
 
 /// Receivers returned by [`Terminal::new`].
 pub struct TerminalChannels {
@@ -67,10 +71,38 @@ impl Terminal {
         let (rtx, rrx) = flume::unbounded();
         let (utx, urx) = flume::unbounded();
         let packed = Arc::new(AtomicU32::new(pack(size)));
+        let palette: SharedPalette = Arc::new(parking_lot::RwLock::new(palette));
         let listener = Listener { replies: rtx, ui: utx, answer_queries, palette: palette.clone(), size: packed.clone() };
         let term = Crosswords::new(size.to_crosswords(), CursorShape::Block, listener, WindowId::from(0), 0, DEFAULT_SCROLLBACK);
         let inner = Inner { term: Mutex::new(term), parser: Mutex::new(Processor::default()), size: packed };
         (Self { inner: Arc::new(inner), palette }, TerminalChannels { replies: rrx, ui: urx })
+    }
+
+    /// The palette colors resolve against.
+    pub fn palette(&self) -> Arc<Palette> {
+        self.palette.read().clone()
+    }
+
+    /// Switch palettes (theme change). Takes effect on the next frame and
+    /// for the next color query (OSC 4/10/11).
+    pub fn set_palette(&self, palette: Arc<Palette>) {
+        *self.palette.write() = palette;
+    }
+
+    /// The cursor shape used until the application asks for another
+    /// (DECSCUSR), and after it resets. Applies right away if the cursor is
+    /// currently in the old default shape.
+    pub fn set_default_cursor(&self, kind: crate::CursorKind) {
+        let shape = match kind {
+            crate::CursorKind::Block => CursorShape::Block,
+            crate::CursorKind::Beam => CursorShape::Beam,
+            crate::CursorKind::Underline => CursorShape::Underline,
+        };
+        let mut t = self.inner.term.lock();
+        if t.cursor_shape == t.default_cursor_shape {
+            t.cursor_shape = shape;
+        }
+        t.default_cursor_shape = shape;
     }
 
     /// Feed raw PTY output. Returns `true` if a redraw should be scheduled

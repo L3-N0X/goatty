@@ -44,9 +44,7 @@ impl Control {
             let reply: ServerMsg = read_msg(&mut self.stream).context("goattyd closed the connection")?;
             match reply {
                 ServerMsg::Error { req: r, message } if r.is_none() || r == Some(req) => return Err(anyhow!("goattyd: {message}")),
-                ServerMsg::Sessions { req: r, .. } | ServerMsg::Ok { req: r } | ServerMsg::Attached { req: r, .. } if r == req => {
-                    return Ok(reply);
-                }
+                _ if reply.reply_to() == Some(req) => return Ok(reply),
                 _ => continue, // not ours (e.g. a late stream frame)
             }
         }
@@ -66,6 +64,22 @@ impl Control {
     /// Type `data` into a session without attaching to it.
     pub fn send_input(&mut self, session: SessionId, data: Vec<u8>) -> Result<()> {
         self.request(|req| ClientMsg::SendInput { req, session, data }).map(drop)
+    }
+
+    /// The host settings document (`host.json` as the daemon sees it).
+    pub fn host_settings_json(&mut self) -> Result<String> {
+        match self.request(|req| ClientMsg::GetHostSettings { req })? {
+            ServerMsg::HostSettings { json, .. } => Ok(json),
+            other => bail!("unexpected reply {other:?}"),
+        }
+    }
+
+    /// Validate, activate and save host settings. Returns the issues found.
+    pub fn apply_host_settings(&mut self, json: String) -> Result<Vec<String>> {
+        match self.request(|req| ClientMsg::SetHostSettings { req, json, apply: true })? {
+            ServerMsg::HostSettingsApplied { issues, .. } => Ok(issues),
+            other => bail!("unexpected reply {other:?}"),
+        }
     }
 
     /// Stop the daemon and every session it owns.
