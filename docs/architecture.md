@@ -5,7 +5,7 @@ How the code is laid out, and where each upcoming stage's work goes. For the pro
 ## Crate graph
 
 ```
-                 goatty-config      (settings: defaults + GOATTY_* env; Stage 4 profiles plug in here)
+                 goatty-config      (profile model: client/host JSON documents, store, themes, keys, profiles)
                    ▲        ▲   ▲
                    │        │   goatty-shell    (managed zsh: generated ZDOTDIR, tool installs, diagnostics)
                    │        │      ▲      ▲
@@ -26,6 +26,7 @@ Rules:
 - **`goatty-proto` has no I/O beyond framing.** Transports live in `goatty-client`.
 - **`goatty-client` has no UI dependencies.** The app, the daemon's CLI, tests and benchmarks all use it.
 - **Which shell a session runs is `goatty-shell`'s decision** (`Launcher::launch`). goattyd and `goatty --local` both use it; `goatty-term` only spawns what it's given. `goatty-shell` has no rio-vt or UI dependency.
+- **Client vs host settings** (#14): `ClientSettings` (`settings.json`) is read by the app; `HostSettings` (`host.json`) by goattyd/`HostService` on its own host. The GUI edits host settings through the protocol (`GetHostSettings`, `SetHostSettings`, …), never by writing a remote file. See [`profiles.md`](profiles.md).
 - **Settings come from `goatty-config`.** Don't read `GOATTY_*` variables elsewhere (the exception is `GOATTY_SOCKET`, which is a location, not a setting, and lives in `goatty_proto::socket_path`).
 
 ## Daemon (`crates/goatty-daemon`)
@@ -49,7 +50,9 @@ Threads per session: `s{id}-reader` (PTY → terminal → subscribers) and `s{id
 | `tools`   | pinned tool catalog (versions, URLs, sha256), finding system/managed copies |
 | `install` | download (curl/wget), verify, unpack, activate symlinks, uninstall      |
 | `doctor`  | start a real managed shell and parse `goatty-status`                    |
-| `cmd`     | `goattyd shell status|install|uninstall|dismiss`                        |
+| `generation` | build → validate (`zsh -n`) → activate generations; list, rollback, diff |
+| `service` | `HostService`: host settings get/set(preview, apply)/generations/rollback, for the daemon API and `goatty --local` |
+| `cmd`     | `goattyd shell status|install|uninstall|dismiss|generations|diff|rollback` |
 | `dirs`    | XDG locations under `goatty/`                                           |
 
 Design and startup sequence: [`managed-zsh.md`](managed-zsh.md). The zsh behaviour is tested against real zsh in `tests/zsh_startup.rs` (sandboxed `$HOME`, PTY for OSC 133/7).
@@ -57,10 +60,19 @@ Design and startup sequence: [`managed-zsh.md`](managed-zsh.md). The zsh behavio
 ## App (`crates/goatty-app`)
 
 ```
-main.rs        parse CLI, load Settings, open the Session, app::run
+main.rs        parse CLI, open the Session (local: HostService in-process), app::run
 cli.rs         clap definition
-app.rs         GPUI bootstrap: AppSettings global, key bindings, main window
-actions.rs     actions + default key bindings (Terminal key context)
+app.rs         GPUI bootstrap: settings, host link, main window, OpenSettings handler
+settings.rs    AppSettings global: client settings file ⇄ live values, file polling, keybindings
+actions.rs     actions, name → action map, loading user keybindings (Terminal key context)
+settings_window/
+  mod.rs       the settings window: pages, host draft → preview → apply, export/import
+  host.rs      HostLink: the daemon connection or the local HostService
+  pages.rs     rendering of every page
+ui/
+  style.rs     UI colors derived from the terminal theme
+  controls.rs  toggle, segmented, stepper, button, rows
+  text_input.rs single-line text field (IME-aware; adapted from GPUI's example)
 workspace.rs   root view per window: owns panes, window title, closes on exit
 session.rs     a pane's data: local PTY or goattyd session → mirror Terminal; coalescing waker
 terminal/
@@ -83,12 +95,13 @@ Input: GPUI dispatches a bound action before the view's raw `on_key_down`. Short
 | IME / compose (#21)                    | `terminal/view.rs`: implement `EntityInputHandler`, register it in the element's paint |
 | Box drawing (#24)                      | `terminal/element.rs` (+ a new `terminal/boxdraw.rs`)                 |
 | Kitty keyboard (#22)                   | `goatty-term/src/input.rs`, fed from `terminal/keys.rs`               |
-| Cursor/ligature settings (#23, #25)    | `goatty-config` field → read in `TerminalView::new`                   |
 | URL detection (#27)                    | `goatty-term` (detect on `Frame` rows) + view (hover/click)           |
 | Shell integration, terminal side (#28) | `goatty-term` listener (OSC 133/7 → `UiEvent`) + daemon `SessionInfo`; the zsh side is in `goatty-shell/zsh/integration.zsh` |
 | Managed zsh features, tool versions    | `goatty-shell/zsh/zshrc.zsh` (load order matters, see `managed-zsh.md`), `goatty-shell/src/tools.rs` |
 | GUI first-run / shell diagnostics      | daemon API for `goatty_shell::cmd`-style status/install (new wire messages), then a GPUI view |
 | Bash/Fish adapters (Stage 6)           | `goatty-shell`: a sibling of `zsh.rs` + its startup files; `Launcher::launch` picks by program |
-| Settings file / profiles (Stage 4)     | `goatty-config` loads and migrates; app replaces the `AppSettings` global; views observe it |
+| New client setting                     | field in `goatty-config/src/client.rs` (+ `validate`), control in `settings_window/pages.rs`, apply in `TerminalView::apply_settings` |
+| New host setting                       | field in `goatty-config/src/host.rs`, render it in `goatty-shell/src/zsh.rs` (`settings.zsh`/`starship.toml`), control in `pages.rs` |
+| Settings migration                     | bump `Document::VERSION`, add `(from, fn(&mut Value))` to `migrations()` |
 | systemd user service (#7)              | `goatty-daemon` (`server::serve` already takes the socket path)       |
 | New wire messages                      | `goatty-proto/src/msg.rs` (bump `PROTOCOL_VERSION`), handle in `goatty-daemon/src/client.rs` and `goatty-client/src/connection.rs` |

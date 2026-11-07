@@ -8,9 +8,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use goatty_config::{FontSettings, Renderer};
+use goatty_config::{ClientSettings, CursorShape, FontSettings, Renderer};
 use goatty_term::input::{Key, Mods, MouseAction, MouseButton, encode_key, encode_mouse, encode_paste};
-use goatty_term::{Frame, SelectKind, TermMode, UiEvent};
+use goatty_term::{CursorKind, Frame, SelectKind, TermMode, UiEvent};
 use gpui::{
     App, ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, Font, InteractiveElement, IntoElement, KeyDownEvent,
     MouseButton as GMouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollDelta, ScrollEvent,
@@ -21,9 +21,11 @@ use super::element::{Geom, TerminalElement, hsla};
 use super::glyphs::GlyphCache;
 use super::keys::{mods, terminal_key};
 use super::stats::Stats;
-use crate::actions::{Copy, CopyOrInterrupt, DecreaseFontSize, IncreaseFontSize, Paste, ScrollPageDown, ScrollPageUp, TERMINAL_CONTEXT};
-use crate::app::AppSettings;
+use crate::actions::{
+    Copy, CopyOrInterrupt, DecreaseFontSize, IncreaseFontSize, Paste, ResetFontSize, ScrollPageDown, ScrollPageUp, TERMINAL_CONTEXT,
+};
 use crate::session::Session;
+use crate::settings::{AppSettings, palette};
 
 /// Cursor blink half-period (xterm/GTK default is ~530 ms).
 const BLINK: Duration = Duration::from_millis(530);
@@ -46,12 +48,16 @@ pub struct TerminalView {
     geom: Rc<StdCell<Geom>>,
     stats: Rc<RefCell<Stats>>,
     glyphs: Rc<RefCell<GlyphCache>>,
-    // Appearance.
+    // Appearance (from the settings; see `apply_settings`).
     font: Font,
+    /// Settings size plus `zoom`.
     font_size: Pixels,
+    /// Ctrl+Shift+= / - on top of the settings size, until reset.
+    zoom: f32,
     line_height: f32,
     padding: Pixels,
     glyph_mode: bool,
+    cursor_blink: bool,
     // Interaction state.
     selecting: bool,
     scroll_accum: f32,
@@ -75,8 +81,14 @@ impl Focusable for TerminalView {
 
 impl TerminalView {
     pub fn new(session: Arc<Session>, window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
-        let settings = cx.global::<AppSettings>().0.clone();
+        let settings = cx.global::<AppSettings>().client.clone();
         let focus = cx.focus_handle();
+        cx.observe_global::<AppSettings>(|view, cx| {
+            let s = cx.global::<AppSettings>().client.clone();
+            view.apply_settings(&s);
+            cx.notify();
+        })
+        .detach();
         window.focus(&focus, cx);
 
         // I/O threads wake us; one notify per frame at most.
@@ -97,7 +109,8 @@ impl TerminalView {
                 cx.background_executor().timer(BLINK).await;
                 let alive = this.update_in(cx, |view, window, cx| {
                     let focused = view.focus.is_focused(window);
-                    let next = if !focused || view.last_activity.elapsed() < BLINK { true } else { !view.cursor_visible };
+                    let next =
+                        if !focused || !view.cursor_blink || view.last_activity.elapsed() < BLINK { true } else { !view.cursor_visible };
                     if next != view.cursor_visible {
                         view.cursor_visible = next;
                         cx.notify();
@@ -126,19 +139,20 @@ impl TerminalView {
             .detach();
         }
 
-        let family = settings.font.family.clone().unwrap_or_else(|| "monospace".into());
-        Self {
+        let mut view = Self {
             session,
             focus,
             frame: Rc::new(RefCell::new(Frame::default())),
             geom: Rc::new(StdCell::new(Geom::default())),
             stats: Rc::new(RefCell::new(Stats::default())),
             glyphs: Rc::new(RefCell::new(GlyphCache::new())),
-            font: gpui::font(family),
+            font: gpui::font("monospace"),
             font_size: px(settings.font.size),
+            zoom: 0.0,
             line_height: settings.font.line_height,
             padding: px(settings.terminal.padding),
-            glyph_mode: settings.terminal.renderer == Renderer::Glyphs,
+            glyph_mode: true,
+            cursor_blink: true,
             selecting: false,
             scroll_accum: 0.0,
             cursor_visible: true,
@@ -147,7 +161,32 @@ impl TerminalView {
             app_title: DEFAULT_TITLE.into(),
             title: String::new(),
             exited: false,
+        };
+        view.apply_settings(&settings);
+        view
+    }
+
+    /// Take font, layout, cursor and colors from the settings. Called at
+    /// start and whenever the settings change (live, no restart).
+    fn apply_settings(&mut self, s: &ClientSettings) {
+        let family = s.font.family.clone().unwrap_or_else(|| "monospace".into());
+        if self.font.family.as_ref() != family.as_str() {
+            self.font = gpui::font(family);
         }
+        self.font_size = px((s.font.size + self.zoom).clamp(FontSettings::MIN_SIZE, FontSettings::MAX_SIZE));
+        self.line_height = s.font.line_height;
+        self.padding = px(s.terminal.padding);
+        self.glyph_mode = s.terminal.renderer == Renderer::Glyphs;
+        self.cursor_blink = s.terminal.cursor_blink;
+        if !self.cursor_blink {
+            self.cursor_visible = true;
+        }
+        self.session.terminal.set_default_cursor(match s.terminal.cursor_shape {
+            CursorShape::Block => CursorKind::Block,
+            CursorShape::Bar => CursorKind::Beam,
+            CursorShape::Underline => CursorKind::Underline,
+        });
+        self.session.set_palette(palette(&s.theme.colors(), s.theme.bold_is_bright));
     }
 
     /// Title for a window or tab: the application's title plus host and
@@ -240,14 +279,24 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn increase_font_size(&mut self, _: &IncreaseFontSize, _window: &mut Window, cx: &mut Context<'_, Self>) {
-        self.font_size = (self.font_size + px(1.0)).min(px(FontSettings::MAX_SIZE));
+    fn zoom_by(&mut self, delta: f32, cx: &mut Context<'_, Self>) {
+        let base = cx.global::<AppSettings>().client.font.size;
+        self.zoom =
+            if delta == 0.0 { 0.0 } else { (base + self.zoom + delta).clamp(FontSettings::MIN_SIZE, FontSettings::MAX_SIZE) - base };
+        self.font_size = px(base + self.zoom);
         cx.notify();
     }
 
+    fn increase_font_size(&mut self, _: &IncreaseFontSize, _window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.zoom_by(1.0, cx);
+    }
+
     fn decrease_font_size(&mut self, _: &DecreaseFontSize, _window: &mut Window, cx: &mut Context<'_, Self>) {
-        self.font_size = (self.font_size - px(1.0)).max(px(FontSettings::MIN_SIZE));
-        cx.notify();
+        self.zoom_by(-1.0, cx);
+    }
+
+    fn reset_font_size(&mut self, _: &ResetFontSize, _window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.zoom_by(0.0, cx);
     }
 
     // ---- raw input ----------------------------------------------------------
@@ -375,7 +424,7 @@ fn mouse_button(b: Option<GMouseButton>) -> Option<MouseButton> {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
-        let bg = hsla(self.session.terminal.palette.background);
+        let bg = hsla(self.session.terminal.palette().background);
         let focused = self.focus.is_focused(window);
         div()
             .size_full()
@@ -389,6 +438,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::scroll_page_down))
             .on_action(cx.listener(Self::increase_font_size))
             .on_action(cx.listener(Self::decrease_font_size))
+            .on_action(cx.listener(Self::reset_font_size))
             .on_key_down(cx.listener(Self::on_key))
             .on_mouse_down(GMouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_down(GMouseButton::Middle, cx.listener(Self::on_mouse_down))

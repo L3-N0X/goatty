@@ -7,7 +7,9 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
-use goatty_proto::{ClientMsg, Frame, HostInfo, ReqId, ServerMsg, SessionId, SessionInfo, StreamOpts, WinSize, encode, read_msg};
+use goatty_proto::{
+    ClientMsg, FileDiff, Frame, GenerationInfo, HostInfo, ReqId, ServerMsg, SessionId, SessionInfo, StreamOpts, WinSize, encode, read_msg,
+};
 use parking_lot::Mutex;
 
 use crate::transport::{Closer, Endpoint, Transport};
@@ -27,6 +29,27 @@ struct Pane {
     size: WinSize,
     consumed: u64,
     acked: u64,
+    /// Last `SetPalette` colors, re-sent after a reattach.
+    palette: Option<Vec<u32>>,
+}
+
+/// The host's settings, as the daemon reports them.
+#[derive(Debug, Clone)]
+pub struct HostSettingsReply {
+    /// The settings document (`goatty_config::store::parse` reads it).
+    pub json: String,
+    pub issues: Vec<String>,
+    pub env_overrides: Vec<String>,
+    pub generation: Option<u32>,
+}
+
+/// Result of [`Connection::set_host_settings`].
+#[derive(Debug, Clone)]
+pub struct HostSettingsApplied {
+    pub issues: Vec<String>,
+    pub diff: Vec<FileDiff>,
+    pub applied: bool,
+    pub generation: Option<u32>,
 }
 
 enum Pending {
@@ -231,6 +254,55 @@ impl Connection {
         self.shared.send(&ClientMsg::Resize { session, size });
     }
 
+    /// Tell the daemon which colors this session is shown with, so color
+    /// queries get matching answers. Remembered and re-sent on reconnect.
+    pub fn set_palette(&self, session: SessionId, colors: Vec<u32>) {
+        if let Some(p) = self.shared.panes.lock().get_mut(&session) {
+            p.palette = Some(colors.clone());
+        }
+        if self.is_connected() {
+            self.shared.send(&ClientMsg::SetPalette { session, colors });
+        }
+    }
+
+    /// The host's settings document. Blocks: call off the UI thread.
+    pub fn host_settings(&self) -> Result<HostSettingsReply> {
+        match self.request(Pending::Reply, |req| ClientMsg::GetHostSettings { req })? {
+            ServerMsg::HostSettings { json, issues, env_overrides, generation, .. } => {
+                Ok(HostSettingsReply { json, issues, env_overrides, generation })
+            }
+            other => bail!("unexpected reply {other:?}"),
+        }
+    }
+
+    /// Validate `json` and preview the generated-file changes; with `apply`,
+    /// also activate and save. Blocks: call off the UI thread.
+    pub fn set_host_settings(&self, json: String, apply: bool) -> Result<HostSettingsApplied> {
+        match self.request(Pending::Reply, |req| ClientMsg::SetHostSettings { req, json, apply })? {
+            ServerMsg::HostSettingsApplied { issues, diff, applied, generation, .. } => {
+                Ok(HostSettingsApplied { issues, diff, applied, generation })
+            }
+            other => bail!("unexpected reply {other:?}"),
+        }
+    }
+
+    pub fn generations(&self) -> Result<Vec<GenerationInfo>> {
+        match self.request(Pending::Reply, |req| ClientMsg::ListGenerations { req })? {
+            ServerMsg::Generations { list, .. } => Ok(list),
+            other => bail!("unexpected reply {other:?}"),
+        }
+    }
+
+    /// Roll the host back to `generation` (default: the previous one).
+    pub fn rollback(&self, generation: Option<u32>) -> Result<HostSettingsReply> {
+        match self.request(Pending::Reply, |req| ClientMsg::Rollback { req, generation })? {
+            ServerMsg::HostSettings { json, issues, env_overrides, generation, .. } => {
+                Ok(HostSettingsReply { json, issues, env_overrides, generation })
+            }
+            other => bail!("unexpected reply {other:?}"),
+        }
+    }
+
     /// Drop the current link as if the network failed (debugging/tests).
     pub fn force_disconnect(&self) {
         self.shared.close_transport();
@@ -386,17 +458,20 @@ fn dispatch(s: &Shared, msg: ServerMsg) {
                 Some(Pending::Attach { tx, sink, size }) => {
                     sink.feed(&snapshot);
                     let n = snapshot.len() as u64;
-                    s.panes.lock().insert(session, Pane { sink, size, consumed: n, acked: 0 });
+                    s.panes.lock().insert(session, Pane { sink, size, consumed: n, acked: 0, palette: None });
                     let _ = tx.send(ServerMsg::Attached { req, session, snapshot: Vec::new() });
                 }
                 Some(Pending::Reattach(_)) => {
-                    let sink = s.panes.lock().get_mut(&session).map(|p| {
+                    let pane = s.panes.lock().get_mut(&session).map(|p| {
                         // New subscription: stream offsets restart at zero.
                         p.consumed = snapshot.len() as u64;
                         p.acked = 0;
-                        p.sink.clone()
+                        (p.sink.clone(), p.palette.clone())
                     });
-                    if let Some(sink) = sink {
+                    if let Some((sink, palette)) = pane {
+                        if let Some(colors) = palette {
+                            s.send(&ClientMsg::SetPalette { session, colors });
+                        }
                         sink.feed(&snapshot);
                         sink.event(PaneEvent::Reconnected);
                     }
@@ -412,7 +487,11 @@ fn dispatch(s: &Shared, msg: ServerMsg) {
         ServerMsg::Pong { nonce } => {
             s.rtt_us.store(s.now_us().saturating_sub(nonce).max(1), Ordering::Relaxed);
         }
-        ServerMsg::Sessions { req, .. } | ServerMsg::Ok { req } => {
+        ServerMsg::Sessions { req, .. }
+        | ServerMsg::Ok { req }
+        | ServerMsg::HostSettings { req, .. }
+        | ServerMsg::HostSettingsApplied { req, .. }
+        | ServerMsg::Generations { req, .. } => {
             if let Some(Pending::Reply(tx) | Pending::Attach { tx, .. }) = s.pending.lock().remove(&req) {
                 let _ = tx.send(msg);
             }

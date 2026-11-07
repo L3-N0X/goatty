@@ -41,6 +41,10 @@ fn start_daemon() -> Daemon {
         .env("GOATTY_SOCKET", &sock)
         .env("GOATTY_SHELL", "/bin/sh")
         .env("RUST_LOG", "warn")
+        // Host settings and generations stay in the sandbox.
+        .env("HOME", dir.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
         .spawn()
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);

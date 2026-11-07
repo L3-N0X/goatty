@@ -19,7 +19,7 @@ pub mod control;
 mod handshake;
 pub mod transport;
 
-pub use connection::Connection;
+pub use connection::{Connection, HostSettingsApplied, HostSettingsReply};
 pub use control::Control;
 pub use transport::{Endpoint, connect_or_spawn_daemon};
 

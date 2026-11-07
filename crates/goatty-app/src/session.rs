@@ -9,9 +9,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use anyhow::Result;
 use goatty_client::{Connection, PaneEvent, PaneSink};
-use goatty_config::ShellSettings;
 use goatty_proto::WinSize;
-use goatty_shell::Launcher;
+use goatty_shell::HostService;
 use goatty_term::pty::{Pty, ShellCommand};
 use goatty_term::{Palette, TermSize, Terminal, UiEvent};
 use parking_lot::Mutex;
@@ -72,6 +71,12 @@ pub struct Session {
     waker: Arc<Waker>,
 }
 
+fn palette_list(p: &Palette) -> Vec<u32> {
+    let mut v: Vec<u32> = p.ansi.iter().map(|c| c.to_u32()).collect();
+    v.extend([p.foreground, p.background, p.cursor, p.selection_fg, p.selection_bg].map(|c| c.to_u32()));
+    v
+}
+
 fn win(size: TermSize) -> WinSize {
     WinSize { cols: size.cols, rows: size.rows, cell_width: size.cell_width, cell_height: size.cell_height }
 }
@@ -125,10 +130,8 @@ impl Session {
 
     /// A shell owned by this process (`--local`): no daemon, so it ends
     /// with the window. Same shell choice and managed zsh as goattyd.
-    pub fn local(size: TermSize, shell: &ShellSettings) -> Result<Arc<Self>> {
-        // `goatty-setup` runs the goattyd installed next to us, if any.
-        let daemon = std::env::current_exe().ok().map(|e| e.with_file_name("goattyd")).filter(|d| d.exists());
-        let launch = Launcher::from_env(daemon).launch(shell);
+    pub fn local(size: TermSize, host: &HostService) -> Result<Arc<Self>> {
+        let launch = host.launcher.launch(&host.settings());
         let (pty, reader) = Pty::spawn(&ShellCommand::new(launch.program, launch.args, launch.env), size)?;
         let (terminal, chans) = Terminal::new(size, true, Arc::new(Palette::default()));
         let s = Arc::new(Self::new(terminal, chans.ui, Backend::Local(Mutex::new(pty)), None));
@@ -217,6 +220,16 @@ impl Session {
                 let _ = pty.lock().resize(size);
             }
             Backend::Daemon { conn, id } => conn.resize(id.load(Ordering::Relaxed), win(size)),
+        }
+    }
+
+    /// Show the session with `palette`: our terminal renders with it, and
+    /// the daemon answers color queries (OSC 4/10/11) with it.
+    pub fn set_palette(&self, palette: Palette) {
+        let colors = palette_list(&palette);
+        self.terminal.set_palette(Arc::new(palette));
+        if let Backend::Daemon { conn, id } = &self.backend {
+            conn.set_palette(id.load(Ordering::Relaxed), colors);
         }
     }
 

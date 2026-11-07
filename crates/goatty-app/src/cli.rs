@@ -32,13 +32,20 @@ pub struct Cli {
     /// Use goattyd behind any stdio command, e.g. 'docker exec -i box goattyd proxy'.
     #[arg(long, value_name = "CMD")]
     pub via: Option<String>,
+
+    /// Also open the settings window, optionally at a page (appearance,
+    /// shell, prompt, history, shortcuts, workspace, profile).
+    #[arg(long, value_name = "PAGE", num_args = 0..=1, default_missing_value = "appearance")]
+    pub settings: Option<String>,
 }
 
 impl Cli {
-    pub fn attach_mode(&self) -> AttachMode {
+    /// `prefer_new`: the workspace setting asks for a new session by default.
+    pub fn attach_mode(&self, prefer_new: bool) -> AttachMode {
         match (self.new, self.attach) {
             (true, _) => AttachMode::New,
             (false, Some(id)) => AttachMode::Id(id),
+            (false, None) if prefer_new => AttachMode::New,
             (false, None) => AttachMode::Auto,
         }
     }
@@ -68,7 +75,9 @@ mod tests {
     #[test]
     fn modes() {
         let cli = Cli::parse_from(["goatty", "--attach", "3"]);
-        assert!(matches!(cli.attach_mode(), AttachMode::Id(3)));
+        assert!(matches!(cli.attach_mode(true), AttachMode::Id(3)));
+        assert!(matches!(Cli::parse_from(["goatty"]).attach_mode(true), AttachMode::New));
+        assert!(matches!(Cli::parse_from(["goatty"]).attach_mode(false), AttachMode::Auto));
         assert!(matches!(cli.endpoint().unwrap(), Some(Endpoint::Local)));
         assert!(Cli::parse_from(["goatty", "--local"]).endpoint().unwrap().is_none());
         assert!(Cli::try_parse_from(["goatty", "--local", "--ssh", "h"]).is_err());

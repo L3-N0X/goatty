@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use rio_vt::event::{EventListener, RioEvent, WindowId};
 
-use crate::Palette;
+use crate::terminal::SharedPalette;
 
 /// Events the terminal emits that the *UI* cares about.
 #[derive(Debug, Clone)]
@@ -33,7 +33,7 @@ pub(crate) struct Listener {
     pub(crate) replies: flume::Sender<Vec<u8>>,
     pub(crate) ui: flume::Sender<UiEvent>,
     pub(crate) answer_queries: bool,
-    pub(crate) palette: Arc<Palette>,
+    pub(crate) palette: SharedPalette,
     pub(crate) size: Arc<AtomicU32>, // packed (cols << 16 | rows)
 }
 
@@ -47,7 +47,7 @@ impl EventListener for Listener {
             }
             RioEvent::ColorRequest(_, index, fmt) => {
                 if self.answer_queries {
-                    let c = self.palette.by_index(index);
+                    let c = self.palette.read().by_index(index);
                     let reply = fmt(rio_vt::config::colors::ColorRgb { r: c.r, g: c.g, b: c.b });
                     let _ = self.replies.send(reply.into_bytes());
                 }

@@ -2,7 +2,9 @@
 //!
 //! ```text
 //! $XDG_DATA_HOME/goatty/          (~/.local/share/goatty)
-//!   zsh/                          generated ZDOTDIR (goatty owns it, rewrites it)
+//!   generations/<n>/              one built shell configuration each: zsh/ (the ZDOTDIR),
+//!                                 host.json (the settings it came from), info.json
+//!   current -> generations/<n>    the active one (switched atomically)
 //!   tools/<tool>/<version>/       unpacked managed installs
 //!   bin/<exe>                     symlinks to the active managed binaries
 //!   plugins/<tool>                symlinks to the active managed zsh plugins
@@ -47,9 +49,17 @@ impl Dirs {
         Self { data: root.join("data"), config: root.join("config"), cache: root.join("cache"), state: root.join("state") }
     }
 
-    /// The generated ZDOTDIR.
+    /// The active generation's ZDOTDIR (through the `current` link, so a
+    /// path written into the config stays valid across generations).
     pub fn zsh_dir(&self) -> PathBuf {
-        self.data.join("zsh")
+        self.current_link().join("zsh")
+    }
+    pub fn generations_dir(&self) -> PathBuf {
+        self.data.join("generations")
+    }
+    /// Symlink to the active generation.
+    pub fn current_link(&self) -> PathBuf {
+        self.data.join("current")
     }
     pub fn tools_dir(&self) -> PathBuf {
         self.data.join("tools")
@@ -79,7 +89,7 @@ mod tests {
         let d = Dirs::from_vars(|k| (k == "HOME").then(|| "/home/u".into())).unwrap();
         assert_eq!(d.data, Path::new("/home/u/.local/share/goatty"));
         assert_eq!(d.state, Path::new("/home/u/.local/state/goatty"));
-        assert_eq!(d.zsh_dir(), Path::new("/home/u/.local/share/goatty/zsh"));
+        assert_eq!(d.zsh_dir(), Path::new("/home/u/.local/share/goatty/current/zsh"));
         assert_eq!(d.user_zshrc(), Path::new("/home/u/.config/goatty/zshrc"));
 
         let d = Dirs::from_vars(|k| match k {

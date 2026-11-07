@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 pub type SessionId = u64;
 /// Client-chosen correlation id for request/response pairs.
@@ -98,6 +98,50 @@ pub enum ClientMsg {
     Shutdown {
         req: ReqId,
     },
+    /// The host's settings document (`host.json`). Reply: `HostSettings`.
+    GetHostSettings {
+        req: ReqId,
+    },
+    /// Replace the host settings with `json` (a settings document). The
+    /// daemon validates it and builds the shell configuration first; with
+    /// `apply` it then saves the file and activates the new generation,
+    /// without it only reports issues and the diff. Reply: `HostSettingsApplied`.
+    SetHostSettings {
+        req: ReqId,
+        json: String,
+        apply: bool,
+    },
+    /// Reply: `Generations`.
+    ListGenerations {
+        req: ReqId,
+    },
+    /// Activate generation `generation` (default: the previous one) and
+    /// restore its settings. Reply: `HostSettings`.
+    Rollback {
+        req: ReqId,
+        generation: Option<u32>,
+    },
+    /// The client's colors for this session, so the daemon answers color
+    /// queries (OSC 4/10/11) with what the user actually sees: 16 ANSI
+    /// colors, then fg, bg, cursor, selection fg, selection bg (`0xRRGGBB`).
+    SetPalette {
+        session: SessionId,
+        colors: Vec<u32>,
+    },
+}
+
+/// One changed file of the generated shell configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileDiff {
+    pub name: String,
+    pub unified: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GenerationInfo {
+    pub number: u32,
+    pub created_unix: u64,
+    pub active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -168,6 +212,46 @@ pub enum ServerMsg {
         req: Option<ReqId>,
         message: String,
     },
+    HostSettings {
+        req: ReqId,
+        /// The settings file as stored (non-default values only).
+        json: String,
+        /// Problems found loading it (goatty used fallbacks).
+        issues: Vec<String>,
+        /// `GOATTY_*` variables overriding settings in the daemon's environment.
+        env_overrides: Vec<String>,
+        /// The active generation.
+        generation: Option<u32>,
+    },
+    HostSettingsApplied {
+        req: ReqId,
+        issues: Vec<String>,
+        /// Changes to the generated files relative to the active generation
+        /// (computed before applying).
+        diff: Vec<FileDiff>,
+        applied: bool,
+        generation: Option<u32>,
+    },
+    Generations {
+        req: ReqId,
+        list: Vec<GenerationInfo>,
+    },
+}
+
+impl ServerMsg {
+    /// The request this message answers, if it's a reply.
+    pub fn reply_to(&self) -> Option<ReqId> {
+        match self {
+            ServerMsg::Sessions { req, .. }
+            | ServerMsg::Attached { req, .. }
+            | ServerMsg::Ok { req }
+            | ServerMsg::HostSettings { req, .. }
+            | ServerMsg::HostSettingsApplied { req, .. }
+            | ServerMsg::Generations { req, .. } => Some(*req),
+            ServerMsg::Error { req, .. } => *req,
+            _ => None,
+        }
+    }
 }
 
 impl ServerMsg {

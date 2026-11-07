@@ -3,7 +3,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use goatty_client::Control;
-use goatty_config::Settings;
 use goatty_proto::SessionId;
 
 #[derive(Parser)]
@@ -53,6 +52,13 @@ enum ShellCmd {
     },
     /// Stop new shells from mentioning missing tools.
     Dismiss,
+    /// List the built shell configurations (generations).
+    Generations,
+    /// Show how the current settings would change the generated files.
+    Diff,
+    /// Activate an older generation (default: the previous one) and restore
+    /// the settings it was built from.
+    Rollback { generation: Option<u32> },
 }
 
 const CLIENT: &str = concat!("goattyd-cli ", env!("CARGO_PKG_VERSION"));
@@ -65,7 +71,7 @@ fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_level)).init();
 
     match cmd {
-        Cmd::Serve => goatty_daemon::serve(&goatty_proto::socket_path(), Settings::from_env()),
+        Cmd::Serve => goatty_daemon::serve(&goatty_proto::socket_path()),
         Cmd::Proxy => goatty_daemon::proxy(),
         Cmd::List => {
             let list = Control::connect_local(CLIENT)?.list_sessions()?;
@@ -94,11 +100,15 @@ fn main() -> Result<()> {
         Cmd::Stop => Control::connect_local(CLIENT)?.shutdown(),
         Cmd::Shell(cmd) => {
             use goatty_shell::cmd;
-            let settings = Settings::from_env();
+            let host = goatty_config::load_host();
             let launcher = goatty_shell::Launcher::from_env(std::env::current_exe().ok());
+            let host_file = || goatty_config::host_file().ok_or_else(|| anyhow::anyhow!("$HOME is not set"));
             match cmd {
-                ShellCmd::Status => cmd::status(&settings.shell, &launcher),
-                ShellCmd::Install { tools, yes } => cmd::install(&settings.shell, &launcher, &tools, yes),
+                ShellCmd::Status => cmd::status(&host, &launcher),
+                ShellCmd::Install { tools, yes } => cmd::install(&host, &launcher, &tools, yes),
+                ShellCmd::Generations => cmd::generations(&launcher),
+                ShellCmd::Diff => cmd::diff(&host, &launcher),
+                ShellCmd::Rollback { generation } => cmd::rollback(&launcher, &host_file()?, generation),
                 ShellCmd::Uninstall { tools, all } => cmd::uninstall(&launcher, &tools, all),
                 ShellCmd::Dismiss => cmd::dismiss(&launcher),
             }
