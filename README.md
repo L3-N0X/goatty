@@ -2,7 +2,7 @@
 
 A batteries-included terminal for people new to Linux: a GPU-rendered terminal, a managed Zsh setup, and sessions that survive closing the window.
 
-> **Status: Stage 0 prototype.** See [`docs/goatty-project-plan.md`](docs/goatty-project-plan.md) for the plan, [`docs/stage0-findings.md`](docs/stage0-findings.md) for what the spike measured, [`docs/remote-architecture.md`](docs/remote-architecture.md) for connecting to goattyd on other machines, and [`docs/issues/`](docs/issues/README.md) for open work.
+> **Status: Stage 0 prototype.** See [`docs/goatty-project-plan.md`](docs/goatty-project-plan.md) for the plan, [`docs/stage0-findings.md`](docs/stage0-findings.md) for what the spike measured, [`docs/remote-architecture.md`](docs/remote-architecture.md) for connecting to goattyd on other machines, and [GitHub issues](https://github.com/L3-N0X/goatty/issues) for open work.
 
 ## Layout
 

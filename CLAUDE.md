@@ -17,16 +17,19 @@ Full plan: `docs/goatty-project-plan.md`. Remote design: `docs/remote-architectu
 
 - **Stage 0 done:** GPUI + rio-vt terminal, glyph-cache renderer, daemon-owned sessions with reattach.
 - **Remote R0 done:** protocol v2 (multiplexed, ack/window flow control with skip-and-resync), `goatty-client`, `--ssh`/`--via` transports via `goattyd proxy`, auto-reconnect.
-- **Next:** Stage 1 (usable native terminal: tabs/splits, IME, box drawing, …) in parallel with remote R1. See `docs/issues/`.
+- **Next:** Stage 1 (usable native terminal: tabs/splits, IME, box drawing, …) in parallel with remote R1. See the GitHub issues and milestones.
 
 Roadmap: Stage 1 terminal → Stage 2 daemon/sessions (partly done) → Stage 3 managed Zsh environment → Stage 4 profile engine + settings GUI → Stage 5 plugin system → Stage 6 more shells/OSes → Stage 7 remote/web ecosystem. Remote track R1–R3 runs alongside.
 
 ## Workflow rules
 
-- **Every open item becomes an issue.** Write an issue for every TODO, known bug, untested path, deferred decision, or follow-up you notice, even if it's out of scope for the current task. Don't leave open items only in chat, code comments, or doc prose.
-  - There is no GitHub remote yet, so issues live in `docs/issues/NNNN-slug.md` (front matter: `title`, `status: open|done|wontfix`, `labels`, `milestone`, `created`), indexed in `docs/issues/README.md`. Use the next free number and add a row to the index.
-  - When you fix one, set `status: done`, add a line on what resolved it, and update the index.
-  - Once a remote exists, migrate them with `gh issue create` and track issues on GitHub from then on.
+- Repo: https://github.com/L3-N0X/goatty (public). Default branch `main`. Do feature work on branches and open PRs. CI must be green (`.github/workflows/ci.yml`). Releases come from `v*` tags (`release.yml` builds linux x86_64 tarballs). `scripts/ci-deps.sh` installs the GPUI system libraries on Debian/Ubuntu.
+
+- **Every open item becomes a GitHub issue** in [L3-N0X/goatty](https://github.com/L3-N0X/goatty/issues). That covers every TODO, known bug, untested path, deferred decision or follow-up you notice, even if it's out of scope for the current task. Don't leave open items only in chat, code comments, or doc prose.
+  - Create them with `gh issue create --title … --body-file … --label … --milestone …`. Reference other issues as `#N`.
+  - Labels: `app client config daemon input packaging performance platform polish protocol remote rendering security shell term testing ux`, plus `bug` (create new labels only when none fit).
+  - Milestones: `Stage 1`, `Stage 3`, `Stage 4`, `R1`, `R2 (later)`, `R3 (later)`, `later` (add `Stage N` milestones as stages begin).
+  - Close issues via the commit/PR (`Fixes #N`) or `gh issue close N --comment "…"` saying what resolved it.
 - At the end of a task, list in your reply which issues you created or closed.
 - Keep this file current when the setup, goals, or conventions change.
 - Measure performance claims (benchmarks below) and record the numbers in the relevant doc. Don't claim "faster" without numbers.
@@ -40,7 +43,8 @@ crates/
   goatty-client/  Connection to a goattyd: transports (local socket, ssh, any stdio command), reader/writer/heartbeat threads, reconnect. No UI deps
   goatty-daemon/  goattyd: owns PTYs + authoritative VT per session; `serve`, `proxy`, `list`, `kill`, `send`, `stop`
   goatty-app/     GPUI desktop client (bin `goatty`): custom grid Element, glyph cache, input, selection
-docs/             plan, findings, remote architecture, issues/
+docs/             plan, findings, remote architecture
+.github/          CI (fmt, clippy -D warnings, tests, bench smoke), release on v* tags, dependabot, issue/PR templates
 scripts/          smoke.sh (visual), bench.sh/perf.sh (GUI throughput)
 ```
 
@@ -55,7 +59,8 @@ cargo build --release --workspace
 ./target/release/goattyd list | stop
 
 cargo test --workspace                  # unit + daemon e2e (reconnect, multiplex, flow control, proxy reconnect)
-cargo clippy --workspace --all-targets
+cargo fmt --all                          # rustfmt.toml: max_width 140; CI checks it
+cargo clippy --workspace --all-targets -- -D warnings   # CI denies warnings
 cargo run --release -p goatty-term --example vtbench      # VT parse throughput
 cargo run --release -p goatty-daemon --example netbench   # echo latency + flood; args: proxy | slow 2m | ssh HOST
 FLOOD=big.txt scripts/bench.sh goatty ./target/release/goatty --local
