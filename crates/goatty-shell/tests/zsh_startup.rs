@@ -199,9 +199,11 @@ fn default_startup_sources_user_env_not_rc() {
 
     // goatty-setup asks for exactly the missing default tools (not fzf).
     let setup = trace.iter().find(|l| l.starts_with("goattyd ")).expect("goatty-setup ran goattyd");
+    // Alphabetical, like `goatty-status`. autosuggestions is missing on
+    // hosts without the distro plugin (CI).
     let mut want = vec!["atuin"];
     if state("autosuggestions") == Some(State::Missing) {
-        want.insert(0, "autosuggestions");
+        want.push("autosuggestions");
     }
     assert_eq!(setup, &format!("goattyd shell install -- {}", want.join(" ")));
 }
