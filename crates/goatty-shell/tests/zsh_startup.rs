@@ -23,6 +23,38 @@ fn zsh() -> Option<String> {
     found
 }
 
+const BASIC_UTILS: &[&str] = &[
+    "awk",
+    "basename",
+    "cat",
+    "chmod",
+    "cp",
+    "cut",
+    "date",
+    "dircolors",
+    "dirname",
+    "env",
+    "getent",
+    "grep",
+    "head",
+    "id",
+    "ln",
+    "ls",
+    "mkdir",
+    "mktemp",
+    "mv",
+    "rm",
+    "sed",
+    "sort",
+    "stat",
+    "tail",
+    "touch",
+    "tput",
+    "tr",
+    "uname",
+    "wc",
+];
+
 struct Sandbox {
     _tmp: tempfile::TempDir,
     home: PathBuf,
@@ -35,10 +67,17 @@ impl Sandbox {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         std::fs::create_dir_all(home.join("userbin")).unwrap();
-        // PATH holds only zsh, so the host's own starship/atuin/fzf can't
-        // leak into the results.
-        std::fs::create_dir_all(home.join("sysbin")).unwrap();
-        std::os::unix::fs::symlink(&zsh, home.join("sysbin/zsh")).unwrap();
+        // PATH holds zsh and basic utilities (compinit needs mv, grep, ...)
+        // but not the host's starship/atuin/fzf, which would change the
+        // results. Some distros' /etc/profile still appends /usr/bin.
+        let sysbin = home.join("sysbin");
+        std::fs::create_dir_all(&sysbin).unwrap();
+        std::os::unix::fs::symlink(&zsh, sysbin.join("zsh")).unwrap();
+        for tool in BASIC_UTILS {
+            if let Some(p) = ["/usr/bin", "/bin"].iter().map(|d| Path::new(d).join(tool)).find(|p| p.exists()) {
+                std::os::unix::fs::symlink(p, sysbin.join(tool)).unwrap();
+            }
+        }
         let dirs = Dirs::under(&tmp.path().join("xdg"));
         // A fake starship on a PATH entry that only the user's .zprofile adds.
         exe(&home.join("userbin/starship"), "#!/bin/sh\n[ \"$1\" = init ] && echo 'PROMPT=\"fake-starship> \"'\n");
