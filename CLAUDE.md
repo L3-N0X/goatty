@@ -11,12 +11,13 @@
 - **Plugins for special tools:** declarative manifests (tools, shell integrations, prompt modules, schema-driven settings UI) for things like Docker, Git, Python, Node, fzf, zoxide. goatty installs them in user space and never takes over the host (no silent dotfile/PATH/login-shell changes, no sudo without asking).
 - **Remote-capable from the start:** the GUI is always a client of a `goattyd`, local or on another host over SSH/Tailscale. Rendering stays local.
 
-Full plan: `docs/goatty-project-plan.md`. Remote design: `docs/remote-architecture.md`. Spike results: `docs/stage0-findings.md`. Original remote idea: `remote-goattyd-plan.md`.
+Full plan: `docs/goatty-project-plan.md`. Code structure and where new work goes: `docs/architecture.md`. Remote design: `docs/remote-architecture.md`. Spike results: `docs/stage0-findings.md`. Original remote idea: `docs/archive/remote-goattyd-plan.md`.
 
 ## Current status (2026-11-07)
 
 - **Stage 0 done:** GPUI + rio-vt terminal, glyph-cache renderer, daemon-owned sessions with reattach.
 - **Remote R0 done:** protocol v2 (multiplexed, ack/window flow control with skip-and-resync), `goatty-client`, `--ssh`/`--via` transports via `goattyd proxy`, auto-reconnect.
+- **Restructured for Stage 1:** daemon split into a library, `goatty-config` crate, app built around a `Workspace` root view with GPUI actions/keybindings, clap CLIs.
 - **Next:** Stage 1 (usable native terminal: tabs/splits, IME, box drawing, …) in parallel with remote R1. See the GitHub issues and milestones.
 
 Roadmap: Stage 1 terminal → Stage 2 daemon/sessions (partly done) → Stage 3 managed Zsh environment → Stage 4 profile engine + settings GUI → Stage 5 plugin system → Stage 6 more shells/OSes → Stage 7 remote/web ecosystem. Remote track R1–R3 runs alongside.
@@ -38,12 +39,13 @@ Roadmap: Stage 1 terminal → Stage 2 daemon/sessions (partly done) → Stage 3 
 
 ```
 crates/
-  goatty-term/    terminal engine: the ONLY crate that touches rio-vt. Frame snapshots, palette, input encoding, PTY, reattach/resync snapshots
-  goatty-proto/   wire protocol v2 (postcard, length-prefixed, transport-independent)
-  goatty-client/  Connection to a goattyd: transports (local socket, ssh, any stdio command), reader/writer/heartbeat threads, reconnect. No UI deps
-  goatty-daemon/  goattyd: owns PTYs + authoritative VT per session; `serve`, `proxy`, `list`, `kill`, `send`, `stop`
-  goatty-app/     GPUI desktop client (bin `goatty`): custom grid Element, glyph cache, input, selection
-docs/             plan, findings, remote architecture
+  goatty-term/    terminal engine: the ONLY crate that touches rio-vt. Terminal, Frame snapshots, palette, input encoding, PTY, reattach/resync snapshots
+  goatty-proto/   wire protocol v2: msg.rs (types), codec.rs (framing), paths.rs (socket path)
+  goatty-client/  Connection (reconnecting, multiplexed; reader/writer/heartbeat threads), Control (blocking CLI client), transports. No UI deps
+  goatty-config/  Settings: typed defaults + GOATTY_* env overrides. Stage 4 profiles plug in here
+  goatty-daemon/  lib (server, client, session, proxy) + bin goattyd: `serve`, `proxy`, `list`, `kill`, `send`, `stop`
+  goatty-app/     GPUI client (bin `goatty`): cli, app (AppSettings global), actions (keymap), workspace (root view), session, terminal/{view,element,glyphs,keys,stats}
+docs/             plan, architecture, findings, remote architecture, archive/
 .github/          CI (fmt, clippy -D warnings, tests, bench smoke), release on v* tags, dependabot, issue/PR templates
 scripts/          smoke.sh (visual), bench.sh/perf.sh (GUI throughput)
 ```
@@ -81,5 +83,9 @@ Env: `GOATTY_SOCKET`, `GOATTY_SHELL`, `GOATTY_FONT`, `GOATTY_FONT_SIZE`, `GOATTY
 - **Never block the UI thread on I/O:** writes go through the client's writer thread; the UI is woken through the coalescing `Waker` (one notify per frame).
 - **Threads, not async** (until a QUIC transport needs tokio). Encode a broadcast frame once and share it via `Arc<[u8]>`.
 - Don't use `std::io::copy` between pipes and Unix sockets: on Linux it uses `splice()`, which stalled the proxy. Use plain read/write loops, and write binary data to stdout through the raw fd.
+- **Settings go through `goatty-config`.** Don't read `GOATTY_*` env vars elsewhere (only `GOATTY_SOCKET`, in `goatty_proto::socket_path`). The app reads them from the `AppSettings` GPUI global.
+- **Shortcuts are GPUI actions** (`goatty-app/src/actions.rs`, `Terminal` key context), never `match` arms in `on_key`. Bound actions run before the raw key handler; unbound keys go to the shell via `terminal/keys.rs`.
+- **Panes don't touch the window.** `TerminalView` emits `TerminalEvent`s; `Workspace` owns titles, closing, and (later) tabs/splits.
+- Workspace lints live in the root `Cargo.toml` (`[workspace.lints]`); every crate has `[lints] workspace = true`. Every `unsafe` block needs a `// SAFETY:` comment.
 - Dependencies: rio-vt pinned exactly; gpui from Zed git at a pinned rev (bump deliberately: change `rev`, then `cargo update -p gpui`). Edition 2024, `opt-level = 1` in dev with deps at 3.
 - Safety first: no silent edits to dotfiles, global PATH or the login shell; OSC 52 clipboard reads are denied; the daemon socket is 0600 in a 0700 dir and never exposed on the network.

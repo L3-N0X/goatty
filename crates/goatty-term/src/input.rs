@@ -45,7 +45,7 @@ pub enum Key<'a> {
 }
 
 /// Encode a key press. `None` means "not something the terminal handles".
-pub fn encode_key(key: &Key, mods: Mods, mode: TermMode) -> Option<Vec<u8>> {
+pub fn encode_key(key: &Key<'_>, mods: Mods, mode: TermMode) -> Option<Vec<u8>> {
     let app_cursor = mode.contains(TermMode::APP_CURSOR);
     let esc = |mut v: Vec<u8>| {
         if mods.alt {

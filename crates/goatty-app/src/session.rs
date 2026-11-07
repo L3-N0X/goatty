@@ -15,23 +15,22 @@ use goatty_term::{Palette, TermSize, Terminal, UiEvent};
 use parking_lot::Mutex;
 
 /// Coalescing wake-up: many output chunks → one UI notification per frame.
-pub struct Waker {
+struct Waker {
     pending: AtomicBool,
     tx: flume::Sender<()>,
 }
 
 impl Waker {
-    pub fn new() -> (Arc<Self>, flume::Receiver<()>) {
+    fn new() -> (Arc<Self>, flume::Receiver<()>) {
         let (tx, rx) = flume::unbounded();
         (Arc::new(Self { pending: AtomicBool::new(false), tx }), rx)
     }
-    pub fn wake(&self) {
+    fn wake(&self) {
         if !self.pending.swap(true, Ordering::AcqRel) {
             let _ = self.tx.send(());
         }
     }
-    /// Called by the UI right before it renders.
-    pub fn clear(&self) {
+    fn clear(&self) {
         self.pending.store(false, Ordering::Release);
     }
 }
@@ -59,6 +58,8 @@ enum Backend {
 
 pub struct Session {
     pub terminal: Terminal,
+    /// Fires (coalesced) when the terminal changed or the link state did.
+    pub wake_rx: flume::Receiver<()>,
     backend: Backend,
     pub ui_events: flume::Receiver<UiEvent>,
     pub exited: AtomicBool,
@@ -105,9 +106,11 @@ impl PaneSink for Sink {
 }
 
 impl Session {
-    fn new(terminal: Terminal, ui: flume::Receiver<UiEvent>, backend: Backend, host_label: Option<String>, waker: Arc<Waker>) -> Self {
+    fn new(terminal: Terminal, ui: flume::Receiver<UiEvent>, backend: Backend, host_label: Option<String>) -> Self {
+        let (waker, wake_rx) = Waker::new();
         Self {
             terminal,
+            wake_rx,
             backend,
             ui_events: ui,
             exited: AtomicBool::new(false),
@@ -118,10 +121,12 @@ impl Session {
         }
     }
 
-    pub fn local(size: TermSize, waker: Arc<Waker>) -> Result<Arc<Self>> {
-        let (pty, reader) = Pty::spawn(&ShellCommand::default_shell(), size)?;
+    /// A shell owned by this process (`--local`): no daemon, so it ends
+    /// with the window. `shell`: see [`ShellCommand::login_shell`].
+    pub fn local(size: TermSize, shell: Option<&str>) -> Result<Arc<Self>> {
+        let (pty, reader) = Pty::spawn(&ShellCommand::login_shell(shell), size)?;
         let (terminal, chans) = Terminal::new(size, true, Arc::new(Palette::default()));
-        let s = Arc::new(Self::new(terminal, chans.ui, Backend::Local(Mutex::new(pty)), None, waker));
+        let s = Arc::new(Self::new(terminal, chans.ui, Backend::Local(Mutex::new(pty)), None));
         let weak = Arc::downgrade(&s);
         std::thread::Builder::new().name("pty-replies".into()).spawn(move || {
             while let Ok(bytes) = chans.replies.recv() {
@@ -146,7 +151,7 @@ impl Session {
     }
 
     /// Attach to (or create) a session on the daemon behind `conn`.
-    pub fn daemon(conn: Arc<Connection>, size: TermSize, mode: AttachMode, waker: Arc<Waker>) -> Result<Arc<Self>> {
+    pub fn daemon(conn: Arc<Connection>, size: TermSize, mode: AttachMode) -> Result<Arc<Self>> {
         let target = match mode {
             AttachMode::New => None,
             AttachMode::Id(id) => Some(id),
@@ -158,7 +163,7 @@ impl Session {
         });
         // Client-side terminal never answers queries; the daemon's does.
         let (terminal, chans) = Terminal::new(size, false, Arc::new(Palette::default()));
-        let s = Arc::new(Self::new(terminal, chans.ui, Backend::Daemon { conn: conn.clone(), id: AtomicU64::new(0) }, host_label, waker));
+        let s = Arc::new(Self::new(terminal, chans.ui, Backend::Daemon { conn: conn.clone(), id: AtomicU64::new(0) }, host_label));
         let sink = Arc::new(Sink(Arc::downgrade(&s)));
         let id = match target {
             Some(id) => {
@@ -177,6 +182,11 @@ impl Session {
             slot.store(id, Ordering::Relaxed);
         }
         Ok(s)
+    }
+
+    /// Re-arm the wake-up. Call when handling a wake, before reading state.
+    pub fn clear_wake(&self) {
+        self.waker.clear();
     }
 
     fn ingest(&self, bytes: &[u8]) {

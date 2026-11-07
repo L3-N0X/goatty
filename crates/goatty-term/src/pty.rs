@@ -18,15 +18,12 @@ pub struct ShellCommand {
 }
 
 impl ShellCommand {
-    /// `$GOATTY_SHELL`, else zsh if installed, else `$SHELL`, else /bin/sh.
-    /// Launched as a login shell, which is what users expect from a new
-    /// terminal window on Linux desktops.
-    pub fn default_shell() -> Self {
-        let program = std::env::var("GOATTY_SHELL")
-            .ok()
-            .or_else(|| which("zsh"))
-            .or_else(|| std::env::var("SHELL").ok())
-            .unwrap_or_else(|| "/bin/sh".into());
+    /// A login shell: `program` if given (goatty's shell setting), else zsh
+    /// if installed, else `$SHELL`, else /bin/sh. Login shells are what users
+    /// expect from a new terminal window on Linux desktops.
+    pub fn login_shell(program: Option<&str>) -> Self {
+        let program =
+            program.map(str::to_owned).or_else(|| which("zsh")).or_else(|| std::env::var("SHELL").ok()).unwrap_or_else(|| "/bin/sh".into());
         Self { program, args: vec!["-l".into()], cwd: std::env::var_os("HOME").map(PathBuf::from), env: vec![] }
     }
 }

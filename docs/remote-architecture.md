@@ -4,7 +4,7 @@
 
 **Goal:** the GUI connects to *any* goattyd: on this machine, on a home server over Tailscale, on a cloud box over SSH, or in a container. Rendering stays local on the GPU. Sessions live on the host and survive the client. Local performance must not regress, and remote must stay usable on poor links.
 
-This turns the ideas in [`../remote-goattyd-plan.md`](../remote-goattyd-plan.md) into concrete decisions and makes them consistent with what Stage 0 measured ([`stage0-findings.md`](stage0-findings.md)).
+This turns the ideas in [`archive/remote-goattyd-plan.md`](archive/remote-goattyd-plan.md) into concrete decisions and makes them consistent with what Stage 0 measured ([`stage0-findings.md`](stage0-findings.md)).
 
 ---
 

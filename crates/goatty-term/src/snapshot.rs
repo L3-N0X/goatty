@@ -14,7 +14,8 @@ use rio_vt::crosswords::formatter::write_sgr;
 use rio_vt::crosswords::pos::{Column, Line};
 use rio_vt::crosswords::style::Style;
 
-use crate::{Term, TermMode, Terminal};
+use crate::terminal::Term;
+use crate::{TermMode, Terminal};
 
 /// Upper bound on replayed history lines; keeps attach latency bounded.
 pub const MAX_REPLAY_HISTORY: usize = 5_000;
@@ -176,8 +177,8 @@ mod tests {
         let (b, _cb) = Terminal::new(size, false, Arc::new(Palette::default()));
         b.feed(&snap);
         assert_eq!(text_of(&a), text_of(&b));
-        let ha = a.with_term(|t| t.history_size());
-        let hb = b.with_term(|t| t.history_size());
+        let ha = a.history_size();
+        let hb = b.history_size();
         assert_eq!(ha, hb, "history should be replayed");
     }
 
@@ -206,7 +207,7 @@ mod tests {
         let start: Vec<u8> = (0..10).flat_map(|i| format!("early {i}\r\n").into_bytes()).collect();
         a.feed(&start);
         b.feed(&start);
-        let hb_before = b.with_term(|t| t.history_size());
+        let hb_before = b.history_size();
         // ...then the client misses a burst that also enters the alt screen
         // and turns on mouse reporting and app cursor keys.
         a.feed(b"lots of skipped output\r\n\x1b[?1049h\x1b[?1h\x1b[?1000h\x1b[?1006h\x1b[3;3Hin-app");
@@ -221,6 +222,6 @@ mod tests {
         b.feed(&a.resync_snapshot());
         assert_eq!(text_of(&a), text_of(&b));
         assert_eq!((a.mode() & relevant).bits(), (b.mode() & relevant).bits());
-        assert!(b.with_term(|t| t.history_size()) >= hb_before, "client history kept");
+        assert!(b.history_size() >= hb_before, "client history kept");
     }
 }
