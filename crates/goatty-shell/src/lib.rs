@@ -7,10 +7,12 @@
 //! request); the user's `ZDOTDIR` is restored once startup is done.
 //!
 //! * [`launch`]: which shell a session runs, and its environment,
-//! * [`zsh`]: the generated ZDOTDIR,
+//! * [`zsh`]: the startup files, rendered from the host settings,
+//! * [`generation`]: build, validate, activate and roll back configurations,
 //! * [`tools`]: pinned tool versions + checksums, and where tools are found,
 //! * [`install`]: user-space installs of those tools (no sudo),
 //! * [`doctor`]: asks a real managed shell what it loaded,
+//! * [`service`]: host settings operations (goattyd's API, `goatty --local`),
 //! * [`cmd`]: the `goattyd shell ...` commands.
 //!
 //! goatty never writes outside its own directories ([`dirs`]): no edits to
@@ -19,10 +21,13 @@
 pub mod cmd;
 pub mod dirs;
 pub mod doctor;
+pub mod generation;
 pub mod install;
 pub mod launch;
+pub mod service;
 pub mod tools;
 pub mod zsh;
 
 pub use dirs::Dirs;
 pub use launch::{Launch, Launcher};
+pub use service::HostService;

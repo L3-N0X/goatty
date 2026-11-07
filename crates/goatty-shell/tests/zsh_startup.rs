@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
-use goatty_config::{ShellSettings, ZshSettings};
+use goatty_config::{Effective, HostSettings, ZshSettings};
 use goatty_shell::{Dirs, Launch, Launcher};
 use goatty_term::TermSize;
 use goatty_term::pty::{Pty, ShellCommand};
@@ -94,8 +94,10 @@ impl Sandbox {
     }
 
     fn launch(&self, zsh: ZshSettings, orig_zdotdir: Option<&Path>) -> Launch {
-        let settings = ShellSettings { program: Some(self.zsh.clone()), managed: true, zsh };
-        let mut l = Launcher::new(Some(self.dirs.clone()), Some(self.home.join("goattyd"))).launch(&settings);
+        let mut settings = HostSettings::default();
+        settings.shell.program = Some(self.zsh.clone());
+        settings.shell.zsh = zsh;
+        let mut l = Launcher::new(Some(self.dirs.clone()), Some(self.home.join("goattyd"))).launch(&Effective::plain(settings));
         assert!(l.managed);
         // Don't inherit the test runner's ZDOTDIR.
         l.env.retain(|(k, _)| k != "GOATTY_ORIG_ZDOTDIR");

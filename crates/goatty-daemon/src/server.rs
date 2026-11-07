@@ -10,9 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use goatty_config::Settings;
 use goatty_proto::{HostInfo, SessionId, SessionInfo, WinSize};
-use goatty_shell::Launcher;
+use goatty_shell::HostService;
 use goatty_term::pty::{Pty, ShellCommand};
 use goatty_term::{Palette, Terminal};
 use parking_lot::Mutex;
@@ -21,9 +20,10 @@ use crate::session::{Session, pump_output, to_size};
 
 /// The session registry shared by every connection.
 pub(crate) struct Daemon {
-    pub(crate) settings: Settings,
-    /// Picks each session's shell and writes the managed zsh config.
-    launcher: Launcher,
+    /// Host settings, generations, and each session's shell. The settings
+    /// file is re-read for every new session, so edits apply without
+    /// restarting the daemon.
+    pub(crate) host: HostService,
     /// Removed on shutdown.
     pub(crate) socket: PathBuf,
     pub(crate) sessions: Mutex<HashMap<SessionId, Arc<Session>>>,
@@ -32,10 +32,15 @@ pub(crate) struct Daemon {
 }
 
 impl Daemon {
-    fn new(settings: Settings, socket: PathBuf) -> Self {
-        // `goatty-setup` in a managed shell runs this goattyd's `shell install`.
-        let launcher = Launcher::from_env(std::env::current_exe().ok());
-        Self { settings, launcher, socket, sessions: Mutex::default(), next_session: AtomicU64::new(0), next_conn: AtomicU64::new(0) }
+    fn new(socket: PathBuf) -> Self {
+        Self {
+            // `goatty-setup` in a managed shell runs this goattyd's `shell install`.
+            host: HostService::from_env(std::env::current_exe().ok()),
+            socket,
+            sessions: Mutex::default(),
+            next_session: AtomicU64::new(0),
+            next_conn: AtomicU64::new(0),
+        }
     }
 
     pub(crate) fn get(&self, id: SessionId) -> Option<Arc<Session>> {
@@ -44,7 +49,11 @@ impl Daemon {
 
     pub(crate) fn create(self: &Arc<Self>, ws: WinSize, cwd: Option<String>) -> Result<Arc<Session>> {
         let size = to_size(ws);
-        let launch = self.launcher.launch(&self.settings.shell);
+        let host = self.host.settings();
+        for issue in &host.file.issues {
+            log::warn!("host settings: {issue}");
+        }
+        let launch = self.host.launcher.launch(&host);
         let mut cmd = ShellCommand::new(launch.program, launch.args, launch.env);
         if let Some(cwd) = cwd.filter(|c| std::path::Path::new(c).is_dir()) {
             cmd.cwd = Some(cwd.into());
@@ -163,12 +172,12 @@ fn accept_loop(daemon: Arc<Daemon>, listener: UnixListener) {
 
 /// Run the daemon on the socket at `path` until `goattyd stop`. Never returns
 /// `Ok`; startup errors (socket in use, permissions) are returned.
-pub fn serve(path: &Path, settings: Settings) -> Result<()> {
+pub fn serve(path: &Path) -> Result<()> {
     let path = path.to_path_buf();
     let (listener, mut ino) = bind(&path)?;
     log::info!("goattyd {} listening on {} (pid {})", env!("CARGO_PKG_VERSION"), path.display(), std::process::id());
 
-    let daemon = Arc::new(Daemon::new(settings, path.clone()));
+    let daemon = Arc::new(Daemon::new(path.clone()));
     {
         let d = daemon.clone();
         std::thread::Builder::new().name("accept".into()).spawn(move || accept_loop(d, listener))?;

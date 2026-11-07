@@ -29,6 +29,11 @@ env_logger = "0.11"
 flume = "0.11"
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
+serde_json = "1"
+# Settings documents: report the path of an invalid value.
+serde_path_to_error = "0.1"
+# Settings preview: diffs of generated shell config.
+similar = "2"
 # Managed tool installs (goatty-shell): verify + unpack release archives.
 sha2 = "0.10"
 flate2 = "1"

@@ -72,6 +72,30 @@ impl Default for Palette {
     }
 }
 
+impl Palette {
+    /// From 21 `0xRRGGBB` values: the 16 ANSI colors, then foreground,
+    /// background, cursor, selection foreground, selection background (the
+    /// layout of the `SetPalette` wire message and `goatty_config::ThemeColors`).
+    pub fn from_rgb_list(v: &[u32], bold_is_bright: bool) -> Option<Self> {
+        if v.len() != 21 {
+            return None;
+        }
+        let mut ansi = [Rgb::default(); 16];
+        for (slot, &c) in ansi.iter_mut().zip(v) {
+            *slot = Rgb::hex(c);
+        }
+        Some(Self {
+            ansi,
+            foreground: Rgb::hex(v[16]),
+            background: Rgb::hex(v[17]),
+            cursor: Rgb::hex(v[18]),
+            selection_fg: Rgb::hex(v[19]),
+            selection_bg: Rgb::hex(v[20]),
+            bold_is_bright,
+        })
+    }
+}
+
 fn from_array(a: [f32; 4]) -> Rgb {
     Rgb {
         r: (a[0].clamp(0.0, 1.0) * 255.0).round() as u8,

@@ -1,272 +1,125 @@
-//! goatty settings.
+//! goatty settings: the profile model (Stage 4).
 //!
-//! One typed [`Settings`] value that the app and the daemon read instead of
-//! poking at environment variables all over the code. Today it comes from
-//! built-in defaults plus `GOATTY_*` environment overrides. The Stage 4
-//! profile engine (versioned JSON profiles, settings GUI) plugs in here:
-//! it produces a `Settings`, and the rest of the code doesn't change.
+//! Two versioned JSON documents, split by where they apply (#14):
 //!
-//! | Variable           | Setting                                  |
-//! |--------------------|------------------------------------------|
-//! | `GOATTY_FONT`      | [`FontSettings::family`]                 |
-//! | `GOATTY_FONT_SIZE` | [`FontSettings::size`]                   |
-//! | `GOATTY_RENDER`    | [`TerminalSettings::renderer`] (`shaped` or `glyphs`) |
-//! | `GOATTY_SHELL`     | [`ShellSettings::program`]               |
-//! | `GOATTY_SHELL_MANAGED` | [`ShellSettings::managed`] (`0`/`1`) |
-//! | `GOATTY_ZSH_USER_RC` | [`ZshSettings::user_rc`] (`0`/`1`)     |
-//! | `GOATTY_STATS`     | [`DebugSettings::stats`] (any value)     |
+//! * [`ClientSettings`] in `settings.json` on the machine running the
+//!   window: font, theme, cursor, keybindings, workspace behavior.
+//! * [`HostSettings`] in `host.json` next to each goattyd: shell, prompt,
+//!   history. The daemon owns it; the GUI edits a remote host's copy
+//!   through the protocol.
+//!
+//! Both live in `$XDG_CONFIG_HOME/goatty/` ([`config_dir`]). [`store`]
+//! loads them leniently (bad values fall back with an [`Issue`]), migrates
+//! old versions, and saves only non-default values with backups. `GOATTY_*`
+//! environment variables override the files for one run without being
+//! saved:
+//!
+//! | Variable               | Setting                                   |
+//! |------------------------|-------------------------------------------|
+//! | `GOATTY_FONT`          | [`FontSettings::family`]                  |
+//! | `GOATTY_FONT_SIZE`     | [`FontSettings::size`]                    |
+//! | `GOATTY_RENDER`        | [`TerminalSettings::renderer`] (`shaped`/`glyphs`) |
+//! | `GOATTY_THEME`         | [`ThemeSettings::name`]                   |
+//! | `GOATTY_STATS`         | [`DebugSettings::stats`] (any value)      |
+//! | `GOATTY_SHELL`         | [`ShellSettings::program`]                |
+//! | `GOATTY_SHELL_MANAGED` | [`ShellSettings::managed`] (`0`/`1`)      |
+//! | `GOATTY_ZSH_USER_RC`   | [`ZshSettings::user_rc`] (`0`/`1`)        |
 //!
 //! `GOATTY_SOCKET` is not a setting: it says where a daemon lives and is
 //! handled by `goatty_proto::socket_path`.
 
-use serde::{Deserialize, Serialize};
+mod client;
+mod host;
+pub mod keys;
+pub mod profile;
+pub mod store;
+mod theme;
 
-/// Bumped when a stored settings document needs migrating.
-pub const SETTINGS_VERSION: u32 = 1;
+use std::path::PathBuf;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Settings {
-    pub version: u32,
-    pub font: FontSettings,
-    pub terminal: TerminalSettings,
-    pub shell: ShellSettings,
-    pub debug: DebugSettings,
+pub use client::{ClientSettings, CursorShape, DebugSettings, FontSettings, OnLaunch, Renderer, TerminalSettings, WorkspaceSettings};
+pub use host::{HistorySettings, HostSettings, PromptSettings, PromptStyle, ShellSettings, ZshSettings};
+pub use store::{Document, FileStamp, Issue, Loaded};
+pub use theme::{Color, DEFAULT_THEME, THEMES, Theme, ThemeColors, ThemeOverrides, ThemeSettings, find_theme};
+
+/// `$XDG_CONFIG_HOME/goatty` (default `~/.config/goatty`). `None` without `$HOME`.
+pub fn config_dir() -> Option<PathBuf> {
+    config_dir_from(|k| std::env::var(k).ok())
 }
 
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            version: SETTINGS_VERSION,
-            font: FontSettings::default(),
-            terminal: TerminalSettings::default(),
-            shell: ShellSettings::default(),
-            debug: DebugSettings::default(),
-        }
+pub fn config_dir_from(var: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    let base = var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| var("HOME").filter(|h| !h.is_empty()).map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("goatty"))
+}
+
+/// The client settings file.
+pub fn client_file() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("settings.json"))
+}
+
+/// This host's settings file (what a goattyd here uses).
+pub fn host_file() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("host.json"))
+}
+
+/// A document loaded from its file, plus the environment overrides on top.
+#[derive(Debug, Clone)]
+pub struct Effective<T> {
+    /// As stored in the file: what the settings window edits and saves.
+    pub file: Loaded<T>,
+    /// With `GOATTY_*` overrides applied: what goatty uses.
+    pub value: T,
+    /// The variables that override something right now.
+    pub env_overrides: Vec<&'static str>,
+}
+
+impl<T: Clone> Effective<T> {
+    /// Settings that didn't come from a file or the environment (tests,
+    /// imports): file and effective value are the same.
+    pub fn plain(value: T) -> Self {
+        Self { file: Loaded { value: value.clone(), issues: Vec::new(), unknown: Vec::new() }, value, env_overrides: Vec::new() }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct FontSettings {
-    /// Explicit family. `None`: the first installed entry of `fallbacks`.
-    pub family: Option<String>,
-    /// Preferred monospace families, first installed one wins.
-    pub fallbacks: Vec<String>,
-    /// Size in logical pixels.
-    pub size: f32,
-    /// Line height as a multiple of the font size.
-    pub line_height: f32,
+/// Client settings from [`client_file`] plus the environment.
+pub fn load_client() -> Effective<ClientSettings> {
+    let file: Loaded<ClientSettings> = client_file().map(|p| store::load(&p)).unwrap_or_default();
+    let mut value = file.value.clone();
+    value.apply_env(|k| std::env::var(k).ok());
+    Effective { file, value, env_overrides: ClientSettings::env_overrides(|k| std::env::var(k).ok()) }
 }
 
-impl Default for FontSettings {
-    fn default() -> Self {
-        let fallbacks = [
-            "JetBrainsMono Nerd Font",
-            "JetBrains Mono",
-            "FiraCode Nerd Font Mono",
-            "FiraCode Nerd Font",
-            "CommitMono Nerd Font Mono",
-            "Fira Code",
-            "DejaVu Sans Mono",
-            "Adwaita Mono",
-            "Noto Sans Mono",
-            "Liberation Mono",
-        ];
-        Self { family: None, fallbacks: fallbacks.map(String::from).to_vec(), size: 14.0, line_height: 1.25 }
-    }
+/// Host settings from [`host_file`] plus the environment.
+pub fn load_host() -> Effective<HostSettings> {
+    let file: Loaded<HostSettings> = host_file().map(|p| store::load(&p)).unwrap_or_default();
+    with_host_env(file)
 }
 
-impl FontSettings {
-    pub const MIN_SIZE: f32 = 6.0;
-    pub const MAX_SIZE: f32 = 48.0;
-
-    /// The family to use, given the names of installed fonts.
-    pub fn resolve_family(&self, installed: &[String]) -> String {
-        self.family
-            .clone()
-            .or_else(|| self.fallbacks.iter().find(|f| installed.iter().any(|i| i == *f)).cloned())
-            .unwrap_or_else(|| "monospace".into())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum Renderer {
-    /// Per-cell glyph cache: fastest, no ligatures.
-    #[default]
-    Glyphs,
-    /// Per-segment line shaping: ligatures, slower when many lines change.
-    Shaped,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct TerminalSettings {
-    pub renderer: Renderer,
-    /// Padding around the grid in logical pixels.
-    pub padding: f32,
-}
-
-impl Default for TerminalSettings {
-    fn default() -> Self {
-        Self { renderer: Renderer::Glyphs, padding: 6.0 }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ShellSettings {
-    /// Shell program. `None`: zsh if installed, else `$SHELL`, else /bin/sh.
-    pub program: Option<String>,
-    /// Run zsh with goatty's managed configuration (plugins, prompt,
-    /// history, shell integration; see `goatty-shell`). `false`: plain zsh
-    /// with only the user's own dotfiles. Other shells are always launched
-    /// as they are.
-    pub managed: bool,
-    pub zsh: ZshSettings,
-}
-
-impl Default for ShellSettings {
-    fn default() -> Self {
-        Self { program: None, managed: true, zsh: ZshSettings::default() }
-    }
-}
-
-/// What goatty's managed zsh loads. Each feature is skipped quietly when
-/// its tool isn't installed (`goattyd shell status` shows what's missing).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ZshSettings {
-    /// Source the user's `.zshenv` and `.zprofile` (environment: PATH,
-    /// EDITOR, ...). Zsh reads these for every terminal, so this is on.
-    pub user_env: bool,
-    /// Also source the user's `.zshrc`. Off: most `.zshrc` files load their
-    /// own prompt and plugins, which would fight goatty's.
-    pub user_rc: bool,
-    pub autosuggestions: bool,
-    pub syntax_highlighting: bool,
-    /// Starship prompt. Off, or when missing: a small built-in prompt.
-    pub starship: bool,
-    /// Atuin history search on Ctrl+R.
-    pub atuin: bool,
-    /// fzf key bindings (Ctrl+T, Alt+C) when fzf is installed.
-    pub fzf: bool,
-    /// OSC 133 prompt marks and OSC 7 working directory reports.
-    pub integration: bool,
-}
-
-impl Default for ZshSettings {
-    fn default() -> Self {
-        Self {
-            user_env: true,
-            user_rc: false,
-            autosuggestions: true,
-            syntax_highlighting: true,
-            starship: true,
-            atuin: true,
-            fzf: true,
-            integration: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct DebugSettings {
-    /// Print per-second frame statistics to stderr.
-    pub stats: bool,
-}
-
-impl Settings {
-    /// Defaults plus `GOATTY_*` overrides from the process environment.
-    pub fn from_env() -> Self {
-        let mut s = Self::default();
-        s.apply_env(|k| std::env::var(k).ok());
-        s
-    }
-
-    /// Apply environment overrides read through `var` (injectable for tests).
-    /// Unparsable values are ignored (the current value stays), so a typo
-    /// never prevents the terminal from starting.
-    pub fn apply_env(&mut self, var: impl Fn(&str) -> Option<String>) {
-        if let Some(f) = var("GOATTY_FONT").filter(|f| !f.is_empty()) {
-            self.font.family = Some(f);
-        }
-        if let Some(size) = var("GOATTY_FONT_SIZE").and_then(|s| s.parse::<f32>().ok()) {
-            self.font.size = size.clamp(FontSettings::MIN_SIZE, FontSettings::MAX_SIZE);
-        }
-        match var("GOATTY_RENDER").as_deref() {
-            Some("shaped") => self.terminal.renderer = Renderer::Shaped,
-            Some("glyphs") => self.terminal.renderer = Renderer::Glyphs,
-            _ => {}
-        }
-        if let Some(sh) = var("GOATTY_SHELL").filter(|s| !s.is_empty()) {
-            self.shell.program = Some(sh);
-        }
-        if let Some(b) = var("GOATTY_SHELL_MANAGED").as_deref().and_then(parse_bool) {
-            self.shell.managed = b;
-        }
-        if let Some(b) = var("GOATTY_ZSH_USER_RC").as_deref().and_then(parse_bool) {
-            self.shell.zsh.user_rc = b;
-        }
-        if var("GOATTY_STATS").is_some() {
-            self.debug.stats = true;
-        }
-    }
-}
-
-fn parse_bool(s: &str) -> Option<bool> {
-    match s.to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
-    }
+/// Apply the process environment to loaded host settings.
+pub fn with_host_env(file: Loaded<HostSettings>) -> Effective<HostSettings> {
+    let mut value = file.value.clone();
+    value.apply_env(|k| std::env::var(k).ok());
+    Effective { file, value, env_overrides: HostSettings::env_overrides(|k| std::env::var(k).ok()) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn with(vars: &[(&str, &str)]) -> Settings {
-        let mut s = Settings::default();
-        s.apply_env(|k| vars.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string()));
-        s
-    }
-
     #[test]
-    fn env_overrides() {
-        let s = with(&[("GOATTY_FONT", "Iosevka"), ("GOATTY_FONT_SIZE", "16"), ("GOATTY_RENDER", "shaped"), ("GOATTY_STATS", "1")]);
-        assert_eq!(s.font.family.as_deref(), Some("Iosevka"));
-        assert_eq!(s.font.size, 16.0);
-        assert_eq!(s.terminal.renderer, Renderer::Shaped);
-        assert!(s.debug.stats);
-        assert_eq!(s.shell.program, None);
-        assert!(s.shell.managed);
-        assert!(!s.shell.zsh.user_rc);
-    }
-
-    #[test]
-    fn shell_toggles() {
-        let s = with(&[("GOATTY_SHELL_MANAGED", "0"), ("GOATTY_ZSH_USER_RC", "yes")]);
-        assert!(!s.shell.managed);
-        assert!(s.shell.zsh.user_rc);
-        assert!(with(&[("GOATTY_SHELL_MANAGED", "maybe")]).shell.managed);
-    }
-
-    #[test]
-    fn bad_values_keep_defaults() {
-        let s = with(&[("GOATTY_FONT_SIZE", "huge"), ("GOATTY_RENDER", "fancy"), ("GOATTY_FONT", "")]);
-        assert_eq!(s, Settings::default());
-        assert_eq!(with(&[("GOATTY_FONT_SIZE", "500")]).font.size, FontSettings::MAX_SIZE);
-    }
-
-    #[test]
-    fn font_resolution() {
-        let f = FontSettings::default();
-        assert_eq!(f.resolve_family(&["Fira Code".into(), "DejaVu Sans Mono".into()]), "Fira Code");
-        assert_eq!(f.resolve_family(&[]), "monospace");
-        let explicit = FontSettings { family: Some("Iosevka".into()), ..f };
-        assert_eq!(explicit.resolve_family(&[]), "Iosevka");
+    fn config_dir_follows_xdg() {
+        let d = config_dir_from(|k| (k == "HOME").then(|| "/home/u".into())).unwrap();
+        assert_eq!(d, PathBuf::from("/home/u/.config/goatty"));
+        let d = config_dir_from(|k| match k {
+            "HOME" => Some("/home/u".into()),
+            "XDG_CONFIG_HOME" => Some("/cfg".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(d, PathBuf::from("/cfg/goatty"));
+        assert!(config_dir_from(|_| None).is_none());
     }
 }
