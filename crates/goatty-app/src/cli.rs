@@ -1,7 +1,9 @@
 //! Command line of the `goatty` binary.
 
+use std::path::PathBuf;
+
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand, ValueEnum};
 use goatty_client::Endpoint;
 
 use crate::session::AttachMode;
@@ -37,6 +39,77 @@ pub struct Cli {
     /// shell, prompt, history, shortcuts, workspace, profile).
     #[arg(long, value_name = "PAGE", num_args = 0..=1, default_missing_value = "appearance")]
     pub settings: Option<String>,
+
+    #[command(subcommand)]
+    pub cmd: Option<Command>,
+}
+
+/// Work without a window.
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Inspect and change settings, export and import profiles.
+    #[command(subcommand)]
+    Settings(SettingsCmd),
+    /// List, import, export and pick color themes.
+    #[command(subcommand)]
+    Theme(ThemeCmd),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SettingsCmd {
+    /// Where the settings files are.
+    Path,
+    /// Print this computer's settings: what's stored, `--all` values, or one KEY.
+    Show {
+        key: Option<String>,
+        #[arg(long, conflicts_with = "key")]
+        all: bool,
+    },
+    /// Check settings.json (or FILE) and the themes; exit status 1 on problems.
+    Validate { file: Option<PathBuf> },
+    /// Set a dotted KEY (e.g. font.size 15, theme.name nord). The running app picks it up.
+    Set { key: String, value: String },
+    /// Reset KEY to its default.
+    Unset { key: String },
+    /// Write a profile (these settings + the host's shell settings) to FILE, `-` for stdout.
+    Export { file: PathBuf },
+    /// Apply a profile from FILE (`-` for stdin). Host settings go to the local goattyd.
+    Import {
+        file: PathBuf,
+        /// Don't ask.
+        #[arg(short, long)]
+        yes: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ThemeFor {
+    Light,
+    Dark,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ThemeCmd {
+    /// Built-in and your own themes.
+    List,
+    /// Import color schemes (base16 YAML/JSON, iTerm2 .itermcolors, Windows Terminal, goatty).
+    Import {
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+        /// Name for the imported theme (one scheme only).
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Write a theme as a goatty theme file (stdout without FILE).
+    Export { id: String, file: Option<PathBuf> },
+    /// Use theme ID; `--for light|dark` sets that side and follows the system.
+    Set {
+        id: String,
+        #[arg(long = "for", value_enum)]
+        target: Option<ThemeFor>,
+    },
+    /// Delete one of your themes.
+    Delete { id: String },
 }
 
 impl Cli {
@@ -82,5 +155,9 @@ mod tests {
         assert!(Cli::parse_from(["goatty", "--local"]).endpoint().unwrap().is_none());
         assert!(Cli::try_parse_from(["goatty", "--local", "--ssh", "h"]).is_err());
         assert!(Cli::try_parse_from(["goatty", "--remote-daemon", "/x"]).is_err());
+        let cli = Cli::parse_from(["goatty", "settings", "set", "font.size", "15"]);
+        assert!(matches!(cli.cmd, Some(Command::Settings(SettingsCmd::Set { .. }))));
+        let cli = Cli::parse_from(["goatty", "theme", "set", "nord", "--for", "dark"]);
+        assert!(matches!(cli.cmd, Some(Command::Theme(ThemeCmd::Set { target: Some(ThemeFor::Dark), .. }))));
     }
 }

@@ -21,7 +21,11 @@ impl Workspace {
     pub fn new(session: Arc<Session>, window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
         let pane = cx.new(|cx| TerminalView::new(session, window, cx));
         let sub = cx.subscribe_in(&pane, window, Self::on_terminal_event);
-        Self { pane, _subscriptions: vec![sub] }
+        // The desktop's light/dark switch (themes can follow it).
+        let appearance = cx.observe_window_appearance(window, |_, window, cx| {
+            crate::settings::AppSettings::set_system_dark(cx, crate::settings::is_dark(window.appearance()));
+        });
+        Self { pane, _subscriptions: vec![sub, appearance] }
     }
 
     fn on_terminal_event(&mut self, pane: &Entity<TerminalView>, ev: &TerminalEvent, window: &mut Window, cx: &mut Context<'_, Self>) {

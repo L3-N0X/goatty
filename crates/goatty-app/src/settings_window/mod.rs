@@ -9,7 +9,7 @@
 mod host;
 mod pages;
 
-use goatty_config::{HostSettings, Loaded, store};
+use goatty_config::{ColorSlot, HostSettings, Loaded, store};
 use gpui::{
     App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable, Global, KeyBinding, Subscription, Window, WindowBounds, WindowHandle,
     WindowOptions, actions, px, size,
@@ -124,6 +124,15 @@ pub struct HostView {
     pub generation: Option<u32>,
 }
 
+/// Which theme setting a click in the gallery changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeTarget {
+    /// `theme.name` (not following the system).
+    Fixed,
+    Light,
+    Dark,
+}
+
 /// What the last preview/apply/rollback said.
 #[derive(Debug, Clone)]
 pub struct Outcome {
@@ -148,6 +157,12 @@ pub struct SettingsWindow {
     font_filter: Entity<TextInput>,
     shell_path: Entity<TextInput>,
     show_all_fonts: bool,
+    /// Theme gallery target when following the system.
+    pub theme_target: ThemeTarget,
+    /// The color being edited in the theme editor.
+    pub edit_slot: ColorSlot,
+    color_input: Entity<TextInput>,
+    theme_name: Entity<TextInput>,
     /// Shortcut being recorded: the next keystroke binds to this action.
     recording: Option<&'static str>,
     _subs: Vec<Subscription>,
@@ -165,9 +180,23 @@ impl SettingsWindow {
         window.focus(&focus, cx);
         let font_filter = cx.new(|cx| TextInput::new("Filter fonts…", "", cx));
         let shell_path = cx.new(|cx| TextInput::new("/path/to/shell, then Enter", "", cx));
+        let color_input = cx.new(|cx| TextInput::new("#rrggbb, then Enter", "", cx));
+        let theme_name = cx.new(|cx| TextInput::new("Name for a new theme", "", cx));
         let subs = vec![
-            cx.observe_global::<AppSettings>(|_, cx| cx.notify()),
+            // The colors can change underneath the editor (theme switch,
+            // desktop light/dark, outside edits): keep its hex field current.
+            cx.observe_global::<AppSettings>(|this, cx| this.select_slot(this.edit_slot, cx)),
             cx.subscribe(&font_filter, |_, _, _: &TextInputEvent, cx| cx.notify()),
+            cx.subscribe(&color_input, |this, _, ev: &TextInputEvent, cx| {
+                if let TextInputEvent::Submitted(text) = ev {
+                    this.set_color(text.clone(), cx);
+                }
+            }),
+            cx.subscribe(&theme_name, |this, _, ev: &TextInputEvent, cx| {
+                if let TextInputEvent::Submitted(_) = ev {
+                    this.save_theme_as(cx);
+                }
+            }),
             cx.subscribe(&shell_path, |this, _, ev: &TextInputEvent, cx| {
                 if let TextInputEvent::Submitted(text) = ev {
                     let text = text.trim().to_string();
@@ -189,11 +218,178 @@ impl SettingsWindow {
             font_filter,
             shell_path,
             show_all_fonts: false,
+            theme_target: if cx.global::<AppSettings>().file.value.theme.follow_system {
+                if cx.global::<AppSettings>().system_dark { ThemeTarget::Dark } else { ThemeTarget::Light }
+            } else {
+                ThemeTarget::Fixed
+            },
+            edit_slot: ColorSlot::Background,
+            color_input,
+            theme_name,
             recording: None,
             _subs: subs,
         };
         this.load_host(cx);
+        this.select_slot(ColorSlot::Background, cx);
         this
+    }
+
+    // ---- Themes -----------------------------------------------------------------
+
+    /// Point the current gallery target at theme `id`.
+    pub fn choose_theme(&mut self, id: String, cx: &mut Context<'_, Self>) {
+        let target = self.theme_target;
+        AppSettings::update(cx, |s| match target {
+            ThemeTarget::Fixed => s.theme.name = id,
+            ThemeTarget::Light => s.theme.light = id,
+            ThemeTarget::Dark => s.theme.dark = id,
+        });
+        self.select_slot(self.edit_slot, cx);
+    }
+
+    /// Edit `slot`: show its current color in the hex field.
+    pub fn select_slot(&mut self, slot: ColorSlot, cx: &mut Context<'_, Self>) {
+        self.edit_slot = slot;
+        let hex = cx.global::<AppSettings>().colors.get(slot).to_string();
+        self.color_input.update(cx, |i, cx| i.set_text(hex, cx));
+        cx.notify();
+    }
+
+    fn set_color(&mut self, text: String, cx: &mut Context<'_, Self>) {
+        let slot = self.edit_slot;
+        match goatty_config::Color::parse(text.trim()) {
+            Some(c) => AppSettings::update(cx, |s| s.theme.overrides.set(slot, Some(c))),
+            None => self.outcome = Some(Outcome { ok: false, lines: vec![format!("{text:?} isn't a #rrggbb color")], diff: Vec::new() }),
+        }
+        cx.notify();
+    }
+
+    pub fn revert_color(&mut self, cx: &mut Context<'_, Self>) {
+        let slot = self.edit_slot;
+        AppSettings::update(cx, |s| s.theme.overrides.set(slot, None));
+        self.select_slot(slot, cx);
+    }
+
+    pub fn reset_colors(&mut self, cx: &mut Context<'_, Self>) {
+        AppSettings::update(cx, |s| s.theme.overrides = Default::default());
+        self.select_slot(self.edit_slot, cx);
+    }
+
+    fn message(&mut self, ok: bool, line: String, cx: &mut Context<'_, Self>) {
+        self.outcome = Some(Outcome { ok, lines: vec![line], diff: Vec::new() });
+        cx.notify();
+    }
+
+    /// Save the colors on screen as a new user theme and switch to it.
+    pub fn save_theme_as(&mut self, cx: &mut Context<'_, Self>) {
+        let name = self.theme_name.read(cx).text().trim().to_string();
+        if name.is_empty() {
+            return self.message(false, "Give the new theme a name first.".into(), cx);
+        }
+        let app = cx.global::<AppSettings>();
+        let (lib, colors) = (app.themes.clone(), app.colors);
+        let id = lib.unique_id(&name);
+        match lib.save(&id, &name, &colors) {
+            Ok(path) => {
+                AppSettings::reload_themes(cx);
+                AppSettings::update(cx, |s| s.theme.overrides = Default::default());
+                self.choose_theme(id, cx);
+                self.theme_name.update(cx, |i, cx| i.set_text("", cx));
+                self.message(true, format!("Saved {name:?} to {}.", path.display()), cx);
+            }
+            Err(e) => self.message(false, format!("Couldn't save the theme: {e}"), cx),
+        }
+    }
+
+    /// Write the colors on screen into the active user theme.
+    pub fn update_theme(&mut self, id: String, cx: &mut Context<'_, Self>) {
+        let app = cx.global::<AppSettings>();
+        let (lib, colors) = (app.themes.clone(), app.colors);
+        let Some(entry) = lib.get(&id).filter(|t| t.user) else { return };
+        match lib.save(&id, &entry.name, &colors) {
+            Ok(_) => {
+                AppSettings::reload_themes(cx);
+                AppSettings::update(cx, |s| s.theme.overrides = Default::default());
+                self.message(true, format!("Updated {:?}.", entry.name), cx);
+            }
+            Err(e) => self.message(false, format!("Couldn't save the theme: {e}"), cx),
+        }
+    }
+
+    /// Delete a user theme; settings pointing at it fall back to the defaults.
+    pub fn delete_theme(&mut self, id: String, cx: &mut Context<'_, Self>) {
+        let lib = cx.global::<AppSettings>().themes.clone();
+        match lib.delete(&id) {
+            Ok(_) => {
+                AppSettings::reload_themes(cx);
+                let d = goatty_config::ThemeSettings::default();
+                AppSettings::update(cx, |s| {
+                    // A user theme may have replaced a built-in of the same id:
+                    // then the built-in is back and the setting can stay.
+                    if goatty_config::find_theme(&id).is_none() {
+                        if s.theme.name == id {
+                            s.theme.name = d.name.clone();
+                        }
+                        if s.theme.light == id {
+                            s.theme.light = d.light.clone();
+                        }
+                        if s.theme.dark == id {
+                            s.theme.dark = d.dark.clone();
+                        }
+                    }
+                });
+                self.select_slot(self.edit_slot, cx);
+                self.message(true, format!("Deleted theme {id:?}."), cx);
+            }
+            Err(e) => self.message(false, format!("Couldn't delete the theme: {e}"), cx),
+        }
+    }
+
+    /// Import color schemes (base16, iTerm2, Windows Terminal, goatty) as
+    /// user themes and switch to the first.
+    pub fn import_theme(&mut self, cx: &mut Context<'_, Self>) {
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Import color schemes".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else { return };
+            let _ = this.update(cx, |view, cx| {
+                let mut lines = Vec::new();
+                let mut first = None;
+                let mut ok = true;
+                for path in paths {
+                    match crate::commands::import_theme_file(&path) {
+                        Ok(saved) => {
+                            for (id, name, format) in saved {
+                                lines.push(format!("Imported {name:?} ({format})."));
+                                first.get_or_insert(id);
+                            }
+                        }
+                        Err(e) => {
+                            ok = false;
+                            lines.push(format!("{}: {e}", path.display()));
+                        }
+                    }
+                }
+                AppSettings::reload_themes(cx);
+                if let Some(id) = first {
+                    view.choose_theme(id, cx);
+                }
+                view.outcome = Some(Outcome { ok, lines, diff: Vec::new() });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub fn open_themes_folder(&mut self, cx: &mut Context<'_, Self>) {
+        if let Some(dir) = goatty_config::themes::themes_dir() {
+            let _ = std::fs::create_dir_all(&dir);
+            cx.open_with_system(&dir);
+        }
     }
 
     /// The host settings being shown: the draft, else what the host has.

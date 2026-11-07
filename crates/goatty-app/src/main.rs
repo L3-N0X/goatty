@@ -7,6 +7,7 @@
 mod actions;
 mod app;
 mod cli;
+mod commands;
 mod session;
 mod settings;
 mod settings_window;
@@ -29,7 +30,13 @@ use crate::session::Session;
 const CLIENT: &str = concat!("goatty ", env!("CARGO_PKG_VERSION"));
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    // Subcommands work without a window (and without a display).
+    match cli.cmd.take() {
+        Some(cli::Command::Settings(c)) => return commands::settings(c),
+        Some(cli::Command::Theme(c)) => return commands::theme(c),
+        None => {}
+    }
     // goatty's own crates at info; dependencies (wgpu, zbus, ...) only warn.
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,goatty=info,goatty_client=info,goatty_term=info"))
         .init();

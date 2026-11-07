@@ -296,3 +296,85 @@ pub fn rollback_to(dirs: &Dirs, host_file: &Path, to: Option<u32>) -> Result<gen
     }
     Ok(g)
 }
+
+// ---- `goattyd settings` --------------------------------------------------------
+
+fn host_path(svc: &crate::HostService) -> Result<&Path> {
+    svc.host_file.as_deref().context("$HOME is not set: no settings directory")
+}
+
+fn read_or_empty(path: &Path) -> Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(t) => Ok(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e).with_context(|| format!("read {}", path.display())),
+    }
+}
+
+/// `goattyd settings path`.
+pub fn settings_path(svc: &crate::HostService) -> Result<()> {
+    println!("{}", host_path(svc)?.display());
+    Ok(())
+}
+
+/// `goattyd settings show [KEY] [--all]`: what's stored, every value, or one key.
+pub fn settings_show(svc: &crate::HostService, key: Option<&str>, all: bool) -> Result<()> {
+    let host = svc.settings();
+    for i in &host.file.issues {
+        eprintln!("\u{26a0} {i}");
+    }
+    if !host.env_overrides.is_empty() {
+        eprintln!("(overridden by {})", host.env_overrides.join(", "));
+    }
+    match key {
+        Some(k) => {
+            let v = store::get_key(&host.value, k).with_context(|| format!("no setting {k:?}"))?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+        }
+        None if all => println!("{}", serde_json::to_string_pretty(&host.value)?),
+        None => print!("{}", store::to_json(&host.file.value, &host.file.unknown)),
+    }
+    Ok(())
+}
+
+/// `goattyd settings validate [FILE]`: exit status 1 on problems.
+pub fn settings_validate(svc: &crate::HostService, file: Option<&Path>) -> Result<()> {
+    let path = match file {
+        Some(f) => f.to_path_buf(),
+        None => host_path(svc)?.to_path_buf(),
+    };
+    let loaded = store::parse::<HostSettings>(&read_or_empty(&path)?);
+    if loaded.issues.is_empty() {
+        println!("{}: OK", path.display());
+        return Ok(());
+    }
+    for i in &loaded.issues {
+        eprintln!("\u{26a0} {}: {i}", path.display());
+    }
+    bail!("{} problem(s); goatty uses fallbacks for them", loaded.issues.len())
+}
+
+fn apply_edit(svc: &crate::HostService, key: &str, loaded: goatty_config::Loaded<HostSettings>) -> Result<()> {
+    let outcome = svc.set(&store::to_json(&loaded.value, &loaded.unknown), true)?;
+    let value = store::get_key(&loaded.value, key).map(|v| v.to_string()).unwrap_or_default();
+    match outcome.generation {
+        Some(g) => println!("{key} = {value} (generation {g}; new sessions use it)"),
+        None => println!("{key} = {value}"),
+    }
+    Ok(())
+}
+
+/// `goattyd settings set KEY VALUE`: validated, built and activated like
+/// an Apply in the settings window.
+pub fn settings_set(svc: &crate::HostService, key: &str, value: &str) -> Result<()> {
+    let text = read_or_empty(host_path(svc)?)?;
+    let loaded = store::set_key::<HostSettings>(&text, key, value).map_err(anyhow::Error::msg)?;
+    apply_edit(svc, key, loaded)
+}
+
+/// `goattyd settings unset KEY`: back to the default.
+pub fn settings_unset(svc: &crate::HostService, key: &str) -> Result<()> {
+    let text = read_or_empty(host_path(svc)?)?;
+    let loaded = store::unset_key::<HostSettings>(&text, key).map_err(anyhow::Error::msg)?;
+    apply_edit(svc, key, loaded)
+}

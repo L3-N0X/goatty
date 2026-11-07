@@ -50,8 +50,9 @@ impl<'de> Deserialize<'de> for Color {
     }
 }
 
-/// Every color a terminal theme defines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Every color a terminal theme defines (also the `colors` object of a
+/// user theme file).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThemeColors {
     /// The 16 ANSI colors: black, red, green, yellow, blue, magenta, cyan,
     /// white, then their bright variants.
@@ -63,7 +64,63 @@ pub struct ThemeColors {
     pub selection_background: Color,
 }
 
+/// One editable color of a theme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ColorSlot {
+    Foreground,
+    Background,
+    Cursor,
+    SelectionForeground,
+    SelectionBackground,
+    /// ANSI color 0–15.
+    Ansi(u8),
+}
+
+impl ColorSlot {
+    /// All 21 slots, in editor order.
+    pub fn all() -> Vec<ColorSlot> {
+        let mut v = vec![Self::Background, Self::Foreground, Self::Cursor, Self::SelectionBackground, Self::SelectionForeground];
+        v.extend((0..16).map(Self::Ansi));
+        v
+    }
+
+    pub fn label(self) -> String {
+        const ANSI: [&str; 8] = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"];
+        match self {
+            Self::Foreground => "Text".into(),
+            Self::Background => "Background".into(),
+            Self::Cursor => "Cursor".into(),
+            Self::SelectionForeground => "Selected text".into(),
+            Self::SelectionBackground => "Selection".into(),
+            Self::Ansi(i) if i < 8 => ANSI[i as usize].into(),
+            Self::Ansi(i) => format!("bright {}", ANSI[(i as usize - 8) % 8]),
+        }
+    }
+}
+
 impl ThemeColors {
+    pub fn get(&self, slot: ColorSlot) -> Color {
+        match slot {
+            ColorSlot::Foreground => self.foreground,
+            ColorSlot::Background => self.background,
+            ColorSlot::Cursor => self.cursor,
+            ColorSlot::SelectionForeground => self.selection_foreground,
+            ColorSlot::SelectionBackground => self.selection_background,
+            ColorSlot::Ansi(i) => self.ansi[(i as usize).min(15)],
+        }
+    }
+
+    pub fn set(&mut self, slot: ColorSlot, c: Color) {
+        match slot {
+            ColorSlot::Foreground => self.foreground = c,
+            ColorSlot::Background => self.background = c,
+            ColorSlot::Cursor => self.cursor = c,
+            ColorSlot::SelectionForeground => self.selection_foreground = c,
+            ColorSlot::SelectionBackground => self.selection_background = c,
+            ColorSlot::Ansi(i) => self.ansi[(i as usize).min(15)] = c,
+        }
+    }
+
     pub fn is_dark(&self) -> bool {
         self.background.luma() < 0.5
     }
@@ -263,20 +320,36 @@ pub fn find_theme(id: &str) -> Option<&'static Theme> {
     THEMES.iter().find(|t| t.id == id)
 }
 
+pub const DEFAULT_LIGHT_THEME: &str = "goatty-day";
+
 /// The `theme` section of the client settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThemeSettings {
-    /// Id of a built-in theme ([`THEMES`]).
+    /// Theme id: a built-in ([`THEMES`]) or a user theme
+    /// (`themes/<id>.json`, see [`crate::themes`]).
     pub name: String,
+    /// Use `light` / `dark` depending on the desktop's appearance instead
+    /// of `name`.
+    pub follow_system: bool,
+    pub light: String,
+    pub dark: String,
     /// Render bold text in the bright variant of colors 0–7 (xterm behavior).
     pub bold_is_bright: bool,
+    /// Colors replacing the active theme's.
     pub overrides: ThemeOverrides,
 }
 
 impl Default for ThemeSettings {
     fn default() -> Self {
-        Self { name: DEFAULT_THEME.into(), bold_is_bright: true, overrides: ThemeOverrides::default() }
+        Self {
+            name: DEFAULT_THEME.into(),
+            follow_system: false,
+            light: DEFAULT_LIGHT_THEME.into(),
+            dark: DEFAULT_THEME.into(),
+            bold_is_bright: true,
+            overrides: ThemeOverrides::default(),
+        }
     }
 }
 
@@ -293,23 +366,70 @@ pub struct ThemeOverrides {
     pub ansi: Vec<Option<Color>>,
 }
 
-impl ThemeSettings {
-    /// The theme's colors with the overrides applied. An unknown theme name
-    /// falls back to the default theme (reported by validation).
-    pub fn colors(&self) -> ThemeColors {
-        let mut c = find_theme(&self.name).or_else(|| find_theme(DEFAULT_THEME)).expect("default theme exists").colors;
-        let o = &self.overrides;
-        c.foreground = o.foreground.unwrap_or(c.foreground);
-        c.background = o.background.unwrap_or(c.background);
-        c.cursor = o.cursor.unwrap_or(c.cursor);
-        c.selection_foreground = o.selection_foreground.unwrap_or(c.selection_foreground);
-        c.selection_background = o.selection_background.unwrap_or(c.selection_background);
-        for (slot, over) in c.ansi.iter_mut().zip(&o.ansi) {
-            if let Some(col) = over {
-                *slot = *col;
+impl ThemeOverrides {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default() || ColorSlot::all().into_iter().all(|s| self.get(s).is_none())
+    }
+
+    pub fn get(&self, slot: ColorSlot) -> Option<Color> {
+        match slot {
+            ColorSlot::Foreground => self.foreground,
+            ColorSlot::Background => self.background,
+            ColorSlot::Cursor => self.cursor,
+            ColorSlot::SelectionForeground => self.selection_foreground,
+            ColorSlot::SelectionBackground => self.selection_background,
+            ColorSlot::Ansi(i) => self.ansi.get(i as usize).copied().flatten(),
+        }
+    }
+
+    /// Set (or with `None` clear) one override, keeping the ANSI list short.
+    pub fn set(&mut self, slot: ColorSlot, c: Option<Color>) {
+        match slot {
+            ColorSlot::Foreground => self.foreground = c,
+            ColorSlot::Background => self.background = c,
+            ColorSlot::Cursor => self.cursor = c,
+            ColorSlot::SelectionForeground => self.selection_foreground = c,
+            ColorSlot::SelectionBackground => self.selection_background = c,
+            ColorSlot::Ansi(i) => {
+                let i = (i as usize).min(15);
+                if self.ansi.len() <= i {
+                    self.ansi.resize(i + 1, None);
+                }
+                self.ansi[i] = c;
+                while self.ansi.last() == Some(&None) {
+                    self.ansi.pop();
+                }
             }
         }
-        c
+    }
+
+    /// `base` with these overrides applied.
+    pub fn apply(&self, mut base: ThemeColors) -> ThemeColors {
+        for slot in ColorSlot::all() {
+            if let Some(c) = self.get(slot) {
+                base.set(slot, c);
+            }
+        }
+        base
+    }
+}
+
+impl ThemeSettings {
+    /// The theme id in use, given the desktop's appearance.
+    pub fn active_id(&self, system_dark: bool) -> &str {
+        match (self.follow_system, system_dark) {
+            (false, _) => &self.name,
+            (true, true) => &self.dark,
+            (true, false) => &self.light,
+        }
+    }
+
+    /// Built-in themes only (no user themes, fixed theme): the colors with
+    /// overrides. Unknown names fall back to the default theme. The app
+    /// uses [`crate::themes::ThemeLibrary::resolve`].
+    pub fn colors(&self) -> ThemeColors {
+        let base = find_theme(&self.name).or_else(|| find_theme(DEFAULT_THEME)).expect("default theme exists").colors;
+        self.overrides.apply(base)
     }
 }
 
@@ -347,5 +467,30 @@ mod tests {
         let round = ThemeColors::from_slice(&c.to_vec()).unwrap();
         assert_eq!(round, c);
         assert_eq!(ThemeSettings { name: "nope".into(), ..Default::default() }.colors(), ThemeSettings::default().colors());
+    }
+
+    #[test]
+    fn slots_and_override_editing() {
+        assert_eq!(ColorSlot::all().len(), 21);
+        assert_eq!(ColorSlot::Ansi(9).label(), "bright red");
+        let mut o = ThemeOverrides::default();
+        o.set(ColorSlot::Ansi(5), Some(Color(1)));
+        assert_eq!(o.ansi.len(), 6);
+        assert_eq!(o.get(ColorSlot::Ansi(5)), Some(Color(1)));
+        assert!(!o.is_empty());
+        o.set(ColorSlot::Ansi(5), None);
+        assert!(o.ansi.is_empty(), "trailing Nones are dropped");
+        assert!(o.is_empty());
+        let s = ThemeSettings { follow_system: true, ..Default::default() };
+        assert_eq!(s.active_id(true), DEFAULT_THEME);
+        assert_eq!(s.active_id(false), DEFAULT_LIGHT_THEME);
+        assert_eq!(ThemeSettings::default().active_id(false), DEFAULT_THEME);
+    }
+
+    #[test]
+    fn colors_round_trip_json() {
+        let c = find_theme("nord").unwrap().colors;
+        let back: ThemeColors = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back, c);
     }
 }

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::keys::{self, find_action};
 use crate::store::{Document, Issue, Migration};
-use crate::theme::{ThemeSettings, find_theme};
+use crate::theme::ThemeSettings;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -147,9 +147,8 @@ impl Document for ClientSettings {
         clamp(&mut f.size, FontSettings::MIN_SIZE, FontSettings::MAX_SIZE, "font.size", &mut issues);
         clamp(&mut f.line_height, FontSettings::MIN_LINE_HEIGHT, FontSettings::MAX_LINE_HEIGHT, "font.line_height", &mut issues);
         clamp(&mut self.terminal.padding, 0.0, TerminalSettings::MAX_PADDING, "terminal.padding", &mut issues);
-        if find_theme(&self.theme.name).is_none() {
-            issues.push(Issue::new("theme.name", format!("unknown theme {:?}; using the default", self.theme.name)));
-        }
+        // Theme names are checked against the theme library (user themes
+        // live in their own files): `ThemeLibrary::resolve`.
         if self.theme.overrides.ansi.len() > 16 {
             issues.push(Issue::new("theme.overrides.ansi", "only 16 ANSI colors exist; the rest are ignored"));
             self.theme.overrides.ansi.truncate(16);
@@ -192,8 +191,9 @@ impl ClientSettings {
             Some("glyphs") => self.terminal.renderer = Renderer::Glyphs,
             _ => {}
         }
-        if let Some(t) = var("GOATTY_THEME").filter(|t| find_theme(t).is_some()) {
+        if let Some(t) = var("GOATTY_THEME").filter(|t| !t.is_empty()) {
             self.theme.name = t;
+            self.theme.follow_system = false;
         }
         if var("GOATTY_STATS").is_some() {
             self.debug.stats = true;
@@ -227,7 +227,7 @@ mod tests {
         assert_eq!(s.terminal.renderer, Renderer::Shaped);
         assert!(s.debug.stats);
         assert_eq!(with(&[("GOATTY_THEME", "nord")]).theme.name, "nord");
-        assert_eq!(with(&[("GOATTY_THEME", "nope")]).theme.name, crate::DEFAULT_THEME);
+        assert!(!with(&[("GOATTY_THEME", "nord")]).theme.follow_system, "an explicit theme wins over following the system");
     }
 
     #[test]
@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(s.font.size, FontSettings::MAX_SIZE);
         assert_eq!(s.terminal.padding, 0.0);
         let paths: Vec<_> = issues.iter().map(|i| i.path.as_str()).collect();
-        assert_eq!(paths, ["font.size", "terminal.padding", "theme.name", "keybindings.ctrl-x"]);
+        assert_eq!(paths, ["font.size", "terminal.padding", "keybindings.ctrl-x"]);
         assert!(ClientSettings::default().validate().is_empty());
     }
 }

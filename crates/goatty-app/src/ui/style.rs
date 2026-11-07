@@ -59,6 +59,6 @@ impl Ui {
 
     /// Colors for the current theme.
     pub fn get(cx: &App) -> Self {
-        Self::from_theme(&cx.global::<AppSettings>().client.theme.colors())
+        Self::from_theme(&cx.global::<AppSettings>().colors)
     }
 }

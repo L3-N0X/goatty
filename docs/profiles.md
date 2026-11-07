@@ -78,14 +78,57 @@ Host edits collect in a draft. A bar at the bottom offers **Discard**, **Preview
 
 **Export** writes `{ "goatty_profile": 1, "client": {...}, "host": {...} }` with non-default values only, minus machine-specific ones (`host.shell.program`, `client.debug`). **Import** applies the client part right away and stages the host part as a draft to preview and apply.
 
+## Themes
+
+`ThemeSettings`: `name` (the theme when not following the system), `follow_system`, `light` / `dark` (used by the desktop's appearance when following), `bold_is_bright`, and `overrides` (any of the 21 colors, applied on top of whichever theme is active).
+
+**User themes** are files in `~/.config/goatty/themes/<id>.json`: `{ "name": …, "colors": { "foreground", "background", "cursor", "selection_foreground", "selection_background", "ansi": [16] } }`. `goatty_config::ThemeLibrary` lists built-ins plus user themes. A user file with a built-in's id replaces that built-in. An unknown theme name falls back to the default and is reported as a problem. Broken theme files are skipped and reported too. The app polls the folder, so dropping a file in makes it appear in the gallery.
+
+**Importing** (`goatty_config::theme_import`, format detected from the content):
+
+| Format | Notes |
+|---|---|
+| base16, YAML or JSON (classic `base00…base0F`, or tinted-theming's nested `palette:`) | base16-shell's terminal mapping (bg = base00, fg = base05, selection = base02, ANSI from base08–base0E, bright black = base03, bright white = base07) |
+| iTerm2 `.itermcolors` | `Ansi 0–15`, foreground, background, cursor, selection, selected text; components 0–1, sRGB assumed |
+| Windows Terminal | one scheme object, a list, or a whole `settings.json` (`schemes`); `#RRGGBBAA` ignores alpha |
+| goatty theme file | as above |
+
+Imports get a fresh id when the name is taken (`name`, `name-2`, …).
+
+**Editor** (Appearance page): the gallery shows every theme with `mine`, `light` and `dark` badges. With "Follow the system", a Light/Dark selector decides which side a click assigns. Below the gallery are the 21 color swatches (● = overridden). Clicking one puts its hex value in the field, Enter applies it, and Revert drops that override. "Reset all colors" clears the overrides. "Save as new theme" writes the colors on screen to a new user theme and switches to it. For an active user theme there are also "Save into …" (overwrite) and "Delete". Deleting a theme the settings point at falls back to the defaults.
+
+**Following the desktop** (#51): GPUI reports the window appearance (on Linux from the XDG portal's `org.freedesktop.appearance color-scheme`, live). `Workspace` observes it and calls `AppSettings::set_system_dark`, which re-resolves the theme. The terminal palette, goatty's UI colors and the palette sent to the daemon (`SetPalette`) all follow. At startup the portal answer arrives a moment after the window opens, so goatty switches once right away, through the same path a later desktop toggle takes.
+
+## Command line (#52)
+
+Everything works without a window: scripts, SSH sessions, dotfile setups.
+
+```
+goatty settings path                     # settings.json, host.json, themes/
+goatty settings show [KEY] [--all]       # stored values, every value, or one dotted key
+goatty settings validate [FILE]          # exit 1 on problems (values, themes, keystrokes)
+goatty settings set KEY VALUE            # e.g. font.size 15, theme.follow_system true
+goatty settings unset KEY
+goatty settings export FILE|-            # profile: these settings + the host's shell settings
+goatty settings import FILE|- [--yes]    # host part goes to the local goattyd (else this machine's host.json)
+
+goatty theme list | import FILE… [--name N] | export ID [FILE] | set ID [--for light|dark] | delete ID
+
+goattyd settings path | show [KEY] [--all] | validate [FILE] | set KEY VALUE | unset KEY
+```
+
+`set` takes a dotted key and reads the value as JSON when it parses (`5000`, `true`, `null`, `"#ff00ff"`), otherwise as a string (`minimal`, `/bin/zsh`). Unknown keys and invalid values are errors, and nothing is written (`store::set_key`). Entries of open maps (`keybindings.ctrl-k`) are allowed. `goattyd settings set` applies like the settings window's Apply: a validated new generation, then the save. Client changes made with `goatty settings set` reach a running app within half a second, through the file polling. `import` asks for confirmation, and without a terminal it needs `--yes`.
+
 ## Verified
 
 - `goatty-config`: 20 unit tests (lenient parsing per field, unknown keys kept across saves, versions, backups and pruning, themes, keybinding edits, profile round trip without private values).
 - `goatty-shell`: generations (idempotence, numbering, settings-only changes, rollback, pruning, `zsh -n` rejection), `HostService` (preview/apply/rollback), launcher through `current`, and the real-zsh tests from Stage 3.
 - `goatty-daemon/tests/settings.rs`: the protocol against a real goattyd with a sandboxed HOME (get, preview, apply, a bad value, generations, rollback, and `SetPalette` changing the actual OSC 11 answer read back from the PTY).
 - Manually, release build, sandboxed HOME: the window renders every page. Editing `settings.json` from outside switched the terminal and the window to Catppuccin Latte, 17 px, bar cursor within the poll interval, and reported the bad value and the unknown key on the Profile page. `goattyd shell diff/status/generations/rollback` behaved as described.
+- Themes and CLI (#50–#52): `theme_import` tests for every format; `ThemeLibrary` loading, shadowing, unique ids and resolution; dotted-key editing; `goatty-app/tests/cli.rs` and `goatty-daemon/tests/settings_cli.rs` run the real binaries in a sandboxed HOME (set/show/validate/unset, theme import/set/export/delete, profile export → import on a "second machine" including the host generation).
+- Manually (release build, sandboxed HOME): a Windows Terminal scheme imported with `goatty theme import` showed up as "Campbell Teal" (`mine`, `dark`). With "Follow the system" on a dark desktop, the terminal used it, and the CLI-set cursor override showed as ● in the editor. `goatty theme set gruvbox-dark` from a shell restyled the running app. The startup switch from the default light appearance to the portal's dark one was the same code path as a live desktop toggle. Not done: toggling the real desktop setting (it would change the user's whole session).
 - Not verified yet: clicking through the controls (needs interactive testing, #49).
 
 ## Not done yet
 
-Theme editor and user themes (#50), following the system light/dark preference (#51), a headless settings CLI (#52), problems and env overrides shown on their row (#53), shortcut conflict warnings (#54), per-generation change summaries (#55), reloading running shells after apply (#56), proper monospace detection (#57), keyboard navigation in the settings window (#58), and the GUI first-run/diagnostics screen (#40).
+Problems and env overrides shown on their row (#53), shortcut conflict warnings (#54), per-generation change summaries (#55), reloading running shells after apply (#56), proper monospace detection (#57), keyboard navigation in the settings window (#58), and the GUI first-run/diagnostics screen (#40).

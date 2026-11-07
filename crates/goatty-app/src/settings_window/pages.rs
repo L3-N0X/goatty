@@ -1,13 +1,13 @@
 //! Rendering of the settings window: sidebar, pages, the host-changes bar.
 
 use goatty_config::keys::{self, ACTIONS};
-use goatty_config::{ClientSettings, CursorShape, HostSettings, OnLaunch, PromptStyle, Renderer, THEMES, ThemeSettings};
+use goatty_config::{ClientSettings, ColorSlot, CursorShape, HostSettings, OnLaunch, PromptStyle, Renderer, ThemeEntry, ThemeSettings};
 use gpui::{
     AnyElement, App, Context, FontWeight, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled, Window, div, prelude::*,
     px, rgb,
 };
 
-use super::{Page, SettingsWindow};
+use super::{Page, SettingsWindow, ThemeTarget};
 use crate::settings::AppSettings;
 use crate::ui::controls::{ButtonKind, button, note, notice, row, section, segmented, stepper, toggle};
 use crate::ui::style::Ui;
@@ -179,10 +179,11 @@ impl SettingsWindow {
 
     // ---- Appearance ---------------------------------------------------------
 
-    fn theme_card(&self, ui: Ui, t: &'static goatty_config::Theme, selected: bool) -> impl IntoElement {
+    fn theme_card(&self, ui: Ui, t: ThemeEntry, selected: bool, badges: Vec<&'static str>, cx: &Context<'_, Self>) -> impl IntoElement {
         let c = t.colors;
+        let id = t.id.clone();
         div()
-            .id(t.id)
+            .id(SharedString::from(format!("theme-{}", t.id)))
             .w(px(146.))
             .rounded_lg()
             .border_2()
@@ -196,18 +197,209 @@ impl SettingsWindow {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(div().text_xs().text_color(rgb(c.foreground.0)).child(t.name))
+                    .child(
+                        div()
+                            .flex()
+                            .justify_between()
+                            .gap_1()
+                            .child(div().text_xs().text_color(rgb(c.foreground.0)).truncate().child(SharedString::from(t.name.clone())))
+                            .children(badges.into_iter().map(|b| {
+                                div().text_xs().px_1().rounded_sm().bg(rgb(c.foreground.0)).text_color(rgb(c.background.0)).child(b)
+                            })),
+                    )
                     .child(
                         div().flex().gap(px(2.)).children(c.ansi[1..7].iter().map(|col| div().size(px(14.)).rounded_sm().bg(rgb(col.0)))),
                     ),
             )
-            .on_click(click(client(move |s| s.theme.name = t.id.into())))
+            .on_click(click(self.act(cx, move |v, cx| v.choose_theme(id.clone(), cx))))
+    }
+
+    /// Theme mode, gallery, and the color editor.
+    fn themes_section(&self, ui: Ui, cx: &Context<'_, Self>) -> gpui::Div {
+        let app = cx.global::<AppSettings>();
+        let t = app.file.value.theme.clone();
+        let target = if t.follow_system {
+            if self.theme_target == ThemeTarget::Fixed { ThemeTarget::Dark } else { self.theme_target }
+        } else {
+            ThemeTarget::Fixed
+        };
+        let selected_id = match target {
+            ThemeTarget::Fixed => t.name.clone(),
+            ThemeTarget::Light => t.light.clone(),
+            ThemeTarget::Dark => t.dark.clone(),
+        };
+        let active_id = t.active_id(app.system_dark).to_string();
+        let lib = app.themes.clone();
+        let active = lib.get(&active_id);
+
+        let mut d = div().flex().flex_col().child(section(ui, "Theme")).child(row(
+            ui,
+            "Theme",
+            Some(if t.follow_system { "Switches with your desktop's light/dark setting" } else { "Always the same theme" }),
+            segmented("theme-mode", &[(false, "One theme"), (true, "Follow the system")], &t.follow_system, ui, {
+                let this = cx.entity().downgrade();
+                move |follow, _, cx| {
+                    let _ = this.update(cx, |v, cx| {
+                        AppSettings::update(cx, |s| s.theme.follow_system = follow);
+                        v.theme_target = if follow {
+                            if cx.global::<AppSettings>().system_dark { ThemeTarget::Dark } else { ThemeTarget::Light }
+                        } else {
+                            ThemeTarget::Fixed
+                        };
+                        v.select_slot(v.edit_slot, cx);
+                    });
+                }
+            }),
+        ));
+        if t.follow_system {
+            let name = |id: &str| lib.get(id).map(|e| e.name).unwrap_or_else(|| format!("{id} (missing)"));
+            d = d.child(row(
+                ui,
+                "Pick a theme for",
+                Some(&format!(
+                    "Light: {} · Dark: {} · the desktop is {} now",
+                    name(&t.light),
+                    name(&t.dark),
+                    if app.system_dark { "dark" } else { "light" }
+                )),
+                segmented("theme-target", &[(ThemeTarget::Light, "Light"), (ThemeTarget::Dark, "Dark")], &target, ui, {
+                    let this = cx.entity().downgrade();
+                    move |tg, _, cx| {
+                        let _ = this.update(cx, |v, cx| {
+                            v.theme_target = tg;
+                            cx.notify();
+                        });
+                    }
+                }),
+            ));
+        }
+        let cards: Vec<_> = lib
+            .all()
+            .into_iter()
+            .map(|e| {
+                let mut badges = Vec::new();
+                if t.follow_system && e.id == t.light {
+                    badges.push("light");
+                }
+                if t.follow_system && e.id == t.dark {
+                    badges.push("dark");
+                }
+                if e.user {
+                    badges.push("mine");
+                }
+                let sel = e.id == selected_id;
+                self.theme_card(ui, e, sel, badges, cx)
+            })
+            .collect();
+        d = d.child(div().flex().flex_wrap().gap_2().children(cards)).child(
+            div()
+                .flex()
+                .gap_2()
+                .py_2()
+                .child(button("import-theme", "Import theme…", ButtonKind::Normal, ui, self.act(cx, |v, cx| v.import_theme(cx))))
+                .child(button(
+                    "themes-folder",
+                    "Open themes folder",
+                    ButtonKind::Normal,
+                    ui,
+                    self.act(cx, |v, cx| v.open_themes_folder(cx)),
+                )),
+        );
+        d = d.child(note(ui, "Import reads base16 (YAML/JSON), iTerm2 .itermcolors, Windows Terminal schemes and goatty themes."));
+
+        // ---- Editor -----------------------------------------------------------
+        let overrides = t.overrides.clone();
+        let edit = self.edit_slot;
+        let swatch = |slot: ColorSlot, i: usize| {
+            let color = app.colors.get(slot);
+            let changed = overrides.get(slot).is_some();
+            let on = slot == edit;
+            div()
+                .id(("swatch", i))
+                .w(px(84.))
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .p_1()
+                .rounded_md()
+                .border_1()
+                .border_color(if on { ui.accent } else { ui.border.opacity(0.0) })
+                .cursor_pointer()
+                .hover(|s| s.bg(ui.surface_hover))
+                .child(div().h(px(22.)).rounded_sm().border_1().border_color(ui.border).bg(rgb(color.0)))
+                .child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .text_xs()
+                        .text_color(ui.muted)
+                        .child(SharedString::from(slot.label()))
+                        .when(changed, |d| d.child(div().text_color(ui.warning).child("●"))),
+                )
+                .on_click(click(self.act(cx, move |v, cx| v.select_slot(slot, cx))))
+        };
+        let slots = ColorSlot::all();
+        d = d
+            .child(section(ui, "Colors"))
+            .child(note(
+                ui,
+                match &active {
+                    Some(a) => format!("Changes apply on top of {} (● = changed). Save them as a theme to keep them apart.", a.name),
+                    None => "Changes apply on top of the active theme (● = changed).".into(),
+                },
+            ))
+            .child(div().flex().flex_wrap().gap_1().children(slots.iter().enumerate().map(|(i, &sl)| swatch(sl, i))))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .py_2()
+                    .child(div().w(px(110.)).text_sm().child(SharedString::from(edit.label())))
+                    .child(div().w(px(180.)).child(self.color_input.clone()))
+                    .when(overrides.get(edit).is_some(), |d| {
+                        d.child(button("revert-color", "Revert", ButtonKind::Normal, ui, self.act(cx, |v, cx| v.revert_color(cx))))
+                    }),
+            );
+        let has_overrides = !overrides.is_empty();
+        let mut actions = div().flex().flex_wrap().items_center().gap_2().py_1();
+        if has_overrides {
+            actions =
+                actions.child(button("reset-colors", "Reset all colors", ButtonKind::Normal, ui, self.act(cx, |v, cx| v.reset_colors(cx))));
+            if let Some(a) = active.clone().filter(|a| a.user) {
+                let id = a.id.clone();
+                actions = actions.child(button(
+                    "update-theme",
+                    SharedString::from(format!("Save into {:?}", a.name)),
+                    ButtonKind::Primary,
+                    ui,
+                    self.act(cx, move |v, cx| v.update_theme(id.clone(), cx)),
+                ));
+            }
+        }
+        actions = actions.child(div().w(px(200.)).child(self.theme_name.clone())).child(button(
+            "save-theme",
+            "Save as new theme",
+            ButtonKind::Normal,
+            ui,
+            self.act(cx, |v, cx| v.save_theme_as(cx)),
+        ));
+        if let Some(a) = active.filter(|a| a.user) {
+            let id = a.id.clone();
+            actions = actions.child(button(
+                "delete-theme",
+                SharedString::from(format!("Delete {:?}", a.name)),
+                ButtonKind::Danger,
+                ui,
+                self.act(cx, move |v, cx| v.delete_theme(id.clone(), cx)),
+            ));
+        }
+        d.child(actions)
     }
 
     fn appearance(&self, ui: Ui, cx: &Context<'_, Self>) -> AnyElement {
         let app = cx.global::<AppSettings>();
         let s = &app.file.value;
-        let theme = s.theme.name.clone();
         let size = s.font.size;
         let lh = s.font.line_height;
         let pad = s.terminal.padding;
@@ -240,8 +432,7 @@ impl SettingsWindow {
         div()
             .flex()
             .flex_col()
-            .child(section(ui, "Theme"))
-            .child(div().flex().flex_wrap().gap_2().children(THEMES.iter().map(|t| self.theme_card(ui, t, t.id == theme))))
+            .child(self.themes_section(ui, cx))
             .child(row(
                 ui,
                 "Bold text in bright colors",
