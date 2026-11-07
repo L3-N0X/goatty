@@ -16,6 +16,7 @@ goatty-term.workspace = true
 goatty-proto.workspace = true
 goatty-client.workspace = true
 goatty-config.workspace = true
+goatty-shell.workspace = true
 clap.workspace = true
 parking_lot.workspace = true
 anyhow.workspace = true

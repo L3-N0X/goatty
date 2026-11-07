@@ -32,7 +32,7 @@ fn main() -> Result<()> {
     // Initial size is a guess; the terminal element resizes on first layout.
     let initial = TermSize::new(100, 30);
     let session = match cli.endpoint()? {
-        None => Session::local(initial, settings.shell.program.as_deref())?,
+        None => Session::local(initial, &settings.shell)?,
         Some(endpoint) => Session::daemon(Connection::open(endpoint, CLIENT)?, initial, cli.attach_mode())?,
     };
     log::info!("backend: {}", session.backend_name());

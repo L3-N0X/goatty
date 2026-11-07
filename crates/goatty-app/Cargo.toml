@@ -23,6 +23,7 @@ env_logger.workspace = true
 flume.workspace = true
 goatty-client.workspace = true
 goatty-config.workspace = true
+goatty-shell.workspace = true
 clap.workspace = true
 
 [lints]

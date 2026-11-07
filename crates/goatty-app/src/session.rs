@@ -9,7 +9,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use anyhow::Result;
 use goatty_client::{Connection, PaneEvent, PaneSink};
+use goatty_config::ShellSettings;
 use goatty_proto::WinSize;
+use goatty_shell::Launcher;
 use goatty_term::pty::{Pty, ShellCommand};
 use goatty_term::{Palette, TermSize, Terminal, UiEvent};
 use parking_lot::Mutex;
@@ -122,9 +124,12 @@ impl Session {
     }
 
     /// A shell owned by this process (`--local`): no daemon, so it ends
-    /// with the window. `shell`: see [`ShellCommand::login_shell`].
-    pub fn local(size: TermSize, shell: Option<&str>) -> Result<Arc<Self>> {
-        let (pty, reader) = Pty::spawn(&ShellCommand::login_shell(shell), size)?;
+    /// with the window. Same shell choice and managed zsh as goattyd.
+    pub fn local(size: TermSize, shell: &ShellSettings) -> Result<Arc<Self>> {
+        // `goatty-setup` runs the goattyd installed next to us, if any.
+        let daemon = std::env::current_exe().ok().map(|e| e.with_file_name("goattyd")).filter(|d| d.exists());
+        let launch = Launcher::from_env(daemon).launch(shell);
+        let (pty, reader) = Pty::spawn(&ShellCommand::new(launch.program, launch.args, launch.env), size)?;
         let (terminal, chans) = Terminal::new(size, true, Arc::new(Palette::default()));
         let s = Arc::new(Self::new(terminal, chans.ui, Backend::Local(Mutex::new(pty)), None));
         let weak = Arc::downgrade(&s);
