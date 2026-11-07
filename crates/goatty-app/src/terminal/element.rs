@@ -22,7 +22,8 @@ use gpui::{
     Point, ShapedLine, SharedString, Size, StrikethroughStyle, Style, TextRun, UnderlineStyle, Window, fill, point, px, relative, size,
 };
 
-use crate::glyphs::{Glyph, GlyphCache};
+use super::glyphs::{Glyph, GlyphCache};
+use super::stats::Stats;
 use crate::session::Session;
 
 pub fn hsla(c: Rgb) -> Hsla {
@@ -47,17 +48,6 @@ impl Geom {
         let row = (y as usize).min(self.rows.saturating_sub(1));
         (col, row, x.fract() > 0.5)
     }
-}
-
-#[derive(Default)]
-pub struct Stats {
-    pub frames: u32,
-    pub prepaint_us: u64,
-    pub paint_us: u64,
-    pub max_frame_us: u64,
-    pub shaped_segments: u64,
-    pub snapshot_us: u64,
-    pub window_start: Option<Instant>,
 }
 
 pub struct TerminalElement {

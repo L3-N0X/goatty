@@ -1,0 +1,14 @@
+[package]
+name = "goatty-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "goatty settings: typed defaults plus environment overrides (the seam for the Stage 4 profile engine)"
+
+[dependencies]
+serde.workspace = true
+
+[lints]
+workspace = true

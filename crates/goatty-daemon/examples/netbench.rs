@@ -71,9 +71,9 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flood_mb: u64 = std::env::var("FLOOD_MB").ok().and_then(|s| s.parse().ok()).unwrap_or(200);
 
-    let dir = std::env::temp_dir().join(format!("goatty-netbench-{}", std::process::id()));
-    std::fs::create_dir_all(&dir)?;
-    let sock = dir.join("d.sock");
+    // Removed when dropped at the end of main, after the daemon is killed.
+    let dir = tempfile::Builder::new().prefix("goatty-netbench-").tempdir()?;
+    let sock = dir.path().join("d.sock");
     let goattyd = std::env::current_exe()?.parent().unwrap().parent().unwrap().join("goattyd");
     let mut daemon = None;
     let endpoint = match args.first().map(String::as_str) {
@@ -168,6 +168,5 @@ fn main() -> anyhow::Result<()> {
     }
     drop(conn);
     drop(daemon);
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

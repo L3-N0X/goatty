@@ -2,19 +2,23 @@
 
 A batteries-included terminal for people new to Linux: a GPU-rendered terminal, a managed Zsh setup, and sessions that survive closing the window.
 
-> **Status: Stage 0 prototype.** See [`docs/goatty-project-plan.md`](docs/goatty-project-plan.md) for the plan, [`docs/stage0-findings.md`](docs/stage0-findings.md) for what the spike measured, [`docs/remote-architecture.md`](docs/remote-architecture.md) for connecting to goattyd on other machines, and [GitHub issues](https://github.com/L3-N0X/goatty/issues) for open work.
+> **Status: early development (Stage 1).** See [`docs/goatty-project-plan.md`](docs/goatty-project-plan.md) for the plan, [`docs/architecture.md`](docs/architecture.md) for the code structure, [`docs/stage0-findings.md`](docs/stage0-findings.md) for what the spike measured, [`docs/remote-architecture.md`](docs/remote-architecture.md) for connecting to goattyd on other machines, and [GitHub issues](https://github.com/L3-N0X/goatty/issues) for open work.
 
 ## Layout
 
 ```
 crates/
-  goatty-term/    terminal engine: rio-vt wrapper, palette, input encoding, PTY, reattach snapshots
+  goatty-term/    terminal engine: rio-vt wrapper, frame snapshots, palette, input encoding, PTY, reattach snapshots
   goatty-proto/   goatty ⇄ goattyd wire protocol (transport-independent)
-  goatty-client/  connection to a goattyd: local socket, ssh, any stdio command; reconnect
-  goatty-daemon/  goattyd: owns PTYs + sessions (bin: goattyd)
+  goatty-client/  connection to a goattyd: local socket, ssh, any stdio command; reconnect; blocking Control client
+  goatty-config/  settings: typed defaults + GOATTY_* overrides (Stage 4 profiles plug in here)
+  goatty-daemon/  goattyd library + binary: owns PTYs and sessions
   goatty-app/     GPUI desktop client (bin: goatty)
+docs/             plan, architecture, findings, remote design
 scripts/          smoke.sh (visual test), perf.sh + bench.sh (throughput)
 ```
+
+See [`docs/architecture.md`](docs/architecture.md) for how the crates and modules fit together and where upcoming work goes.
 
 ## Run
 
@@ -26,6 +30,7 @@ cargo build --release --workspace
 ./target/release/goatty --local    # no daemon, PTY owned by the window
 ./target/release/goatty --ssh host # goattyd on another machine (needs goattyd installed there)
 ./target/release/goatty --via 'docker exec -i box goattyd proxy'
+./target/release/goatty --help
 
 ./target/release/goattyd list      # sessions
 ./target/release/goattyd send 1 'htop\r'

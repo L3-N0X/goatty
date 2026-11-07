@@ -9,20 +9,22 @@
 
 use std::io::Write;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use goatty_client::{Connection, Endpoint, PaneEvent, PaneSink};
+use goatty_client::{Connection, Control, Endpoint, PaneEvent, PaneSink};
 use goatty_proto::{ClientMsg, PROTOCOL_VERSION, ServerMsg, SessionId, StreamOpts, WinSize, encode, read_msg};
 use goatty_term::{Frame, Palette, TermSize, Terminal};
 use parking_lot::Mutex;
 
+/// A private daemon in its own temp dir. Dropping it kills the daemon, then
+/// removes the dir (fields drop after `Drop::drop`).
 struct Daemon {
     child: Child,
     sock: PathBuf,
-    _dir: PathBuf,
+    _dir: tempfile::TempDir,
 }
 
 impl Drop for Daemon {
@@ -33,9 +35,8 @@ impl Drop for Daemon {
 }
 
 fn start_daemon() -> Daemon {
-    let dir = std::env::temp_dir().join(format!("goatty-test-{}-{}", std::process::id(), rand_suffix()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let sock = dir.join("d.sock");
+    let dir = tempfile::Builder::new().prefix("goatty-test-").tempdir().unwrap();
+    let sock = dir.path().join("d.sock");
     let child = Command::new(env!("CARGO_BIN_EXE_goattyd"))
         .env("GOATTY_SOCKET", &sock)
         .env("GOATTY_SHELL", "/bin/sh")
@@ -50,15 +51,11 @@ fn start_daemon() -> Daemon {
     Daemon { child, sock, _dir: dir }
 }
 
-fn rand_suffix() -> u128 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-}
-
 fn send(s: &mut UnixStream, msg: &ClientMsg) {
     s.write_all(&encode(msg).unwrap()).unwrap();
 }
 
-fn connect(sock: &PathBuf) -> UnixStream {
+fn connect(sock: &Path) -> UnixStream {
     let mut s = UnixStream::connect(sock).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     send(&mut s, &ClientMsg::Hello { version: PROTOCOL_VERSION, client: "test".into() });
@@ -109,13 +106,9 @@ fn create(s: &mut UnixStream, opts: StreamOpts) -> (SessionId, u64) {
     }
 }
 
-fn session_info(sock: &PathBuf, id: u64) -> goatty_proto::SessionInfo {
-    let mut c = connect(sock);
-    send(&mut c, &ClientMsg::ListSessions { req: 9 });
-    match read_msg::<_, ServerMsg>(&mut c).unwrap() {
-        ServerMsg::Sessions { req: 9, list } => list.into_iter().find(|s| s.id == id).expect("session listed"),
-        other => panic!("{other:?}"),
-    }
+fn session_info(sock: &Path, id: u64) -> goatty_proto::SessionInfo {
+    let mut c = Control::connect(sock, "test").unwrap();
+    c.list_sessions().unwrap().into_iter().find(|s| s.id == id).expect("session listed")
 }
 
 #[test]

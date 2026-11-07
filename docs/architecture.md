@@ -1,0 +1,74 @@
+# goatty architecture
+
+How the code is laid out, and where each upcoming stage's work goes. For the product plan see [`goatty-project-plan.md`](goatty-project-plan.md); for the remote design see [`remote-architecture.md`](remote-architecture.md).
+
+## Crate graph
+
+```
+                 goatty-config      (settings: defaults + GOATTY_* env; Stage 4 profiles plug in here)
+                   ▲        ▲
+goatty-term ◄──────┼────────┼───────────────┐   (the only crate that touches rio-vt)
+   ▲               │        │               │
+   │   goatty-proto│        │               │   (wire protocol: messages, framing, socket path)
+   │      ▲        │        │               │
+   │   goatty-client        │               │   (Connection, Control, transports; no UI)
+   │      ▲     ▲           │               │
+   │      │     └──── goatty-daemon ────────┘   (lib + bin `goattyd`)
+   │      │
+   └── goatty-app                               (GPUI client, bin `goatty`)
+```
+
+Rules:
+
+- **rio-vt stays inside `goatty-term`.** Other crates use `Terminal`, `Frame`, `TermSize`, `TermMode` and the input encoders. `Terminal::with_term` is crate-private on purpose.
+- **`goatty-proto` has no I/O beyond framing.** Transports live in `goatty-client`.
+- **`goatty-client` has no UI dependencies.** The app, the daemon's CLI, tests and benchmarks all use it.
+- **Settings come from `goatty-config`.** Don't read `GOATTY_*` variables elsewhere (the exception is `GOATTY_SOCKET`, which is a location, not a setting, and lives in `goatty_proto::socket_path`).
+
+## Daemon (`crates/goatty-daemon`)
+
+| Module       | Owns                                                                     |
+|--------------|--------------------------------------------------------------------------|
+| `server`     | socket bind (0600 in a 0700 dir), accept loop, socket watchdog, the session registry (`Daemon`), shutdown |
+| `client`     | one connection: decode requests, its subscriptions, the writer thread    |
+| `session`    | PTY + authoritative `Terminal` + subscribers with flow control, the output pump |
+| `proxy`      | `goattyd proxy`: stdio ⇄ socket relay for remote transports              |
+| `main.rs`    | clap CLI; control commands go through `goatty_client::Control`           |
+
+Threads per session: `s{id}-reader` (PTY → terminal → subscribers) and `s{id}-replies` (query answers → PTY). Per connection: a reader (the accept thread's spawn) and `c{conn}-writer`.
+
+## App (`crates/goatty-app`)
+
+```
+main.rs        parse CLI, load Settings, open the Session, app::run
+cli.rs         clap definition
+app.rs         GPUI bootstrap: AppSettings global, key bindings, main window
+actions.rs     actions + default key bindings (Terminal key context)
+workspace.rs   root view per window: owns panes, window title, closes on exit
+session.rs     a pane's data: local PTY or goattyd session → mirror Terminal; coalescing waker
+terminal/
+  view.rs      TerminalView: input → terminal, actions, emits TerminalEvent
+  element.rs   custom grid Element (prepaint/paint)
+  glyphs.rs    per-cell glyph cache
+  keys.rs      GPUI keystroke → terminal Key (pure, unit-tested)
+  stats.rs     GOATTY_STATS frame statistics
+```
+
+View tree: `Workspace` → `TerminalView` (one today). A `TerminalView` never touches the window directly. It emits `TerminalEvent::{TitleChanged, Exited}` and the workspace decides what that means (window title, close the pane or the window).
+
+Input: GPUI dispatches a bound action before the view's raw `on_key_down`. Shortcuts are actions in `actions.rs`, and anything unbound goes to the shell through `terminal::keys` and `goatty_term::input`. Don't add shortcuts as `match` arms in `on_key`.
+
+## Where upcoming work goes
+
+| Work                                   | Where                                                                 |
+|----------------------------------------|-----------------------------------------------------------------------|
+| Tabs and splits (#30)                  | `workspace.rs`: tab strip + split tree of `Entity<TerminalView>`; new panes reuse the window's `Connection` |
+| IME / compose (#21)                    | `terminal/view.rs`: implement `EntityInputHandler`, register it in the element's paint |
+| Box drawing (#24)                      | `terminal/element.rs` (+ a new `terminal/boxdraw.rs`)                 |
+| Kitty keyboard (#22)                   | `goatty-term/src/input.rs`, fed from `terminal/keys.rs`               |
+| Cursor/ligature settings (#23, #25)    | `goatty-config` field → read in `TerminalView::new`                   |
+| URL detection (#27)                    | `goatty-term` (detect on `Frame` rows) + view (hover/click)           |
+| Shell integration (#28)                | `goatty-term` listener (OSC 133/7 → `UiEvent`) + daemon `SessionInfo` |
+| Settings file / profiles (Stage 4)     | `goatty-config` loads and migrates; app replaces the `AppSettings` global; views observe it |
+| systemd user service (#7)              | `goatty-daemon` (`server::serve` already takes the socket path)       |
+| New wire messages                      | `goatty-proto/src/msg.rs` (bump `PROTOCOL_VERSION`), handle in `goatty-daemon/src/client.rs` and `goatty-client/src/connection.rs` |

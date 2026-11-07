@@ -6,6 +6,8 @@ members = ["crates/*"]
 version = "0.0.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/L3-N0X/goatty"
+publish = false
 
 [workspace.dependencies]
 # Terminal core — pinned exactly; API still evolving (see plan §13).
@@ -25,10 +27,23 @@ libc = "0.2"
 log = "0.4"
 env_logger = "0.11"
 flume = "0.11"
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
 
 goatty-term = { path = "crates/goatty-term" }
 goatty-proto = { path = "crates/goatty-proto" }
 goatty-client = { path = "crates/goatty-client" }
+goatty-config = { path = "crates/goatty-config" }
+goatty-daemon = { path = "crates/goatty-daemon" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+undocumented_unsafe_blocks = "warn"
 
 [profile.dev]
 # Terminal parsing/rendering is unusable at opt-level 0; keep deps fast.

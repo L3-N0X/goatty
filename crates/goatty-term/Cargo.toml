@@ -3,6 +3,8 @@ name = "goatty-term"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+publish.workspace = true
 description = "goatty's TerminalEngine: a thin, UI-agnostic wrapper around rio-vt plus PTY helpers"
 
 [dependencies]
@@ -15,3 +17,6 @@ flume.workspace = true
 
 [[example]]
 name = "vtbench"
+
+[lints]
+workspace = true
