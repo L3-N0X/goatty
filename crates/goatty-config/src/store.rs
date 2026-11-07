@@ -340,6 +340,109 @@ pub fn backups(path: &Path) -> Vec<PathBuf> {
     v.into_iter().map(|(_, p)| p).collect()
 }
 
+/// Whether `key` (dotted) names a setting of `T` (or an entry of an open map).
+pub fn is_known_key<T: Document>(key: &str) -> bool {
+    let default = serde_json::to_value(T::default()).expect("defaults serialize");
+    let mut cur = &default;
+    let mut path = String::new();
+    for seg in key.split('.') {
+        if T::OPEN_MAPS.contains(&path.as_str()) {
+            return !seg.is_empty();
+        }
+        match cur.get(seg) {
+            Some(next) => cur = next,
+            None => return false,
+        }
+        if !path.is_empty() {
+            path.push('.');
+        }
+        path.push_str(seg);
+    }
+    !key.is_empty()
+}
+
+/// The document's JSON object (empty text: an empty document).
+fn raw_object(text: &str) -> Result<Map<String, Value>, String> {
+    if text.trim().is_empty() {
+        return Ok(Map::new());
+    }
+    match serde_json::from_str(text) {
+        Ok(Value::Object(m)) => Ok(m),
+        Ok(_) => Err("the settings file isn't a JSON object; fix or remove it first".into()),
+        Err(e) => Err(format!("the settings file isn't valid JSON ({e}); fix or remove it first")),
+    }
+}
+
+/// Parse after an edit, refusing the edit if `key` didn't take.
+fn reparse<T: Document>(root: Map<String, Value>, key: &str) -> Result<Loaded<T>, String> {
+    let loaded = parse::<T>(&Value::Object(root).to_string());
+    let prefix = format!("{key}.");
+    match loaded.issues.iter().find(|i| i.path == key || i.path.starts_with(&prefix) || key.starts_with(&format!("{}.", i.path))) {
+        Some(i) => Err(i.to_string()),
+        None => Ok(loaded),
+    }
+}
+
+/// Set `key` (dotted, e.g. `history.size`) in the document `text`. `raw`
+/// is read as JSON when it parses (`5000`, `true`, `null`, `[...]`), else
+/// as a string (`minimal`, `/bin/zsh`). Unknown keys and invalid values are
+/// errors; nothing is written.
+pub fn set_key<T: Document>(text: &str, key: &str, raw: &str) -> Result<Loaded<T>, String> {
+    if key == "version" || !is_known_key::<T>(key) {
+        return Err(format!("unknown setting {key:?} (see `show --all` for the known ones)"));
+    }
+    let mut root = raw_object(text)?;
+    let value = serde_json::from_str::<Value>(raw).unwrap_or_else(|_| Value::String(raw.to_string()));
+    let parts: Vec<String> = key.split('.').map(str::to_owned).collect();
+    let (last, parents) = parts.split_last().expect("non-empty key");
+    let mut cur = &mut root;
+    for p in parents {
+        let entry = cur.entry(p.clone()).or_insert_with(|| Value::Object(Map::new()));
+        if !entry.is_object() {
+            *entry = Value::Object(Map::new());
+        }
+        cur = entry.as_object_mut().expect("object");
+    }
+    cur.insert(last.clone(), value);
+    reparse::<T>(root, key)
+}
+
+/// Remove `key` from the document, so it's back to its default.
+pub fn unset_key<T: Document>(text: &str, key: &str) -> Result<Loaded<T>, String> {
+    if !is_known_key::<T>(key) {
+        return Err(format!("unknown setting {key:?}"));
+    }
+    let mut root = raw_object(text)?;
+    let parts: Vec<&str> = key.split('.').collect();
+    fn remove(m: &mut Map<String, Value>, parts: &[&str]) {
+        match parts {
+            [] => {}
+            [last] => {
+                m.remove(*last);
+            }
+            [first, rest @ ..] => {
+                if let Some(Value::Object(child)) = m.get_mut(*first) {
+                    remove(child, rest);
+                    if child.is_empty() {
+                        m.remove(*first);
+                    }
+                }
+            }
+        }
+    }
+    remove(&mut root, &parts);
+    reparse::<T>(root, key)
+}
+
+/// The value at `key` in `value` (for `show KEY`).
+pub fn get_key<T: Document>(value: &T, key: &str) -> Option<Value> {
+    let mut cur = serde_json::to_value(value).ok()?;
+    for seg in key.split('.').filter(|s| !s.is_empty()) {
+        cur = cur.get(seg)?.clone();
+    }
+    Some(cur)
+}
+
 /// Modification stamp, for cheap "did the file change" polling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FileStamp(Option<(SystemTime, u64)>);
@@ -424,6 +527,38 @@ mod tests {
     fn newer_version_is_flagged() {
         let l = parse::<HostSettings>(r#"{"version": 9}"#);
         assert_eq!(l.issues[0].path, "version");
+    }
+
+    #[test]
+    fn dotted_key_editing() {
+        assert!(is_known_key::<HostSettings>("history.size"));
+        assert!(is_known_key::<HostSettings>("shell.zsh.user_rc"));
+        assert!(!is_known_key::<HostSettings>("history.nope"));
+        assert!(is_known_key::<ClientSettings>("keybindings.ctrl-k"), "open map entries");
+        assert!(!is_known_key::<ClientSettings>(""));
+
+        let l = set_key::<HostSettings>("", "history.size", "5000").unwrap();
+        assert_eq!(l.value.history.size, 5000);
+        let text = to_json(&l.value, &l.unknown);
+        let l = set_key::<HostSettings>(&text, "prompt.style", "minimal").unwrap();
+        assert_eq!(l.value.prompt.style, crate::PromptStyle::Minimal);
+        assert_eq!(l.value.history.size, 5000, "other values stay");
+        let l = set_key::<HostSettings>(&to_json(&l.value, &[]), "shell.program", "/bin/zsh").unwrap();
+        assert_eq!(l.value.shell.program.as_deref(), Some("/bin/zsh"));
+
+        assert!(set_key::<HostSettings>("", "history.size", "lots").unwrap_err().starts_with("history.size"));
+        assert!(set_key::<HostSettings>("", "prompt.style", "fancy").is_err());
+        assert!(set_key::<HostSettings>("", "history.nope", "1").is_err());
+        assert!(set_key::<HostSettings>("", "version", "2").is_err());
+        assert!(set_key::<HostSettings>("not json", "history.size", "1").is_err());
+
+        let l = unset_key::<HostSettings>(&to_json(&l.value, &[]), "history.size").unwrap();
+        assert_eq!(l.value.history.size, HostSettings::default().history.size);
+        assert_eq!(get_key(&l.value, "prompt.style"), Some(Value::from("minimal")));
+        assert_eq!(get_key(&l.value, "prompt.nope"), None);
+
+        let l = set_key::<ClientSettings>("", "keybindings.ctrl-k", "null").unwrap();
+        assert_eq!(l.value.keybindings.get("ctrl-k"), Some(&None));
     }
 
     #[test]

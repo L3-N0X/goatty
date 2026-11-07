@@ -1915,6 +1915,9 @@ dependencies = [
  "gpui_platform",
  "log",
  "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -1976,6 +1979,7 @@ dependencies = [
  "goatty-config",
  "goatty-term",
  "log",
+ "serde_json",
  "sha2",
  "similar",
  "tar",

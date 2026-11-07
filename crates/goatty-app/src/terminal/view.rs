@@ -81,11 +81,12 @@ impl Focusable for TerminalView {
 
 impl TerminalView {
     pub fn new(session: Arc<Session>, window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
-        let settings = cx.global::<AppSettings>().client.clone();
+        let app = cx.global::<AppSettings>().clone();
+        let settings = app.client.clone();
         let focus = cx.focus_handle();
         cx.observe_global::<AppSettings>(|view, cx| {
-            let s = cx.global::<AppSettings>().client.clone();
-            view.apply_settings(&s);
+            let app = cx.global::<AppSettings>().clone();
+            view.apply_settings(&app);
             cx.notify();
         })
         .detach();
@@ -162,13 +163,14 @@ impl TerminalView {
             title: String::new(),
             exited: false,
         };
-        view.apply_settings(&settings);
+        view.apply_settings(&app);
         view
     }
 
     /// Take font, layout, cursor and colors from the settings. Called at
     /// start and whenever the settings change (live, no restart).
-    fn apply_settings(&mut self, s: &ClientSettings) {
+    fn apply_settings(&mut self, app: &AppSettings) {
+        let s: &ClientSettings = &app.client;
         let family = s.font.family.clone().unwrap_or_else(|| "monospace".into());
         if self.font.family.as_ref() != family.as_str() {
             self.font = gpui::font(family);
@@ -186,7 +188,7 @@ impl TerminalView {
             CursorShape::Bar => CursorKind::Beam,
             CursorShape::Underline => CursorKind::Underline,
         });
-        self.session.set_palette(palette(&s.theme.colors(), s.theme.bold_is_bright));
+        self.session.set_palette(palette(&app.colors, s.theme.bold_is_bright));
     }
 
     /// Title for a window or tab: the application's title plus host and

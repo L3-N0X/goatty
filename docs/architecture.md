@@ -60,7 +60,8 @@ Design and startup sequence: [`managed-zsh.md`](managed-zsh.md). The zsh behavio
 ## App (`crates/goatty-app`)
 
 ```
-main.rs        parse CLI, open the Session (local: HostService in-process), app::run
+main.rs        parse CLI (subcommands run without a window), open the Session, app::run
+commands.rs    `goatty settings …` / `goatty theme …` (headless)
 cli.rs         clap definition
 app.rs         GPUI bootstrap: settings, host link, main window, OpenSettings handler
 settings.rs    AppSettings global: client settings file ⇄ live values, file polling, keybindings
@@ -102,6 +103,7 @@ Input: GPUI dispatches a bound action before the view's raw `on_key_down`. Short
 | Bash/Fish adapters (Stage 6)           | `goatty-shell`: a sibling of `zsh.rs` + its startup files; `Launcher::launch` picks by program |
 | New client setting                     | field in `goatty-config/src/client.rs` (+ `validate`), control in `settings_window/pages.rs`, apply in `TerminalView::apply_settings` |
 | New host setting                       | field in `goatty-config/src/host.rs`, render it in `goatty-shell/src/zsh.rs` (`settings.zsh`/`starship.toml`), control in `pages.rs` |
+| New theme import format                | `goatty-config/src/theme_import.rs` (detect + parse to `ThemeColors`) |
 | Settings migration                     | bump `Document::VERSION`, add `(from, fn(&mut Value))` to `migrations()` |
 | systemd user service (#7)              | `goatty-daemon` (`server::serve` already takes the socket path)       |
 | New wire messages                      | `goatty-proto/src/msg.rs` (bump `PROTOCOL_VERSION`), handle in `goatty-daemon/src/client.rs` and `goatty-client/src/connection.rs` |

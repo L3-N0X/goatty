@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use goatty_config::{ClientSettings, Document, FileStamp, Loaded, ThemeColors, store};
+use goatty_config::{ClientSettings, Document, FileStamp, Issue, Loaded, ThemeColors, ThemeLibrary, store};
 use goatty_term::Palette;
-use gpui::{App, Global};
+use gpui::{App, Global, WindowAppearance};
 
 /// Preferred UI fonts, first installed wins.
 const UI_FONTS: &[&str] = &["Inter", "Cantarell", "Noto Sans", "Ubuntu", "Open Sans", "DejaVu Sans", "Liberation Sans"];
@@ -35,6 +35,20 @@ pub struct AppSettings {
     pub key_errors: Vec<String>,
     /// The last save failed (read-only config dir, ...).
     pub save_error: Option<String>,
+    /// Built-in plus user themes (`themes/*.json`).
+    pub themes: Arc<ThemeLibrary>,
+    themes_stamp: Vec<(PathBuf, FileStamp)>,
+    /// The desktop prefers dark (portal `color-scheme`); picks
+    /// `theme.dark`/`theme.light` when `theme.follow_system` is on.
+    pub system_dark: bool,
+    /// The active theme's colors with overrides: what everything renders with.
+    pub colors: ThemeColors,
+    /// The configured theme doesn't exist.
+    pub theme_issue: Option<Issue>,
+}
+
+pub fn is_dark(a: WindowAppearance) -> bool {
+    matches!(a, WindowAppearance::Dark | WindowAppearance::VibrantDark)
 }
 
 impl Global for AppSettings {}
@@ -53,7 +67,17 @@ impl AppSettings {
         let stamp = path.as_deref().map(FileStamp::of).unwrap_or_default();
         let ui_font =
             UI_FONTS.iter().find(|f| fonts.iter().any(|i| i == *f)).map(|f| f.to_string()).unwrap_or_else(|| "sans-serif".into()).into();
+        let themes = ThemeLibrary::load_default();
+        for issue in &themes.issues {
+            log::warn!("themes: {issue}");
+        }
+        let themes_stamp = themes.dir.as_deref().map(ThemeLibrary::stamp).unwrap_or_default();
         let mut s = Self {
+            themes: Arc::new(themes),
+            themes_stamp,
+            system_dark: is_dark(cx.window_appearance()),
+            colors: goatty_config::ThemeSettings::default().colors(),
+            theme_issue: None,
             client: Arc::new(ClientSettings::default()),
             file,
             env_overrides: ClientSettings::env_overrides(|k| std::env::var(k).ok()),
@@ -65,7 +89,13 @@ impl AppSettings {
             save_error: None,
         };
         s.recompute();
-        log::info!("font: {} {}px, theme {}", s.client.font.family.as_deref().unwrap_or("?"), s.client.font.size, s.client.theme.name);
+        log::info!(
+            "font: {} {}px, theme {}{}",
+            s.client.font.family.as_deref().unwrap_or("?"),
+            s.client.font.size,
+            s.client.theme.active_id(s.system_dark),
+            if s.client.theme.follow_system { " (following the system)" } else { "" }
+        );
         s.key_errors = crate::actions::apply_keybindings(&s.client.keybindings, cx);
         cx.set_global(s);
 
@@ -82,7 +112,32 @@ impl AppSettings {
         let mut v = self.file.value.clone();
         v.apply_env(|k| std::env::var(k).ok());
         v.font.family = Some(v.font.resolve_family(&self.fonts));
+        let (colors, issue) = self.themes.resolve(&v.theme, self.system_dark);
+        self.colors = colors;
+        self.theme_issue = issue;
         self.client = Arc::new(v);
+    }
+
+    /// The desktop switched between light and dark.
+    pub fn set_system_dark(cx: &mut App, dark: bool) {
+        if cx.global::<Self>().system_dark == dark {
+            return;
+        }
+        let mut s = cx.global::<Self>().clone();
+        s.system_dark = dark;
+        s.recompute();
+        log::info!("desktop appearance: {}", if dark { "dark" } else { "light" });
+        cx.set_global(s);
+    }
+
+    /// Re-read `themes/` (after the editor saved or deleted a theme).
+    pub fn reload_themes(cx: &mut App) {
+        let mut s = cx.global::<Self>().clone();
+        let themes = ThemeLibrary::load_default();
+        s.themes_stamp = themes.dir.as_deref().map(ThemeLibrary::stamp).unwrap_or_default();
+        s.themes = Arc::new(themes);
+        s.recompute();
+        cx.set_global(s);
     }
 
     /// Replace the stored settings and apply them everywhere.
@@ -120,8 +175,16 @@ impl AppSettings {
         Self::update(cx, |s| *s = value);
     }
 
-    /// Pick up edits made outside goatty (an editor on settings.json).
+    /// Pick up edits made outside goatty (an editor on settings.json, a
+    /// theme dropped into themes/).
     fn reload_if_changed(cx: &mut App) {
+        let s = cx.global::<Self>();
+        if let Some(dir) = s.themes.dir.as_deref()
+            && ThemeLibrary::stamp(dir) != s.themes_stamp
+        {
+            log::info!("themes changed on disk; reloading");
+            Self::reload_themes(cx);
+        }
         let s = cx.global::<Self>();
         let Some(path) = s.path.clone() else { return };
         if FileStamp::of(&path) == s.stamp {
@@ -138,6 +201,8 @@ impl AppSettings {
     /// All problems to show: file issues, key binding errors, save errors.
     pub fn problems(&self) -> Vec<String> {
         let mut v: Vec<String> = self.file.issues.iter().map(ToString::to_string).collect();
+        v.extend(self.theme_issue.iter().map(ToString::to_string));
+        v.extend(self.themes.issues.iter().map(ToString::to_string));
         v.extend(self.key_errors.iter().cloned());
         v.extend(self.save_error.iter().cloned());
         v

@@ -29,6 +29,27 @@ enum Cmd {
     /// goatty's managed zsh on this host: status, tool installs.
     #[command(subcommand)]
     Shell(ShellCmd),
+    /// This host's settings (host.json: shell, prompt, history).
+    #[command(subcommand)]
+    Settings(SettingsCmd),
+}
+
+#[derive(Subcommand)]
+enum SettingsCmd {
+    /// Where host.json is.
+    Path,
+    /// Print what's stored, `--all` values, or one dotted KEY.
+    Show {
+        key: Option<String>,
+        #[arg(long, conflicts_with = "key")]
+        all: bool,
+    },
+    /// Check host.json (or FILE); exit status 1 on problems.
+    Validate { file: Option<std::path::PathBuf> },
+    /// Set a dotted KEY (e.g. history.size 5000); builds and activates the shell configuration.
+    Set { key: String, value: String },
+    /// Reset KEY to its default.
+    Unset { key: String },
 }
 
 #[derive(Subcommand)]
@@ -67,7 +88,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let cmd = cli.cmd.unwrap_or(Cmd::Serve);
     // The proxy's stderr goes back over ssh into the GUI's log: keep it quiet.
-    let default_level = if matches!(cmd, Cmd::Proxy | Cmd::Shell(_)) { "warn" } else { "info" };
+    let default_level = if matches!(cmd, Cmd::Proxy | Cmd::Shell(_) | Cmd::Settings(_)) { "warn" } else { "info" };
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_level)).init();
 
     match cmd {
@@ -98,6 +119,17 @@ fn main() -> Result<()> {
             Control::connect_local(CLIENT)?.send_input(id, data)
         }
         Cmd::Stop => Control::connect_local(CLIENT)?.shutdown(),
+        Cmd::Settings(cmd) => {
+            use goatty_shell::cmd;
+            let svc = goatty_shell::HostService::from_env(std::env::current_exe().ok());
+            match cmd {
+                SettingsCmd::Path => cmd::settings_path(&svc),
+                SettingsCmd::Show { key, all } => cmd::settings_show(&svc, key.as_deref(), all),
+                SettingsCmd::Validate { file } => cmd::settings_validate(&svc, file.as_deref()),
+                SettingsCmd::Set { key, value } => cmd::settings_set(&svc, &key, &value),
+                SettingsCmd::Unset { key } => cmd::settings_unset(&svc, &key),
+            }
+        }
         Cmd::Shell(cmd) => {
             use goatty_shell::cmd;
             let host = goatty_config::load_host();

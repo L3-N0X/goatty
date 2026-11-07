@@ -19,6 +19,7 @@ Full plan: `docs/goatty-project-plan.md`. Code structure and where new work goes
 - **Remote R0 done:** protocol v2 (multiplexed, ack/window flow control with skip-and-resync), `goatty-client`, `--ssh`/`--via` transports via `goattyd proxy`, auto-reconnect.
 - **Restructured for Stage 1:** daemon split into a library, `goatty-config` crate, app built around a `Workspace` root view with GPUI actions/keybindings, clap CLIs.
 - **Stage 3 core done:** `goatty-shell` crate: sessions run zsh with a generated ZDOTDIR (autosuggestions, syntax highlighting, completion, Starship, Atuin, fzf, OSC 133/7), user dotfiles untouched; pinned sha256-verified user-space tool installs; `goattyd shell status|install|uninstall|dismiss`, `goatty-setup` inside the shell.
+- **Themes and settings CLI:** user themes (`~/.config/goatty/themes/`, importers for base16/iTerm2/Windows Terminal), theme editor, follow the desktop's light/dark, `goatty settings|theme` and `goattyd settings` commands.
 - **Stage 4 core done:** client/host settings documents (`settings.json` / `host.json`, lenient versioned store, sparse saves with backups), themes, configurable keybindings, host config built as validated generations with rollback, protocol v3 (host settings + `SetPalette`), live-applying settings window (`Ctrl+,`) with preview/apply for host settings, profile export/import.
 - **Next:** Stage 1 (tabs/splits, IME, box drawing, …) in parallel with remote R1, plus the rest of Stages 3/4 (GUI first-run/diagnostics, OSC 133 in the UI, settings polish). See the GitHub issues and milestones.
 
@@ -66,6 +67,9 @@ cargo build --release --workspace
 ./target/release/goattyd shell install [-y] [TOOL…]   # pinned, sha256-checked, into ~/.local/share/goatty
 ./target/release/goattyd shell generations | diff | rollback [N]
 ./target/release/goatty --settings[=shell]       # also open the settings window (Ctrl+, in the app)
+./target/release/goatty settings show|set|unset|validate|export|import   # no window needed
+./target/release/goatty theme list|import|export|set [--for light|dark]|delete
+./target/release/goattyd settings show|set|unset|validate               # host.json on this host
 
 cargo test --workspace                  # unit + daemon e2e (reconnect, multiplex, flow control, proxy reconnect)
 cargo fmt --all                          # rustfmt.toml: max_width 140; CI checks it
@@ -77,7 +81,7 @@ FLOOD=big.txt scripts/bench.sh goatty ./target/release/goatty --local
 
 Settings live in `~/.config/goatty/settings.json` (client) and `host.json` (host); env vars override them for one run. Env: `GOATTY_SOCKET`, `GOATTY_SHELL`, `GOATTY_SHELL_MANAGED=0` (plain zsh), `GOATTY_ZSH_USER_RC=1` (also source ~/.zshrc), `GOATTY_THEME`, `GOATTY_FONT`, `GOATTY_FONT_SIZE`, `GOATTY_STATS=1`, `GOATTY_RENDER=shaped`, `RUST_LOG`.
 
-- Tests that start a daemon must use their own `GOATTY_SOCKET`. Tests that run the managed zsh use a sandboxed `$HOME`/XDG dirs (`Dirs::under`), never the real ones. Never touch the user's running daemon at `$XDG_RUNTIME_DIR/goatty/goattyd.sock` (it holds their live sessions).
+- Tests that start a daemon or run the CLIs must use their own `GOATTY_SOCKET` and a sandboxed `HOME`. Tests that run the managed zsh use a sandboxed `$HOME`/XDG dirs (`Dirs::under`), never the real ones. Never touch the user's running daemon at `$XDG_RUNTIME_DIR/goatty/goattyd.sock` (it holds their live sessions).
 - After a protocol change, an old running goattyd can't talk to the new client. Tell the user instead of killing it.
 - The test build compiles gpui and is slow the first time; run long commands in the background.
 

@@ -34,13 +34,18 @@ pub mod keys;
 pub mod profile;
 pub mod store;
 mod theme;
+pub mod theme_import;
+pub mod themes;
 
 use std::path::PathBuf;
 
 pub use client::{ClientSettings, CursorShape, DebugSettings, FontSettings, OnLaunch, Renderer, TerminalSettings, WorkspaceSettings};
 pub use host::{HistorySettings, HostSettings, PromptSettings, PromptStyle, ShellSettings, ZshSettings};
 pub use store::{Document, FileStamp, Issue, Loaded};
-pub use theme::{Color, DEFAULT_THEME, THEMES, Theme, ThemeColors, ThemeOverrides, ThemeSettings, find_theme};
+pub use theme::{
+    Color, ColorSlot, DEFAULT_LIGHT_THEME, DEFAULT_THEME, THEMES, Theme, ThemeColors, ThemeOverrides, ThemeSettings, find_theme,
+};
+pub use themes::{ThemeEntry, ThemeLibrary};
 
 /// `$XDG_CONFIG_HOME/goatty` (default `~/.config/goatty`). `None` without `$HOME`.
 pub fn config_dir() -> Option<PathBuf> {
