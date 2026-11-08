@@ -2,8 +2,8 @@
 
 use goatty_config::keys::{self, ACTIONS};
 use goatty_config::{
-    ClientSettings, ColorSlot, CursorShape, HostSettings, LinkClick, OnLaunch, PasteConfirm, PromptStyle, Renderer, ThemeEntry,
-    ThemeSettings,
+    ClientSettings, ColorSlot, CursorShape, HostSettings, LinkClick, OnLaunch, PaneSettings, PasteConfirm, PromptStyle, Renderer,
+    TabBarShow, TabStyle, ThemeEntry, ThemeSettings,
 };
 use gpui::{
     AnyElement, App, Context, FontWeight, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled, Window, div, prelude::*,
@@ -1010,7 +1010,61 @@ impl SettingsWindow {
                     |v, _, cx| AppSettings::update(cx, |s| s.workspace.on_launch = v),
                 ),
             ))
-            .child(note(ui, "Command-line flags (--new, --attach) still win. Tabs and splits arrive with #30."))
+            .child(note(ui, "Command-line flags (--new, --attach) still win."))
+            .child(section(ui, "Tabs"))
+            .child(row(
+                ui,
+                "Tab style",
+                Some("Modern: browser-like tabs with icons and close buttons. Compact: one line of small text, like kitty"),
+                segmented(
+                    "tabs-style",
+                    &[(TabStyle::Modern, "Modern"), (TabStyle::Compact, "Compact")],
+                    &s.tabs.style,
+                    ui,
+                    |v, _, cx| AppSettings::update(cx, |s| s.tabs.style = v),
+                ),
+            ))
+            .child(row(
+                ui,
+                "Show the tab bar",
+                None,
+                segmented(
+                    "tabs-show",
+                    &[(TabBarShow::Always, "Always"), (TabBarShow::Multiple, "With two tabs or more")],
+                    &s.tabs.show,
+                    ui,
+                    |v, _, cx| AppSettings::update(cx, |s| s.tabs.show = v),
+                ),
+            ))
+            .child(row(
+                ui,
+                "Program icons",
+                Some("The icon of the running program (nvim, git, docker, python, …). Needs a Nerd Font: a patched terminal font or Symbols Nerd Font"),
+                toggle("tabs-icons", s.tabs.icons, ui, client(|s| s.tabs.icons = !s.tabs.icons)),
+            ))
+            .child(note(
+                ui,
+                "Double-click a tab to rename it, middle-click to close it, drag it to move it. New tabs and panes start in the \
+                 directory of the pane you're in.",
+            ))
+            .child(section(ui, "Panes"))
+            .child(row(
+                ui,
+                "Fade panes without focus",
+                Some("When a tab is split, how much the other panes fade"),
+                stepper(
+                    "panes-dim",
+                    format!("{:.0} %", s.panes.dim_inactive * 100.0),
+                    ui,
+                    client(|s| s.panes.dim_inactive = ((s.panes.dim_inactive * 10.0).round() - 1.0).max(0.0) / 10.0),
+                    client(|s| s.panes.dim_inactive = (((s.panes.dim_inactive * 10.0).round() + 1.0) / 10.0).min(PaneSettings::MAX_DIM)),
+                ),
+            ))
+            .child(note(
+                ui,
+                "Split with Ctrl+Shift+E (right) and Ctrl+Shift+O (down), move between panes with Alt+arrows, resize with \
+                 Alt+Shift+arrows or by dragging the line between them. Change the keys under Shortcuts.",
+            ))
             .into_any_element()
     }
 

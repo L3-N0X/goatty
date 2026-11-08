@@ -16,6 +16,7 @@ pub mod input;
 mod links;
 mod listener;
 pub mod paste;
+pub mod process;
 pub mod pty;
 pub mod snapshot;
 mod terminal;

@@ -44,4 +44,6 @@ pub enum PaneEvent {
     Exited(Option<u32>),
     /// The session can't be reattached (daemon restarted, or gave up).
     Lost(String),
+    /// The foreground program changed (`zsh`, `nvim`, …).
+    Process(Option<String>),
 }

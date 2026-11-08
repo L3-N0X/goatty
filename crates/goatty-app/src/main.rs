@@ -52,16 +52,20 @@ fn main() -> Result<()> {
             // No daemon: this process owns the shell and the host settings.
             let daemon = std::env::current_exe().ok().map(|e| e.with_file_name("goattyd")).filter(|d| d.exists());
             let host = Arc::new(HostService::from_env(daemon));
-            (Session::local(initial, &host)?, settings_window::HostLink::Local(host))
+            (Session::local(initial, &host, None)?, settings_window::HostLink::Local(host))
         }
         Some(endpoint) => {
             let conn = Connection::open(endpoint, CLIENT)?;
-            let session = Session::daemon(conn.clone(), initial, cli.attach_mode(on_launch == OnLaunch::New))?;
+            let session = Session::daemon(conn.clone(), initial, cli.attach_mode(on_launch == OnLaunch::New), None)?;
             (session, settings_window::HostLink::Daemon(conn))
         }
     };
     log::info!("backend: {}", session.backend_name());
 
-    app::run(session, link, cli.settings.clone());
+    let spawner = match &link {
+        settings_window::HostLink::Local(host) => session::Spawner::Local(host.clone()),
+        settings_window::HostLink::Daemon(conn) => session::Spawner::Daemon(conn.clone()),
+    };
+    app::run(session, spawner, link, cli.settings.clone());
     Ok(())
 }

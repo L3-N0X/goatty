@@ -43,8 +43,8 @@ pub mod themes;
 use std::path::PathBuf;
 
 pub use client::{
-    ClientSettings, CursorShape, DebugSettings, FontSettings, LinkClick, LinkSettings, OnLaunch, PasteConfirm, PasteSettings, Renderer,
-    TerminalSettings, WorkspaceSettings,
+    ClientSettings, CursorShape, DebugSettings, FontSettings, LinkClick, LinkSettings, OnLaunch, PaneSettings, PasteConfirm, PasteSettings,
+    Renderer, TabBarShow, TabSettings, TabStyle, TerminalSettings, WorkspaceSettings,
 };
 pub use color_history::ColorHistory;
 pub use colorspace::ColorFormat;

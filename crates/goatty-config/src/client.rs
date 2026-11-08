@@ -19,6 +19,8 @@ pub struct ClientSettings {
     /// (see [`keys::effective_bindings`]).
     pub keybindings: BTreeMap<String, Option<String>>,
     pub workspace: WorkspaceSettings,
+    pub tabs: TabSettings,
+    pub panes: PaneSettings,
     pub links: LinkSettings,
     pub paste: PasteSettings,
     pub debug: DebugSettings,
@@ -125,6 +127,60 @@ pub enum OnLaunch {
 #[serde(default)]
 pub struct WorkspaceSettings {
     pub on_launch: OnLaunch,
+}
+
+/// How the tab bar looks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TabStyle {
+    /// Browser-like tabs with rounded tops, icons and close buttons.
+    #[default]
+    Modern,
+    /// One line of small text, like kitty's tab bar.
+    Compact,
+}
+
+/// When the tab bar shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TabBarShow {
+    #[default]
+    Always,
+    /// Only with two tabs or more.
+    Multiple,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TabSettings {
+    pub style: TabStyle,
+    pub show: TabBarShow,
+    /// Icon of the running program (Nerd Font glyphs, when a Nerd Font is
+    /// installed).
+    pub icons: bool,
+}
+
+impl Default for TabSettings {
+    fn default() -> Self {
+        Self { style: TabStyle::Modern, show: TabBarShow::Always, icons: true }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PaneSettings {
+    /// How much panes without focus fade (0 = not at all), when a tab is split.
+    pub dim_inactive: f32,
+}
+
+impl PaneSettings {
+    pub const MAX_DIM: f32 = 0.6;
+}
+
+impl Default for PaneSettings {
+    fn default() -> Self {
+        Self { dim_inactive: 0.2 }
+    }
 }
 
 /// How links in the terminal (URLs, file paths, OSC 8 hyperlinks) open.
@@ -264,6 +320,7 @@ impl Document for ClientSettings {
         clamp(&mut f.size, FontSettings::MIN_SIZE, FontSettings::MAX_SIZE, "font.size", &mut issues);
         clamp(&mut f.line_height, FontSettings::MIN_LINE_HEIGHT, FontSettings::MAX_LINE_HEIGHT, "font.line_height", &mut issues);
         clamp(&mut self.terminal.padding, 0.0, TerminalSettings::MAX_PADDING, "terminal.padding", &mut issues);
+        clamp(&mut self.panes.dim_inactive, 0.0, PaneSettings::MAX_DIM, "panes.dim_inactive", &mut issues);
         // Theme names are checked against the theme library (user themes
         // live in their own files): `ThemeLibrary::resolve`.
         if self.theme.overrides.ansi.len() > 16 {

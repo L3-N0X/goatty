@@ -514,6 +514,12 @@ fn dispatch(s: &Shared, msg: ServerMsg) {
                 p.sink.event(PaneEvent::Exited(code));
             }
         }
+        ServerMsg::Process { session, name } => {
+            let sink = s.panes.lock().get(&session).map(|p| p.sink.clone());
+            if let Some(sink) = sink {
+                sink.event(PaneEvent::Process(name));
+            }
+        }
         ServerMsg::Pong { nonce } => {
             s.rtt_us.store(s.now_us().saturating_sub(nonce).max(1), Ordering::Relaxed);
         }

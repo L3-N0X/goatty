@@ -95,7 +95,7 @@ fn pump_until(s: &mut UnixStream, session: SessionId, t: &Terminal, consumed: &m
             ServerMsg::Attached { session: id, snapshot, .. } | ServerMsg::Resync { session: id, snapshot, .. } if id == session => {
                 t.feed(&snapshot);
             }
-            ServerMsg::Output { .. } | ServerMsg::Pong { .. } => {}
+            ServerMsg::Output { .. } | ServerMsg::Pong { .. } | ServerMsg::Process { .. } => {}
             other => panic!("unexpected {other:?}"),
         }
         send(s, &ClientMsg::Ack { session, consumed: *consumed });
@@ -104,9 +104,13 @@ fn pump_until(s: &mut UnixStream, session: SessionId, t: &Terminal, consumed: &m
 
 fn create(s: &mut UnixStream, opts: StreamOpts) -> (SessionId, u64) {
     send(s, &ClientMsg::Create { req: 1, size: SIZE, cwd: None, opts });
-    match read_msg::<_, ServerMsg>(s).unwrap() {
-        ServerMsg::Attached { req: 1, session, snapshot } => (session, snapshot.len() as u64),
-        other => panic!("{other:?}"),
+    loop {
+        match read_msg::<_, ServerMsg>(s).unwrap() {
+            ServerMsg::Attached { req: 1, session, snapshot } => return (session, snapshot.len() as u64),
+            // Another session's foreground program (multiplexed connection).
+            ServerMsg::Process { .. } => {}
+            other => panic!("{other:?}"),
+        }
     }
 }
 
@@ -201,6 +205,7 @@ fn sessions_multiplex_over_one_connection() {
                 c2 += data.len() as u64;
                 t2.feed(&data);
             }
+            ServerMsg::Process { .. } => {}
             other => panic!("{other:?}"),
         }
     }
@@ -237,7 +242,14 @@ fn slow_client_is_skipped_forward_with_resync() {
     // Catch up: the daemon answers with a Resync showing the final screen.
     c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     send(&mut c, &ClientMsg::Ack { session: id, consumed });
-    match read_msg::<_, ServerMsg>(&mut c).unwrap() {
+    // Foreground-program changes aren't stream data and may come first.
+    let resync = loop {
+        match read_msg::<_, ServerMsg>(&mut c).unwrap() {
+            ServerMsg::Process { .. } => continue,
+            other => break other,
+        }
+    };
+    match resync {
         ServerMsg::Resync { session, skipped, snapshot } => {
             assert_eq!(session, id);
             assert!(skipped > 7_000_000, "skipped {skipped}");
@@ -252,6 +264,34 @@ fn slow_client_is_skipped_forward_with_resync() {
     send(&mut c, &ClientMsg::Ack { session: id, consumed });
     send(&mut c, &ClientMsg::Input { session: id, data: b"echo after-$((6*7))\r".to_vec() });
     pump_until(&mut c, id, &t, &mut consumed, "after-42");
+}
+
+#[test]
+fn foreground_program_changes_are_reported() {
+    let d = start_daemon();
+    let mut c = connect(&d.sock);
+    let (id, _) = create(&mut c, StreamOpts::LOCAL);
+    // Read until a Process message matches `want`.
+    let wait_for = |c: &mut UnixStream, want: &dyn Fn(&str) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut seen = Vec::new();
+        loop {
+            assert!(Instant::now() < deadline, "no matching Process message; saw {seen:?}");
+            if let ServerMsg::Process { session, name } = read_msg::<_, ServerMsg>(c).unwrap() {
+                assert_eq!(session, id);
+                let name = name.unwrap_or_default();
+                seen.push(name.clone());
+                if want(&name) {
+                    return;
+                }
+            }
+        }
+    };
+    send(&mut c, &ClientMsg::Input { session: id, data: b"sleep 2\r".to_vec() });
+    wait_for(&mut c, &|n| n == "sleep");
+    assert_eq!(session_info(&d.sock, id).process.as_deref(), Some("sleep"));
+    // Back at the prompt: the shell again.
+    wait_for(&mut c, &|n| n != "sleep" && !n.is_empty());
 }
 
 // ---- remote path: goatty-client over `goattyd proxy` ------------------------

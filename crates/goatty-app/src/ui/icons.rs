@@ -36,6 +36,8 @@ icons! {
     TriangleAlert => "triangle-alert.svg",
     Loader => "loader.svg",
     Close => "x.svg",
+    Plus => "plus.svg",
+    Terminal => "terminal.svg",
 }
 
 impl Icon {

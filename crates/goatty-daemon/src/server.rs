@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
@@ -70,7 +70,12 @@ impl Daemon {
             pty: Mutex::new(pty),
             subs: Mutex::new(Vec::new()),
             created_unix: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+            process: Mutex::new(None),
+            fg: OnceLock::new(),
         });
+        if let Err(e) = session.watch_foreground() {
+            log::warn!("session {id}: can't watch the foreground program: {e}");
+        }
         let pid = session.pty.lock().pid();
         log::info!(
             "session {id}: spawned {}{} (pid {pid:?})",

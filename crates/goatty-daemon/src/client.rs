@@ -88,6 +88,8 @@ pub(crate) fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                 ClientMsg::Input { session, data } => {
                     if let Some((s, _)) = subs.get(&session) {
                         let _ = s.pty.lock().write(&data);
+                        // Enter may have started a program that prints nothing.
+                        s.poke_foreground();
                     }
                 }
                 ClientMsg::Resize { session, size } => {

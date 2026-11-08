@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 pub type SessionId = u64;
 /// Client-chosen correlation id for request/response pairs.
@@ -166,6 +166,9 @@ pub struct SessionInfo {
     pub rows: u16,
     pub attached: u32,
     pub created_unix: u64,
+    /// v6: the foreground program (`zsh` at the prompt, `nvim` while that
+    /// runs), if the host can tell.
+    pub process: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -213,6 +216,12 @@ pub enum ServerMsg {
     Exited {
         session: SessionId,
         code: Option<u32>,
+    },
+    /// v6: the session's foreground program changed (also sent right after
+    /// `Attached`). Tabs show it as an icon and title fallback.
+    Process {
+        session: SessionId,
+        name: Option<String>,
     },
     Pong {
         nonce: u64,

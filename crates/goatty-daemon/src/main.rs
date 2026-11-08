@@ -240,12 +240,13 @@ fn main() -> Result<()> {
             }
             for s in list {
                 println!(
-                    "{:>3}  pid {:<8} {}x{:<4} attached {}  cwd {}  {}",
+                    "{:>3}  pid {:<8} {}x{:<4} attached {}  running {:<10} cwd {}  {}",
                     s.id,
                     s.pid.map(|p| p.to_string()).unwrap_or_default(),
                     s.cols,
                     s.rows,
                     s.attached,
+                    s.process.unwrap_or_else(|| "?".into()),
                     s.cwd.unwrap_or_default(),
                     s.title
                 );

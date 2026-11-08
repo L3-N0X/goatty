@@ -6,13 +6,13 @@ use gpui::{App, AppContext, Bounds, WindowBounds, WindowOptions, px, size};
 
 use crate::actions::{OpenSettings, ReloadShells};
 use crate::command_palette;
-use crate::session::Session;
+use crate::session::{Session, Spawner};
 use crate::settings::AppSettings;
 use crate::settings_window::{self, HostLink};
 use crate::toast::{self, Toast};
 use crate::workspace::Workspace;
 
-pub fn run(session: Arc<Session>, link: HostLink, open_settings: Option<String>) {
+pub fn run(session: Arc<Session>, spawner: Spawner, link: HostLink, open_settings: Option<String>) {
     gpui_platform::application().with_assets(crate::ui::icons::Assets).run(move |cx: &mut App| {
         AppSettings::init(cx);
         settings_window::set_host_link(cx, Some(link));
@@ -29,7 +29,7 @@ pub fn run(session: Arc<Session>, link: HostLink, open_settings: Option<String>)
             },
             |window, cx| {
                 window.set_window_title("goatty");
-                cx.new(|cx| Workspace::new(session, window, cx))
+                cx.new(|cx| Workspace::new(session, spawner, window, cx))
             },
         )
         .expect("open window");
