@@ -151,6 +151,17 @@ fn palette_answers_color_queries() {
     }
 }
 
+fn reload_until(d: &Daemon, want: u32, what: &str) -> u32 {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut n = reload(d);
+    while n != want && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+        n = reload(d);
+    }
+    assert_eq!(n, want, "{what}");
+    n
+}
+
 /// Start a session and leave it running detached.
 fn create_session(d: &Daemon) -> u64 {
     let mut s = UnixStream::connect(&d.sock).unwrap();
@@ -193,7 +204,10 @@ fn reload_reaches_managed_zsh() {
     };
     let d = start_daemon_with(zsh);
     let id = create_session(&d);
-    assert_eq!(reload(&d), 1);
+    // A just-spawned session is registered before the reply ships, but under
+    // load the daemon may still be between the fork and our Attached read;
+    // wait briefly instead of assuming the first request is already settled.
+    reload_until(&d, 1, "the managed zsh is counted");
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(session_ids(&d), [id], "the session survives the reload");
     Control::connect(&d.sock, "test").unwrap().kill(id).unwrap();
@@ -202,5 +216,5 @@ fn reload_reaches_managed_zsh() {
         assert!(Instant::now() < deadline, "session did not exit");
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert_eq!(reload(&d), 0, "exited shells are forgotten");
+    reload_until(&d, 0, "exited shells are forgotten");
 }

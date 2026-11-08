@@ -408,27 +408,32 @@ fn reloads_on_request() {
     // Busy: reloads once the command is done.
     sh.run("y=1");
     let n = sh.prompts();
-    sh.pty.write(b"sleep 0.5\r").unwrap();
+    sh.pty.write(b"/bin/sleep 0.5\r").unwrap();
     std::thread::sleep(Duration::from_millis(200));
     svc.reload_shells();
     sh.wait_for_prompts(n + 1);
     sh.run("print -r -- Y=${y:-unset}");
     assert!(sh.text().contains("Y=unset"), "{}", sh.text());
 
-    // Something typed but not entered: left alone until Enter.
+    // Something typed but not entered: left alone until Enter. The signal
+    // still arrives quickly; give slow runners a moment instead of a fixed
+    // sleep, and assert it stayed untouched after that.
     sh.run("z=1");
     let n = sh.prompts();
     sh.pty.write(b"print -r -- typed").unwrap();
     sh.wait_for(b"typed");
     svc.reload_shells();
-    std::thread::sleep(Duration::from_millis(300));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while sh.prompts() == n && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert_eq!(sh.prompts(), n, "no reload while typing");
     sh.run("");
     sh.run("print -r -- Z=${z:-unset}");
     assert!(sh.text().contains("Z=unset"), "{}", sh.text());
 
     // Background jobs: only a reminder, the shell keeps its state.
-    sh.run("w=1; sleep 30 &");
+    sh.run("w=1; /bin/sleep 30 &");
     let n = sh.prompts();
     svc.reload_shells();
     sh.wait_for_prompts(n + 1);
