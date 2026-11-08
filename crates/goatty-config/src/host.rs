@@ -18,9 +18,11 @@ pub struct HostSettings {
     /// The user's own aliases, by name (#88). Rendered after the plugins'
     /// aliases, so one of these with the same name wins.
     pub aliases: BTreeMap<String, UserAlias>,
-    /// Installed plugins' configuration, by plugin id (Stage 5). Which
-    /// plugins are installed is host state, not a setting (goatty-shell's
-    /// lock file); an entry for a plugin that isn't installed is ignored.
+    /// Plugins' configuration, by plugin id (Stage 5): the built-in ones
+    /// (`autosuggestions`, `syntax-highlighting`, `starship`, `atuin`,
+    /// `fzf`) and installed ones. Which plugins are installed is host state,
+    /// not a setting (goatty-shell's lock file); an entry for a plugin that
+    /// isn't there is ignored.
     pub plugins: BTreeMap<String, PluginConfig>,
 }
 
@@ -29,10 +31,12 @@ pub struct HostSettings {
 #[serde(default)]
 pub struct PluginConfig {
     /// Load it in new shells. Off keeps it installed but out of the shell.
+    #[serde(skip_serializing_if = "is_true")]
     pub enabled: bool,
     /// Setting id → value, checked against the plugin's own schema when
     /// the shell configuration is built (bad values fall back to the
     /// plugin's default and are reported there).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub settings: BTreeMap<String, Value>,
     /// Names of the plugin's aliases the user switched off (the rest of
     /// the plugin stays on).
@@ -128,8 +132,9 @@ impl Default for ShellSettings {
     }
 }
 
-/// What goatty's managed zsh loads. Each feature is skipped quietly when
-/// its tool isn't installed (`goattyd shell status` shows what's missing).
+/// How goatty's managed zsh starts. The tools it loads (autosuggestions,
+/// syntax highlighting, Starship, Atuin, fzf) are built-in plugins,
+/// turned on and off in [`HostSettings::plugins`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ZshSettings {
@@ -139,17 +144,13 @@ pub struct ZshSettings {
     /// Also source the user's `.zshrc`. Off: most `.zshrc` files load their
     /// own prompt and plugins, which would fight goatty's.
     pub user_rc: bool,
-    pub autosuggestions: bool,
-    pub syntax_highlighting: bool,
-    /// fzf key bindings (Ctrl+T, Alt+C) when fzf is installed.
-    pub fzf: bool,
     /// OSC 133 prompt marks and OSC 7 working directory reports.
     pub integration: bool,
 }
 
 impl Default for ZshSettings {
     fn default() -> Self {
-        Self { user_env: true, user_rc: false, autosuggestions: true, syntax_highlighting: true, fzf: true, integration: true }
+        Self { user_env: true, user_rc: false, integration: true }
     }
 }
 
@@ -163,11 +164,12 @@ pub enum PromptStyle {
     Minimal,
 }
 
+/// How the prompt looks. goatty turns these into the Starship plugin's
+/// config (and its small fallback prompt); whether Starship is used at all
+/// is `plugins.starship.enabled`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PromptSettings {
-    /// Use Starship when installed (else a small built-in prompt).
-    pub starship: bool,
     pub style: PromptStyle,
     /// Input on its own line below the prompt.
     pub two_line: bool,
@@ -175,21 +177,11 @@ pub struct PromptSettings {
     pub newline_before: bool,
     /// Show how long a command took when it ran at least this long; 0: never.
     pub duration_threshold_ms: u32,
-    /// Use `~/.config/starship.toml` (or `STARSHIP_CONFIG`) when it exists,
-    /// instead of goatty's generated config.
-    pub prefer_user_config: bool,
 }
 
 impl Default for PromptSettings {
     fn default() -> Self {
-        Self {
-            starship: true,
-            style: PromptStyle::Rich,
-            two_line: true,
-            newline_before: false,
-            duration_threshold_ms: 2000,
-            prefer_user_config: true,
-        }
+        Self { style: PromptStyle::Rich, two_line: true, newline_before: false, duration_threshold_ms: 2000 }
     }
 }
 
@@ -203,10 +195,6 @@ pub struct HistorySettings {
     pub ignore_space: bool,
     /// New commands show up in other running shells right away.
     pub share_between_sessions: bool,
-    /// Atuin's searchable history on Ctrl+R, when installed.
-    pub atuin: bool,
-    /// Let Atuin take over the Up arrow too.
-    pub atuin_up_arrow: bool,
 }
 
 impl HistorySettings {
@@ -216,24 +204,17 @@ impl HistorySettings {
 
 impl Default for HistorySettings {
     fn default() -> Self {
-        Self {
-            size: 100_000,
-            ignore_duplicates: true,
-            ignore_space: true,
-            share_between_sessions: false,
-            atuin: true,
-            atuin_up_arrow: false,
-        }
+        Self { size: 100_000, ignore_duplicates: true, ignore_space: true, share_between_sessions: false }
     }
 }
 
 impl Document for HostSettings {
     const NAME: &'static str = "host";
-    const VERSION: u32 = 1;
+    const VERSION: u32 = 2;
     const OPEN_MAPS: &'static [&'static str] = &["aliases", "plugins"];
 
     fn migrations() -> &'static [Migration] {
-        &[]
+        &[(1, builtin_tools_became_plugins)]
     }
 
     fn validate(&mut self) -> Vec<Issue> {
@@ -282,7 +263,64 @@ impl Document for HostSettings {
     }
 }
 
+/// Version 1 → 2 (#98): the built-in tools became plugins. Their switches
+/// move to `plugins.<id>.enabled`, Starship's and Atuin's options to their
+/// plugin settings. Only keys present in the file move, so it stays sparse.
+fn builtin_tools_became_plugins(doc: &mut Value) {
+    // (where it was, plugin, its setting there: `None` for `enabled`)
+    const MOVES: &[(&[&str], &str, Option<&str>)] = &[
+        (&["shell", "zsh", "autosuggestions"], "autosuggestions", None),
+        (&["shell", "zsh", "syntax_highlighting"], "syntax-highlighting", None),
+        (&["shell", "zsh", "fzf"], "fzf", None),
+        (&["prompt", "starship"], "starship", None),
+        (&["prompt", "prefer_user_config"], "starship", Some("prefer_user_config")),
+        (&["history", "atuin"], "atuin", None),
+        (&["history", "atuin_up_arrow"], "atuin", Some("up_arrow")),
+    ];
+    let object = || Value::Object(Default::default());
+    for &(path, plugin, setting) in MOVES {
+        let (key, parents) = path.split_last().expect("non-empty path");
+        let Some(v) = parents.iter().try_fold(&mut *doc, |v, p| v.get_mut(*p)).and_then(Value::as_object_mut).and_then(|o| o.remove(*key))
+        else {
+            continue;
+        };
+        let Some(root) = doc.as_object_mut() else { return };
+        let Some(entry) = root.entry("plugins").or_insert_with(object).as_object_mut().map(|p| p.entry(plugin).or_insert_with(object))
+        else {
+            continue;
+        };
+        let target = match setting {
+            None => entry.as_object_mut().map(|e| (e, "enabled")),
+            Some(s) => entry.as_object_mut().and_then(|e| e.entry("settings").or_insert_with(object).as_object_mut()).map(|o| (o, s)),
+        };
+        if let Some((obj, name)) = target {
+            obj.entry(name).or_insert(v);
+        }
+    }
+}
+
 impl HostSettings {
+    /// Whether plugin `id` loads (on unless its entry says otherwise).
+    pub fn plugin_enabled(&self, id: &str) -> bool {
+        self.plugins.get(id).is_none_or(|p| p.enabled)
+    }
+
+    /// A plugin's stored setting as a bool, `default` when it isn't set
+    /// (or isn't a bool: the shell build reports that).
+    pub fn plugin_bool(&self, id: &str, key: &str, default: bool) -> bool {
+        self.plugins.get(id).and_then(|p| p.settings.get(key)).and_then(Value::as_bool).unwrap_or(default)
+    }
+
+    /// Change plugin `id`'s entry; an entry left with nothing but defaults
+    /// is dropped, so `host.json` stays sparse.
+    pub fn edit_plugin(&mut self, id: &str, f: impl FnOnce(&mut PluginConfig)) {
+        let entry = self.plugins.entry(id.to_owned()).or_default();
+        f(entry);
+        if *entry == PluginConfig::default() {
+            self.plugins.remove(id);
+        }
+    }
+
     /// Apply `GOATTY_*` overrides read through `var`.
     pub fn apply_env(&mut self, var: impl Fn(&str) -> Option<String>) {
         if let Some(sh) = var("GOATTY_SHELL").filter(|s| !s.is_empty()) {
@@ -396,6 +434,51 @@ mod tests {
         assert!(crate::store::is_known_key::<HostSettings>("aliases.gs.command"));
         let set = crate::store::set_key::<HostSettings>("", "aliases.ll.command", "ls -l").unwrap();
         assert_eq!(set.value.aliases["ll"], UserAlias::new("ls -l"));
+    }
+
+    #[test]
+    fn version_1_tool_switches_move_to_plugins() {
+        let loaded = crate::store::parse::<HostSettings>(
+            r#"{"version": 1,
+                "shell": {"zsh": {"autosuggestions": false, "syntax_highlighting": false, "fzf": true, "user_rc": true}},
+                "prompt": {"starship": false, "prefer_user_config": false, "two_line": false},
+                "history": {"atuin_up_arrow": true, "size": 500},
+                "plugins": {"atuin": {"settings": {"other": 1}}, "eza": {"enabled": false}}}"#,
+        );
+        assert!(loaded.issues.is_empty(), "{:?}", loaded.issues);
+        assert!(loaded.unknown.is_empty(), "{:?}", loaded.unknown);
+        let s = &loaded.value;
+        assert!(!s.plugin_enabled("autosuggestions"));
+        assert!(!s.plugin_enabled("syntax-highlighting"));
+        assert!(s.plugin_enabled("fzf"));
+        assert!(!s.plugin_enabled("starship"));
+        assert!(!s.plugin_bool("starship", "prefer_user_config", true));
+        assert!(s.plugin_enabled("atuin"));
+        assert!(s.plugin_bool("atuin", "up_arrow", false));
+        assert_eq!(s.plugins["atuin"].settings["other"], 1, "existing plugin settings stay");
+        assert!(!s.plugin_enabled("eza"));
+        assert!(s.shell.zsh.user_rc && !s.prompt.two_line && s.history.size == 500, "the rest is untouched");
+        // Written back as version 2, without the old keys.
+        let json = crate::store::to_json(&loaded.value, &loaded.unknown);
+        assert!(json.contains("\"version\": 2"), "{json}");
+        assert!(!json.contains("syntax_highlighting") && !json.contains("atuin_up_arrow"), "{json}");
+        // A version 2 file is left alone; old keys in it are unknown.
+        let v2 = crate::store::parse::<HostSettings>(r#"{"version": 2, "prompt": {"starship": false}}"#);
+        assert!(v2.value.plugin_enabled("starship"));
+        assert_eq!(v2.unknown.len(), 1);
+    }
+
+    #[test]
+    fn plugin_entries_stay_sparse() {
+        let mut s = HostSettings::default();
+        s.edit_plugin("atuin", |p| p.enabled = false);
+        assert!(!s.plugin_enabled("atuin"));
+        s.edit_plugin("atuin", |p| p.enabled = true);
+        assert!(s.plugins.is_empty(), "back to the default: no entry");
+        s.edit_plugin("starship", |p| {
+            p.settings.insert("prefer_user_config".into(), false.into());
+        });
+        assert!(!s.plugin_bool("starship", "prefer_user_config", true));
     }
 
     #[test]

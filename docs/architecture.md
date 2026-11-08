@@ -49,14 +49,15 @@ Threads per session: `s{id}-reader` (PTY → terminal → subscribers) and `s{id
 | Module    | Owns                                                                    |
 |-----------|-------------------------------------------------------------------------|
 | `launch`  | `Launcher`: resolve the shell program, write the managed ZDOTDIR, build the `Launch` (program, args, env) |
-| `zsh`     | render `settings.zsh` + the static startup files in `zsh/`, write them atomically |
-| `tools`   | pinned tool catalog (versions, URLs, sha256), finding system/managed copies |
-| `install` | download (curl/wget), verify, unpack, activate symlinks, uninstall      |
+| `zsh`     | render `settings.zsh`, the plugin slot files (`plugins-*.zsh`) + the static startup files in `zsh/`, write them atomically |
+| `builtins`| the plugins that come with goatty (`plugins/<id>/`, compiled in): autosuggestions, syntax highlighting, Starship, Atuin, fzf |
+| `packages`| where a plugin's package is: system copy, goatty's managed copy, or missing |
+| `install` | download (curl/wget), verify, unpack, activate `bin/` and `plugins/` symlinks, uninstall packages |
 | `doctor`  | start a real managed shell and parse `goatty-status`                    |
 | `generation` | build → validate (`zsh -n`) → activate generations; list, rollback, diff |
 | `service` | `HostService`: host settings get/set(preview, apply)/generations/rollback, for the daemon API and `goatty --local` |
 | `cmd`     | `goattyd shell status|install|uninstall|dismiss|generations|diff|rollback` |
-| `plugins` | plugins on this host: `registry` (trusted sources, fetch → verify → snapshot), `lock` (installed files + approvals), `Plugins` (find, plan, install, uninstall, catalog), `active` (what a generation renders), `cmd` (`goattyd plugin …`) |
+| `plugins` | plugins on this host: `registry` (trusted sources, fetch → verify → snapshot), `lock` (installed files + approvals), `Plugins` (find, plan, install, uninstall, catalog; built-in ones included), `active` + `load_order` (what a generation renders, in slot order), `cmd` (`goattyd plugin …`) |
 | `dirs`    | XDG locations under `goatty/`                                           |
 
 Design and startup sequence: [`managed-zsh.md`](managed-zsh.md). The zsh behaviour is tested against real zsh in `tests/zsh_startup.rs` (sandboxed `$HOME`, PTY for OSC 133/7).
@@ -115,7 +116,7 @@ Input: GPUI dispatches a bound action before the view's raw `on_key_down`. Short
 | Kitty keyboard (#22)                   | `goatty-term/src/input.rs`, fed from `terminal/keys.rs`               |
 | URL detection (#27)                    | `goatty-term` (detect on `Frame` rows) + view (hover/click)           |
 | Shell integration, terminal side (#28) | `goatty-term` listener (OSC 133/7 → `UiEvent`) + daemon `SessionInfo`; the zsh side is in `goatty-shell/zsh/integration.zsh` |
-| Managed zsh features, tool versions    | `goatty-shell/zsh/zshrc.zsh` (load order matters, see `managed-zsh.md`), `goatty-shell/src/tools.rs` |
+| Managed zsh features, tool versions    | `goatty-shell/zsh/zshrc.zsh` (load order matters, see `managed-zsh.md`); the tools are built-in plugins: `goatty-shell/plugins/<id>/plugin.toml` (+ `builtins.rs` to list a new one) |
 | GUI first-run / shell diagnostics      | daemon API for `goatty_shell::cmd`-style status/install (new wire messages), then a GPUI view |
 | Bash/Fish adapters (Stage 6)           | `goatty-shell`: a sibling of `zsh.rs` + its startup files; `Launcher::launch` picks by program |
 | New client setting                     | field in `goatty-config/src/client.rs` (+ `validate`), control in `settings_window/pages.rs`, apply in `TerminalView::apply_settings` |

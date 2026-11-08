@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use goatty_config::{HostSettings, PluginConfig};
-use goatty_plugin::api::{self, Catalog, Installed, Plan};
+use goatty_plugin::api::{self, Catalog, Installed, PackageState, Plan};
 use goatty_plugin::manifest::{Setting, SettingKind};
 use goatty_plugin::{Permission, schema};
 use gpui::{AnyElement, Context, Entity, FontWeight, IntoElement, ParentElement, SharedString, Styled, Subscription, div, prelude::*, px};
@@ -150,7 +150,7 @@ impl SettingsWindow {
             Ok(c) => {
                 if let (Some(draft), Some(id)) = (self.draft.as_mut(), id) {
                     if installed {
-                        draft.plugins.entry(id).or_default().enabled = true;
+                        draft.edit_plugin(&id, |p| p.enabled = true);
                     } else {
                         draft.plugins.remove(&id);
                     }
@@ -173,7 +173,7 @@ impl SettingsWindow {
 
     fn edit_plugin(&mut self, id: &str, cx: &mut Context<'_, Self>, f: impl FnOnce(&mut PluginConfig)) {
         let id = id.to_owned();
-        self.edit_host(cx, move |h: &mut HostSettings| f(h.plugins.entry(id).or_default()));
+        self.edit_host(cx, move |h: &mut HostSettings| h.edit_plugin(&id, f));
     }
 
     /// Set (or with `None` reset) one plugin setting in the draft.
@@ -288,11 +288,19 @@ impl SettingsWindow {
                 || keywords.iter().any(|k| k.contains(&query))
         };
 
+        let shown = |i: &&Installed| matches(&i.id, &i.manifest.name, &i.manifest.summary, &i.manifest.keywords);
+        let builtin: Vec<&Installed> = cat.installed.iter().filter(|i| i.builtin).filter(shown).collect();
+        if !builtin.is_empty() {
+            page = page.child(section(ui, "Built in"));
+            for inst in builtin {
+                page = page.child(self.installed_card(ui, inst, cx));
+            }
+        }
         page = page.child(section(ui, "Installed"));
-        let installed: Vec<&Installed> =
-            cat.installed.iter().filter(|i| matches(&i.id, &i.manifest.name, &i.manifest.summary, &i.manifest.keywords)).collect();
+        let installed: Vec<&Installed> = cat.installed.iter().filter(|i| !i.builtin).filter(shown).collect();
         if installed.is_empty() {
-            page = page.child(note(ui, if cat.installed.is_empty() { "Nothing yet: pick something below." } else { "No match." }));
+            page = page
+                .child(note(ui, if cat.installed.iter().all(|i| i.builtin) { "Nothing yet: pick something below." } else { "No match." }));
         }
         for inst in installed {
             page = page.child(self.installed_card(ui, inst, cx));
@@ -394,8 +402,16 @@ impl SettingsWindow {
         let id = inst.id.clone();
         let enabled = self.host_value().and_then(|h| h.plugins.get(&id)).is_none_or(|p| p.enabled);
         let confirming = self.plugins.confirm_uninstall.as_deref() == Some(id.as_str());
-        let source =
-            if inst.verified { format!("{} · {}", inst.version, inst.source) } else { format!("{} · local, unverified", inst.version) };
+        let source = if inst.builtin {
+            "comes with goatty".to_string()
+        } else if inst.verified {
+            format!("{} · {}", inst.version, inst.source)
+        } else {
+            format!("{} · local, unverified", inst.version)
+        };
+        // A built-in plugin whose tool is missing or older than its pin: goatty can download it.
+        let fetch = inst.builtin && inst.packages.iter().any(|p| p.available && p.needs_install());
+        let outdated = inst.packages.iter().any(|p| matches!(&p.state, PackageState::Managed { version } if *version != p.version));
         let mut card = Self::card(ui).child(
             div()
                 .flex()
@@ -415,9 +431,19 @@ impl SettingsWindow {
                         self.act(cx, move |view, cx| view.review_plugin(id.clone(), Some(v.clone()), cx)),
                     ))
                 })
-                .child({
+                .when(fetch, |d| {
                     let id = id.clone();
-                    button(
+                    d.child(button(
+                        SharedString::from(format!("fetch-{id}")),
+                        if outdated { "Update…" } else { "Install…" },
+                        ButtonKind::Primary,
+                        ui,
+                        self.act(cx, move |v, cx| v.review_plugin(id.clone(), None, cx)),
+                    ))
+                })
+                .when(!inst.builtin, |d| {
+                    let id = id.clone();
+                    d.child(button(
                         SharedString::from(format!("uninstall-{id}")),
                         if confirming { "Really uninstall?" } else { "Uninstall" },
                         ButtonKind::Danger,
@@ -430,7 +456,7 @@ impl SettingsWindow {
                                 cx.notify();
                             }
                         }),
-                    )
+                    ))
                 })
                 .child({
                     let id = id.clone();
@@ -443,11 +469,26 @@ impl SettingsWindow {
                 }),
         );
         card = card.child(div().text_sm().child(SharedString::from(inst.manifest.summary.clone())));
+        if inst.builtin {
+            for p in &inst.packages {
+                let line = match &p.state {
+                    PackageState::System { path } => format!("Uses {path}"),
+                    PackageState::Managed { version } if *version == p.version => format!("goatty's copy, {version}"),
+                    PackageState::Managed { version } => format!("goatty's copy, {version} ({} available)", p.version),
+                    PackageState::Missing if p.available => "Not installed yet: Install… downloads it into goatty's directory".into(),
+                    PackageState::Missing => {
+                        "Not installed, and goatty has no build for this host: install it with your package manager".into()
+                    }
+                };
+                card = card.child(note(ui, line));
+            }
+        }
         if let Some(why) = &inst.incompatible {
             card = card.child(note(ui, format!("Off on this host: {why}")));
         }
         if !enabled {
-            return card.child(note(ui, "Disabled: installed, but not loaded in new shells.")).into_any_element();
+            let why = if inst.builtin { "Off: not loaded in new shells." } else { "Disabled: installed, but not loaded in new shells." };
+            return card.child(note(ui, why)).into_any_element();
         }
         let values = self.plugin_values(inst);
         let mut group: Option<&str> = None;
@@ -560,7 +601,9 @@ impl SettingsWindow {
             Some(_) => format!("Reinstall {} {}", plan.name, plan.version),
             None => format!("Install {} {}", plan.name, plan.version),
         };
-        let source = if plan.verified {
+        let source = if plan.builtin {
+            "Comes with goatty: this installs the tool it needs into goatty's own directory".to_string()
+        } else if plan.verified {
             format!("From the {} registry (signature checked) · by {}", plan.source, plan.publisher)
         } else {
             format!("From {} (not from a registry) · by {}", plan.source, plan.publisher)
@@ -583,10 +626,11 @@ impl SettingsWindow {
             for d in &plan.downloads {
                 let line = match &d.system {
                     Some(p) => format!("{} {}: already installed at {p}; goatty uses that copy", d.package, d.version),
+                    None if d.current => format!("{} {}: goatty's copy is already installed", d.package, d.version),
                     None => format!("{} {} · {} · {}", d.package, d.version, size(d.size), d.url),
                 };
                 v = v.child(div().text_sm().child(SharedString::from(line)));
-                if d.system.is_none() {
+                if d.fetches() {
                     v = v.child(
                         div()
                             .text_xs()

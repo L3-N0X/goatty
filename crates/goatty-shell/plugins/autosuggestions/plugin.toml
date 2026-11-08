@@ -1,0 +1,66 @@
+# Built into goatty (crates/goatty-shell/plugins/): always available, turned
+# off rather than uninstalled. Same format as registry plugins (docs/plugins.md).
+schema = 1
+id = "autosuggestions"
+name = "Autosuggestions"
+version = "1.0.0"
+summary = "Suggests the rest of a command in grey while you type"
+description = """
+zsh-autosuggestions completes what you're typing from your history (and from completion when history has nothing): → or End accepts the suggestion, Ctrl+→ one word of it. goatty uses your distribution's copy when it's installed and downloads its own otherwise."""
+publisher = "goatty"
+homepage = "https://github.com/zsh-users/zsh-autosuggestions"
+license = "MIT"
+keywords = ["suggestions", "history", "completion", "zsh-autosuggestions"]
+
+[[package]]
+id = "autosuggestions"
+version = "0.7.1"
+source = "zsh-autosuggestions.zsh"
+system_paths = [
+  "/usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh",          # Arch
+  "/usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh",                      # Debian, Ubuntu, Fedora
+  "/usr/local/share/zsh-autosuggestions/zsh-autosuggestions.zsh",                # Homebrew (Intel), FreeBSD
+  "/opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh",             # Homebrew (Apple silicon)
+  "/run/current-system/sw/share/zsh-autosuggestions/zsh-autosuggestions.zsh",    # NixOS
+]
+
+[[package.asset]]
+target = "any"
+url = "https://github.com/zsh-users/zsh-autosuggestions/archive/refs/tags/v0.7.1.tar.gz"
+sha256 = "0df7affff21cd87ed298e6a3970ed08a1dd66a6efa676454ee5b091ad503badf"
+size = 29968
+root = "zsh-autosuggestions-0.7.1"
+
+[[setting]]
+id = "strategy"
+label = "Suggest from"
+help = "Where suggestions come from. A ZSH_AUTOSUGGEST_STRATEGY you set yourself wins."
+type = "choice"
+default = "history-completion"
+choices = [
+  { value = "history-completion", label = "History, then completion", help = "Your history first; completion fills in when it has nothing" },
+  { value = "history", label = "History only" },
+  { value = "previous-command", label = "History after the same command", help = "Prefers what you ran after the previous command last time, then completion" },
+]
+
+[[setting]]
+id = "max_length"
+label = "No suggestions past"
+help = "Long command lines (pasted scripts) get no suggestions, so typing stays fast."
+type = "integer"
+default = 80
+min = 10
+max = 2000
+step = 10
+unit = "characters"
+advanced = true
+
+[zsh]
+init = "zsh/init.zsh"
+load = "line-editor"
+# It wraps the widgets defined before it: let fzf and Atuin define theirs first.
+after = ["fzf", "atuin"]
+
+[permissions]
+binaries = "zsh-autosuggestions is a zsh plugin: unless your distribution's copy is installed, goatty downloads its release tarball from GitHub."
+shell-code = "Sets the plugin's options (where suggestions come from, the length limit) before it loads."

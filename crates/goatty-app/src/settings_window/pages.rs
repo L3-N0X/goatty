@@ -70,6 +70,28 @@ impl SettingsWindow {
         }
     }
 
+    /// Callback turning one of goatty's built-in plugins on or off.
+    fn toggle_plugin(&self, cx: &Context<'_, Self>, id: &'static str) -> impl Fn(&mut Window, &mut App) + 'static {
+        self.host(cx, move |h| {
+            let on = h.plugin_enabled(id);
+            h.edit_plugin(id, |p| p.enabled = !on);
+        })
+    }
+
+    /// Callback flipping a bool setting of a built-in plugin.
+    fn toggle_plugin_bool(&self, cx: &Context<'_, Self>, id: &'static str, key: &'static str) -> impl Fn(&mut Window, &mut App) + 'static {
+        self.host(cx, move |h| {
+            let on = h.plugin_bool(id, key, builtin_bool_default(id, key));
+            h.edit_plugin(id, |p| {
+                if on == builtin_bool_default(id, key) {
+                    p.settings.insert(key.into(), (!on).into());
+                } else {
+                    p.settings.remove(key);
+                }
+            });
+        })
+    }
+
     /// Callback acting on the window itself.
     pub(super) fn act(
         &self,
@@ -634,31 +656,27 @@ impl SettingsWindow {
                 ui,
                 "Autosuggestions",
                 Some("Grey suggestions from history while you type; → accepts"),
-                toggle("autosuggest", z.autosuggestions, ui, self.host(cx, |h| h.shell.zsh.autosuggestions = !h.shell.zsh.autosuggestions)),
+                toggle("autosuggest", h.plugin_enabled("autosuggestions"), ui, self.toggle_plugin(cx, "autosuggestions")),
             ))
             .child(row(
                 ui,
                 "Syntax highlighting",
                 Some("Colors commands, strings and errors as you type"),
-                toggle(
-                    "syntax",
-                    z.syntax_highlighting,
-                    ui,
-                    self.host(cx, |h| h.shell.zsh.syntax_highlighting = !h.shell.zsh.syntax_highlighting),
-                ),
+                toggle("syntax", h.plugin_enabled("syntax-highlighting"), ui, self.toggle_plugin(cx, "syntax-highlighting")),
             ))
             .child(row(
                 ui,
                 "fzf key bindings",
                 Some("Ctrl+T picks files, Alt+C changes directory (when fzf is installed)"),
-                toggle("fzf", z.fzf, ui, self.host(cx, |h| h.shell.zsh.fzf = !h.shell.zsh.fzf)),
+                toggle("fzf", h.plugin_enabled("fzf"), ui, self.toggle_plugin(cx, "fzf")),
             ))
             .child(row(
                 ui,
                 "Shell integration",
                 Some("Marks prompts and commands (OSC 133) and reports the directory (OSC 7)"),
                 toggle("integration", z.integration, ui, self.host(cx, |h| h.shell.zsh.integration = !h.shell.zsh.integration)),
-            ));
+            ))
+            .child(note(ui, "These tools are built-in plugins: more of their settings are on the Plugins page."));
         if !managed {
             page = page.child(note(ui, "The features above apply only to goatty's managed zsh."));
         }
@@ -676,7 +694,7 @@ impl SettingsWindow {
                 ui,
                 "Starship",
                 Some("A fast, informative prompt (when installed; otherwise a small built-in one)"),
-                toggle("starship", p.starship, ui, self.host(cx, |h| h.prompt.starship = !h.prompt.starship)),
+                toggle("starship", h.plugin_enabled("starship"), ui, self.toggle_plugin(cx, "starship")),
             ))
             .child(row(
                 ui,
@@ -719,9 +737,9 @@ impl SettingsWindow {
                 Some("Use ~/.config/starship.toml when it exists instead of these settings"),
                 toggle(
                     "own-starship",
-                    p.prefer_user_config,
+                    h.plugin_bool("starship", "prefer_user_config", builtin_bool_default("starship", "prefer_user_config")),
                     ui,
-                    self.host(cx, |h| h.prompt.prefer_user_config = !h.prompt.prefer_user_config),
+                    self.toggle_plugin_bool(cx, "starship", "prefer_user_config"),
                 ),
             ))
             .into_any_element()
@@ -773,13 +791,18 @@ impl SettingsWindow {
                 ui,
                 "Searchable history on Ctrl+R",
                 Some("Atuin, when installed (goatty-setup installs it)"),
-                toggle("atuin", hs.atuin, ui, self.host(cx, |h| h.history.atuin = !h.history.atuin)),
+                toggle("atuin", h.plugin_enabled("atuin"), ui, self.toggle_plugin(cx, "atuin")),
             ))
             .child(row(
                 ui,
                 "Atuin on the Up arrow too",
                 Some("Off: Up searches plain history by what you typed"),
-                toggle("atuin-up", hs.atuin_up_arrow, ui, self.host(cx, |h| h.history.atuin_up_arrow = !h.history.atuin_up_arrow)),
+                toggle(
+                    "atuin-up",
+                    h.plugin_bool("atuin", "up_arrow", builtin_bool_default("atuin", "up_arrow")),
+                    ui,
+                    self.toggle_plugin_bool(cx, "atuin", "up_arrow"),
+                ),
             ))
             .into_any_element()
     }
@@ -1139,6 +1162,15 @@ impl Render for SettingsWindow {
                     .children(self.bottom_bar(ui, cx)),
             )
     }
+}
+
+/// A bool setting's default in a built-in plugin's manifest.
+fn builtin_bool_default(id: &str, key: &str) -> bool {
+    goatty_shell::builtins::get(id)
+        .and_then(|b| b.manifest().setting(key))
+        .and_then(|s| s.default.as_ref())
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

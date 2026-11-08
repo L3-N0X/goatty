@@ -55,7 +55,7 @@ impl Permission {
 
     pub fn title(self) -> &'static str {
         match self {
-            Permission::Binaries => "Installs and runs programs",
+            Permission::Binaries => "Installs and runs programs or zsh plugins",
             Permission::ShellCode => "Runs its own shell code in every goatty shell",
             Permission::Network => "The tool uses the network",
             Permission::Aliases => "Adds aliases",
@@ -68,7 +68,7 @@ impl Permission {
     pub fn meaning(self) -> &'static str {
         match self {
             Permission::Binaries => {
-                "Downloaded programs run with your permissions: they can read and change your files. goatty checks every download against the checksum in the manifest."
+                "Downloaded programs and zsh plugins run with your permissions: they can read and change your files. goatty checks every download against the checksum in the manifest."
             }
             Permission::ShellCode => {
                 "This code runs every time a goatty shell starts, with your permissions. Read it below before installing."
@@ -191,7 +191,11 @@ pub fn describe(m: &Manifest) -> Vec<Granted> {
                 Permission::Binaries => m
                     .packages
                     .iter()
-                    .map(|pk| format!("{} {}: {}", pk.id, pk.version, pk.bin.iter().map(|b| bin_name(b)).collect::<Vec<_>>().join(", ")))
+                    .map(|pk| {
+                        let mut what: Vec<String> = pk.bin.iter().map(|b| bin_name(b).to_owned()).collect();
+                        what.extend(pk.source.as_ref().map(|s| format!("{} (sourced by the shell)", bin_name(s))));
+                        format!("{} {}: {}", pk.id, pk.version, what.join(", "))
+                    })
                     .collect(),
                 Permission::ShellCode => m.zsh.init.iter().cloned().collect(),
                 Permission::Network => Vec::new(),

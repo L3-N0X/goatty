@@ -158,7 +158,11 @@ impl HostService {
         let settings = self.settings().value;
         let plan = self.plugins(|p| p.install(c, approved, &settings))?;
         let id = plan.id.clone();
-        let outcome = self.edit(|h| h.plugins.entry(id).or_default().enabled = true)?;
+        let outcome = self.edit(|h| match c.builtin {
+            // Built-in plugins are on by default: keep host.json sparse.
+            Some(_) => h.edit_plugin(&id, |p| p.enabled = true),
+            None => h.plugins.entry(id).or_default().enabled = true,
+        })?;
         let verb = match &plan.replaces {
             Some(old) if *old != plan.version => format!("Updated {} from {old} to {}", plan.name, plan.version),
             Some(_) => format!("Reinstalled {} {}", plan.name, plan.version),
@@ -243,7 +247,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join("config/host.json");
         let svc = HostService::new(Launcher::new(Some(Dirs::under(tmp.path())), None), Some(file.clone()));
-        assert_eq!(svc.snapshot().json, "{\n  \"version\": 1\n}\n");
+        assert_eq!(svc.snapshot().json, "{\n  \"version\": 2\n}\n");
 
         let preview = svc.set(r#"{"prompt": {"two_line": false}}"#, false).unwrap();
         assert!(!preview.applied && !preview.diff.is_empty() && !file.exists());
@@ -287,8 +291,9 @@ mod tests {
         .unwrap();
 
         let api::Reply::Catalog(cat) = svc.plugin_request(api::Request::Catalog { refresh: false }).unwrap() else { panic!() };
-        assert_eq!(cat.installed.len(), 1);
-        assert!(cat.installed[0].enabled);
+        let demo: Vec<_> = cat.installed.iter().filter(|i| !i.builtin).collect();
+        assert_eq!(demo.len(), 1);
+        assert!(demo[0].enabled);
 
         let api::Reply::Changed(c) = svc.plugin_request(api::Request::Uninstall { id: "demo".into() }).unwrap() else { panic!() };
         assert!(c.lines[0].starts_with("Uninstalled demo"));

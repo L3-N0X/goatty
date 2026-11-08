@@ -14,6 +14,10 @@
 //! 4. the caller enables it in `host.json` and builds a new generation;
 //!    [`active`] is what the generation renders.
 //!
+//! The plugins that come with goatty ([`crate::builtins`]) take part in
+//! all of this except the lock: they're always there, so planning and
+//! installing one only concerns its packages.
+//!
 //! Nothing outside goatty's own directories is touched, and nothing runs
 //! as root.
 
@@ -26,15 +30,16 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use goatty_config::HostSettings;
-use goatty_plugin::api::{Available, Catalog, Download, Installed, Plan, RegistryStatus};
+use goatty_plugin::api::{Available, Catalog, Download, Installed, PackageState, PackageStatus, Plan, RegistryStatus};
 use goatty_plugin::fetch::Fetch;
-use goatty_plugin::manifest::{self, Manifest};
+use goatty_plugin::manifest::{self, Load, Manifest};
 use goatty_plugin::schema::{self, Values};
 use goatty_plugin::{GOATTY_VERSION, current_target, permissions, template};
 
+use crate::builtins::{self, Builtin};
 use crate::dirs::Dirs;
 use crate::install::{self, PackageInstall};
-use crate::tools::{self, Kind};
+use crate::packages::{self, Location};
 use lock::Lock;
 use registry::{Snapshot, Source};
 
@@ -50,19 +55,41 @@ pub struct Candidate {
     pub files: BTreeMap<String, String>,
     /// Where the files are.
     pub dir: PathBuf,
-    /// Registry name, or the local directory.
+    /// Registry name, the local directory, or [`builtins::SOURCE`].
     pub source: String,
     pub verified: bool,
+    /// One of the plugins that come with goatty (its files are compiled in).
+    pub builtin: Option<&'static Builtin>,
 }
 
 impl Candidate {
+    /// A plugin that comes with goatty.
+    pub fn builtin(b: &'static Builtin) -> Candidate {
+        Candidate {
+            manifest: b.manifest().clone(),
+            files: b.checksums(),
+            dir: PathBuf::new(),
+            source: builtins::SOURCE.into(),
+            verified: true,
+            builtin: Some(b),
+        }
+    }
+
+    /// One of the plugin's files.
+    fn read(&self, rel: &str) -> Result<Vec<u8>> {
+        match self.builtin {
+            Some(b) => b.read(rel).map(|t| t.as_bytes().to_vec()).with_context(|| format!("{} has no {rel}", b.id)),
+            None => std::fs::read(self.dir.join(rel)).with_context(|| format!("read {rel}")),
+        }
+    }
+
     /// A plugin directory on this host (development, private plugins).
     /// Not verified: nobody reviewed or signed it.
     pub fn local(dir: &Path) -> Result<Candidate> {
         let dir = dir.canonicalize().with_context(|| format!("{} doesn't exist", dir.display()))?;
         let files = goatty_plugin::bundle::list_files(&dir)?;
         let manifest = manifest::load_dir(&dir)?;
-        Ok(Candidate { manifest, files, source: dir.display().to_string(), dir, verified: false })
+        Ok(Candidate { manifest, files, source: dir.display().to_string(), dir, verified: false, builtin: None })
     }
 
     fn is_local(&self) -> bool {
@@ -135,9 +162,16 @@ impl Plugins<'_> {
         (snaps, status, issues)
     }
 
-    /// `id` (at `version`, default the newest) from the first registry
-    /// that has it.
+    /// `id` (at `version`, default the newest): a built-in plugin, or from
+    /// the first registry that has it.
     pub fn find(&self, id: &str, version: Option<&str>) -> Result<Candidate> {
+        if let Some(b) = builtins::get(id) {
+            let have = &b.manifest().version;
+            if version.is_some_and(|v| v != have) {
+                bail!("{id} comes with goatty (version {have}); other versions come with other goatty releases");
+            }
+            return Ok(Candidate::builtin(b));
+        }
         let (snaps, status, _) = self.snapshots(false, false);
         for snap in &snaps {
             let Some(entry) = snap.index.plugins.get(id) else { continue };
@@ -149,7 +183,14 @@ impl Plugins<'_> {
             let text = std::fs::read_to_string(dir.join(manifest::FILE))?;
             let files: std::collections::BTreeSet<String> = ver.files.keys().cloned().collect();
             let manifest = manifest::parse(&text, Some(&files)).map_err(|e| anyhow!("{id}@{v}: {e}"))?;
-            return Ok(Candidate { manifest, files: ver.files.clone(), dir, source: snap.source.name.clone(), verified: true });
+            return Ok(Candidate {
+                manifest,
+                files: ver.files.clone(),
+                dir,
+                source: snap.source.name.clone(),
+                verified: true,
+                builtin: None,
+            });
         }
         let errors: Vec<String> = status.iter().filter_map(|s| s.error.as_ref().map(|e| format!("{}: {e}", s.name))).collect();
         if errors.is_empty() {
@@ -159,22 +200,41 @@ impl Plugins<'_> {
         }
     }
 
-    /// What installing `c` would do.
+    /// What installing `c` would do. For a built-in plugin: downloading the
+    /// packages it's missing.
     pub fn plan(&self, c: &Candidate, settings: &HostSettings) -> Result<Plan> {
         let m = &c.manifest;
         let target = current_target();
-        m.compatible(GOATTY_VERSION, &target).map_err(|why| anyhow!("{} can't be installed here: {why}", m.name))?;
+        // A built-in plugin works with system copies anywhere; only a
+        // download needs a build for this host (checked below).
+        if c.builtin.is_none() {
+            m.compatible(GOATTY_VERSION, &target).map_err(|why| anyhow!("{} can't be installed here: {why}", m.name))?;
+        }
         let lock = Lock::load(self.dirs)?;
         for dep in &m.requires.plugins {
-            if !lock.plugins.contains_key(dep) {
+            if !lock.plugins.contains_key(dep) && builtins::get(dep).is_none() {
                 bail!("{} needs the {dep} plugin: install that first", m.name);
+            }
+        }
+        if c.builtin.is_none() {
+            if builtins::get(&m.id).is_some() {
+                bail!("{} is the id of a plugin that comes with goatty; give this one another id", m.id);
+            }
+            let reserved = builtins::executables();
+            let reserved_pkgs = builtins::package_ids();
+            for p in &m.packages {
+                if let Some(b) = reserved_pkgs.get(p.id.as_str()) {
+                    bail!("package {} belongs to goatty's built-in {b} plugin; give it another id", p.id);
+                }
+            }
+            for exe in m.executables() {
+                if let Some(b) = reserved.get(exe) {
+                    bail!("{exe} comes with goatty's built-in {b} plugin; a plugin can't replace it");
+                }
             }
         }
         let owners = lock.executables();
         for exe in m.executables() {
-            if let Some(t) = tools::TOOLS.iter().find(|t| matches!(t.kind, Kind::Binary { exe: e } if e == exe)) {
-                bail!("{exe} is goatty's built-in {} tool; a plugin can't replace it", t.name);
-            }
             if let Some(owner) = owners.get(exe).filter(|o| **o != m.id) {
                 bail!("{exe} is already provided by the {owner} plugin");
             }
@@ -185,30 +245,34 @@ impl Plugins<'_> {
 
         let path = std::env::var("PATH").ok();
         let managed_bin = self.dirs.bin_dir();
-        let on_path = |exe: &str| tools::which(exe, path.as_deref(), &managed_bin);
+        let on_path = |exe: &str| packages::which(exe, path.as_deref(), &managed_bin);
         let downloads = m
             .packages
             .iter()
             .map(|p| {
-                let a = p.asset_for(&target).expect("checked by compatible()");
                 let names: Vec<String> = p.bin.iter().map(|b| manifest::bin_name(b).to_owned()).collect();
-                let system = if p.prefer_system {
-                    let found: Vec<PathBuf> = names.iter().filter_map(|n| on_path(n)).collect();
-                    (found.len() == names.len()).then(|| found[0].display().to_string())
-                } else {
-                    None
+                let system = match packages::locate(self.dirs, p, path.as_deref()) {
+                    Location::System(found) => Some(found.display().to_string()),
+                    _ => None,
                 };
-                Download {
+                let current = packages::managed(self.dirs, p).is_some_and(|(v, _)| v == p.version);
+                let a = p.asset_for(&target);
+                if a.is_none() && system.is_none() && !current {
+                    bail!("{} has no goatty-managed build for {target}: install it with your package manager", p.id);
+                }
+                Ok(Download {
                     package: p.id.clone(),
                     version: p.version.clone(),
-                    url: a.url.clone(),
-                    size: a.size,
-                    sha256: a.sha256.clone(),
+                    url: a.map(|a| a.url.clone()).unwrap_or_default(),
+                    size: a.map_or(0, |a| a.size),
+                    sha256: a.map(|a| a.sha256.clone()).unwrap_or_default(),
                     bins: names,
+                    script: p.source.clone(),
                     system,
-                }
+                    current,
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
         let stored = settings.plugins.get(&m.id).map(|c| c.settings.clone()).unwrap_or_default();
         let (values, _) = schema::resolve(m, &stored);
@@ -241,7 +305,7 @@ impl Plugins<'_> {
         let files = m.files.iter().map(|f| f.name.clone()).collect();
         let shell_code = match &m.zsh.init {
             Some(init) => {
-                let bytes = std::fs::read(c.dir.join(init)).with_context(|| format!("read {init}"))?;
+                let bytes = c.read(init)?;
                 if c.files.get(init).is_none_or(|sha| goatty_plugin::bundle::sha256_hex(&bytes) != *sha) {
                     bail!("{init} doesn't match its checksum");
                 }
@@ -286,7 +350,10 @@ impl Plugins<'_> {
                 warnings.push(format!("The {other} plugin also defines `{}`; the one loaded last wins.", a.name));
             }
         }
-        let replaces = lock.plugins.get(&m.id).map(|e| e.version.clone());
+        let replaces = match c.builtin {
+            Some(_) => None,
+            None => lock.plugins.get(&m.id).map(|e| e.version.clone()),
+        };
         let mut plan = Plan {
             id: m.id.clone(),
             name: m.name.clone(),
@@ -298,6 +365,7 @@ impl Plugins<'_> {
             license: m.license.clone(),
             source: c.source.clone(),
             verified: c.verified,
+            builtin: c.builtin.is_some(),
             replaces,
             downloads,
             permissions: permissions::describe(m),
@@ -340,13 +408,26 @@ impl Plugins<'_> {
                     });
                     continue;
                 }
-                let a = p.asset_for(&target).context("no build for this host")?;
-                let bytes = self.fetch.fetch(&a.url).with_context(|| format!("download {}", a.url))?;
-                let pi =
-                    PackageInstall { id: &p.id, version: &p.version, sha256: &a.sha256, format: a.format, root: &a.root, bins: &p.bin };
-                install::install_package(&pi, &bytes, self.dirs).with_context(|| format!("install {} {}", p.id, p.version))?;
-                fresh.push((p.id.clone(), p.bin.clone()));
+                if !d.current {
+                    let a = p.asset_for(&target).context("no build for this host")?;
+                    let bytes = self.fetch.fetch(&a.url).with_context(|| format!("download {}", a.url))?;
+                    let pi = PackageInstall {
+                        id: &p.id,
+                        version: &p.version,
+                        sha256: &a.sha256,
+                        format: a.format,
+                        root: &a.root,
+                        bins: &p.bin,
+                        source: p.source.as_deref(),
+                    };
+                    install::install_package(&pi, &bytes, self.dirs).with_context(|| format!("install {} {}", p.id, p.version))?;
+                    fresh.push((p.id.clone(), p.bin.clone()));
+                }
                 packages.push(lock::Package { id: p.id.clone(), version: p.version.clone(), bins: p.bin.clone(), system: None });
+            }
+            if c.builtin.is_some() {
+                // Its files are part of goatty: nothing to copy.
+                return Ok(());
             }
 
             // The plugin's files: staged, checked, then swapped in.
@@ -370,6 +451,10 @@ impl Plugins<'_> {
                 let _ = install::uninstall_package(id, bins, self.dirs);
             }
             return Err(e);
+        }
+        if c.builtin.is_some() {
+            log::info!("installed the packages of built-in plugin {}", m.id);
+            return Ok(plan);
         }
         // Packages the old version had and the new one doesn't.
         if let Some(old) = &previous {
@@ -399,6 +484,12 @@ impl Plugins<'_> {
     /// Remove an installed plugin: its packages, files and lock entry.
     /// The caller drops it from the host settings.
     pub fn uninstall(&self, id: &str) -> Result<lock::Entry> {
+        if let Some(b) = builtins::get(id) {
+            bail!(
+                "{} comes with goatty: turn it off instead (goattyd plugin disable {id}); `goattyd shell uninstall {id}` removes goatty's download of it",
+                b.manifest().name
+            );
+        }
         let _guard = op_lock(self.dirs)?;
         let mut lock = Lock::load(self.dirs)?;
         let entry = lock.plugins.remove(id).with_context(|| format!("{id} isn't installed"))?;
@@ -421,6 +512,20 @@ impl Plugins<'_> {
         Ok(entry)
     }
 
+    /// Remove goatty's downloaded packages of a built-in plugin (the plugin
+    /// stays; system copies are used if there are any). Returns the
+    /// packages that were removed.
+    pub fn remove_packages(&self, b: &Builtin) -> Result<Vec<String>> {
+        let _guard = op_lock(self.dirs)?;
+        let mut removed = Vec::new();
+        for p in &b.manifest().packages {
+            if install::uninstall_package(&p.id, &p.bin, self.dirs)? {
+                removed.push(p.id.clone());
+            }
+        }
+        Ok(removed)
+    }
+
     /// Installed plugins and what the registries offer.
     pub fn catalog(&self, refresh: bool, settings: &HostSettings) -> Catalog {
         let (snaps, registries, mut issues) = self.snapshots(refresh, true);
@@ -432,7 +537,39 @@ impl Plugins<'_> {
             }
         };
         let target = current_target();
+        let path = std::env::var("PATH").ok();
+        let package_status = |m: &Manifest| -> Vec<PackageStatus> {
+            m.packages
+                .iter()
+                .map(|p| PackageStatus {
+                    id: p.id.clone(),
+                    version: p.version.clone(),
+                    state: match packages::locate(self.dirs, p, path.as_deref()) {
+                        Location::System(found) => PackageState::System { path: found.display().to_string() },
+                        Location::Managed { version, .. } => PackageState::Managed { version },
+                        Location::Missing => PackageState::Missing,
+                    },
+                    available: p.asset_for(&target).is_some(),
+                })
+                .collect()
+        };
         let mut installed = Vec::new();
+        for b in builtins::BUILTINS {
+            let m = b.manifest().clone();
+            installed.push(Installed {
+                id: b.id.into(),
+                version: m.version.clone(),
+                source: builtins::SOURCE.into(),
+                verified: true,
+                enabled: settings.plugins.get(b.id).is_none_or(|c| c.enabled),
+                incompatible: None,
+                packages: package_status(&m),
+                builtin: true,
+                manifest: m,
+                update: None,
+                installed_unix: 0,
+            });
+        }
         for (id, e) in &lock.plugins {
             let m = match lock::manifest_of(self.dirs, id, e) {
                 Ok(m) => m,
@@ -454,6 +591,8 @@ impl Plugins<'_> {
                 verified: e.verified,
                 enabled: settings.plugins.get(id).is_none_or(|c| c.enabled),
                 incompatible: m.compatible(GOATTY_VERSION, &target).err(),
+                packages: package_status(&m),
+                builtin: false,
                 manifest: m,
                 update,
                 installed_unix: e.installed,
@@ -462,7 +601,7 @@ impl Plugins<'_> {
         let mut available: Vec<Available> = Vec::new();
         for s in &snaps {
             for (id, entry) in &s.index.plugins {
-                if available.iter().any(|a| a.id == *id) {
+                if available.iter().any(|a| a.id == *id) || builtins::get(id).is_some() {
                     continue;
                 }
                 let Some((v, ver)) = s.index.latest(id) else { continue };
@@ -506,35 +645,98 @@ pub fn newer(a: &str, b: &str) -> bool {
     }
 }
 
-/// An installed, enabled, usable plugin, ready to render.
+/// An installed (or built-in), enabled, usable plugin, ready to render.
 #[derive(Debug, Clone)]
 pub struct Active {
     pub manifest: Manifest,
     pub values: Values,
-    pub entry: lock::Entry,
+    pub origin: Origin,
     /// `eza 1.0.0 (official)`.
     pub label: String,
 }
 
-/// The plugins that go into the shell configuration for `settings`, and
-/// the problems found on the way (bad values, missing or changed files,
-/// settings for plugins that aren't installed).
+/// Where an active plugin's files come from.
+#[derive(Debug, Clone)]
+pub enum Origin {
+    /// Compiled into goatty.
+    Builtin(&'static Builtin),
+    /// `installed/<id>/`, checked against this lock entry.
+    Installed(lock::Entry),
+}
+
+impl Active {
+    /// One of the plugin's files; an installed plugin's is checked against the lock.
+    pub fn read(&self, dirs: &Dirs, rel: &str) -> Result<Vec<u8>> {
+        match &self.origin {
+            Origin::Builtin(b) => b.read(rel).map(|t| t.as_bytes().to_vec()).with_context(|| format!("{}: no {rel}", b.id)),
+            Origin::Installed(entry) => lock::read_checked(dirs, &self.manifest.id, entry, rel),
+        }
+    }
+
+    /// Every file of the plugin (relative paths).
+    pub fn file_names(&self) -> Vec<String> {
+        match &self.origin {
+            Origin::Builtin(b) => b.checksums().into_keys().collect(),
+            Origin::Installed(entry) => entry.files.keys().cloned().collect(),
+        }
+    }
+
+    /// The files the shell sources: the init file and the `fpath` directories' contents.
+    pub fn shell_files(&self) -> Vec<String> {
+        let m = &self.manifest;
+        let mut v: Vec<String> = m.zsh.init.iter().cloned().collect();
+        v.extend(self.file_names().into_iter().filter(|f| m.zsh.fpath.iter().any(|d| f.starts_with(&format!("{d}/")))));
+        v
+    }
+
+    /// Its key in `goatty-status`: the bare id for built-in plugins
+    /// (`atuin`), `plugin:<id>` for the others.
+    pub fn feature(&self) -> String {
+        match self.origin {
+            Origin::Builtin(_) => self.manifest.id.clone(),
+            Origin::Installed(_) => goatty_plugin::zsh::feature(&self.manifest.id),
+        }
+    }
+}
+
+/// The plugins that go into the shell configuration for `settings`, in
+/// load order ([`load_order`]), and the problems found on the way (bad
+/// values, missing or changed files, settings for plugins that aren't
+/// installed).
 pub fn active(dirs: &Dirs, settings: &HostSettings) -> (Vec<Active>, Vec<String>) {
     let mut out = Vec::new();
     let mut issues = Vec::new();
+    let resolve = |m: &mut Manifest, issues: &mut Vec<String>| {
+        let config = settings.plugins.get(&m.id);
+        let stored = config.map(|c| c.settings.clone()).unwrap_or_default();
+        let (values, problems) = schema::resolve(m, &stored);
+        for (k, msg) in problems {
+            issues.push(format!("plugins.{}.settings.{k}: {msg}", m.id));
+        }
+        // Aliases the user switched off stay out of the shell (#88).
+        if let Some(off) = config.map(|c| &c.disabled_aliases).filter(|d| !d.is_empty()) {
+            m.aliases.retain(|a| !off.contains(&a.name));
+        }
+        values
+    };
+    let enabled = |id: &str| settings.plugins.get(id).is_none_or(|c| c.enabled);
+    for b in builtins::BUILTINS.iter().filter(|b| enabled(b.id)) {
+        let mut m = b.manifest().clone();
+        let values = resolve(&mut m, &mut issues);
+        out.push(Active { manifest: m, values, origin: Origin::Builtin(b), label: b.label() });
+    }
     let lock = match Lock::load(dirs) {
         Ok(l) => l,
-        Err(e) => return (out, vec![format!("{e:#}")]),
+        Err(e) => {
+            issues.push(format!("{e:#}"));
+            return (load_order(out), issues);
+        }
     };
-    for id in settings.plugins.keys().filter(|id| !lock.plugins.contains_key(*id)) {
+    for id in settings.plugins.keys().filter(|id| !lock.plugins.contains_key(*id) && builtins::get(id).is_none()) {
         issues.push(format!("plugins.{id}: not installed on this host; ignored (goattyd plugin install {id})"));
     }
     let target = current_target();
-    for (id, entry) in &lock.plugins {
-        let config = settings.plugins.get(id);
-        if config.is_some_and(|c| !c.enabled) {
-            continue;
-        }
+    for (id, entry) in lock.plugins.iter().filter(|(id, _)| enabled(id)) {
         let mut m = match lock::manifest_of(dirs, id, entry) {
             Ok(m) => m,
             Err(e) => {
@@ -546,26 +748,36 @@ pub fn active(dirs: &Dirs, settings: &HostSettings) -> (Vec<Active>, Vec<String>
             issues.push(format!("plugin {id} is off: {why}"));
             continue;
         }
+        let label = format!("{} {} ({})", m.id, m.version, entry.source);
+        let a = Active { manifest: m.clone(), values: Values::new(), origin: Origin::Installed(entry.clone()), label };
         // Everything the shell will source must still be what was approved.
-        let needed: Vec<&String> =
-            m.zsh.init.iter().chain(entry.files.keys().filter(|f| m.zsh.fpath.iter().any(|d| f.starts_with(&format!("{d}/"))))).collect();
-        if let Some(e) = needed.iter().find_map(|rel| lock::read_checked(dirs, id, entry, rel).err()) {
+        if let Some(e) = a.shell_files().iter().find_map(|rel| a.read(dirs, rel).err()) {
             issues.push(format!("plugin {id} is off: {e:#}"));
             continue;
         }
-        let stored = config.map(|c| c.settings.clone()).unwrap_or_default();
-        let (values, problems) = schema::resolve(&m, &stored);
-        for (k, msg) in problems {
-            issues.push(format!("plugins.{id}.settings.{k}: {msg}"));
-        }
-        // Aliases the user switched off stay out of the shell (#88).
-        if let Some(off) = config.map(|c| &c.disabled_aliases).filter(|d| !d.is_empty()) {
-            m.aliases.retain(|a| !off.contains(&a.name));
-        }
-        let label = format!("{} {} ({})", m.id, m.version, entry.source);
-        out.push(Active { manifest: m, values, entry: entry.clone(), label });
+        let values = resolve(&mut m, &mut issues);
+        out.push(Active { manifest: m, values, ..a });
     }
-    (out, issues)
+    (load_order(out), issues)
+}
+
+/// Sort plugins into the order they load: by [`Load`] slot, then within a
+/// slot each after the plugins its `zsh.after` names (when they're there),
+/// otherwise in the order given (built-in plugins first, then by id). A
+/// cycle is broken by taking the first remaining plugin.
+pub fn load_order(list: Vec<Active>) -> Vec<Active> {
+    let mut out = Vec::with_capacity(list.len());
+    let mut rest = list;
+    for slot in Load::ALL {
+        let (mut left, others): (Vec<Active>, Vec<Active>) = rest.into_iter().partition(|a| a.manifest.zsh.load == slot);
+        rest = others;
+        while !left.is_empty() {
+            let ready =
+                left.iter().position(|a| !a.manifest.zsh.after.iter().any(|dep| left.iter().any(|o| o.manifest.id == *dep))).unwrap_or(0);
+            out.push(left.remove(ready));
+        }
+    }
+    out
 }
 
 #[cfg(test)]

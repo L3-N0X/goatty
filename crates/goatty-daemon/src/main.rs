@@ -190,16 +190,17 @@ enum SettingsCmd {
 enum ShellCmd {
     /// What the managed shell loads, what's missing, and its startup time.
     Status,
-    /// Install tools into goatty's data directory (no sudo). Without names:
-    /// the default tools the shell is missing.
+    /// Install the tools of goatty's built-in plugins into goatty's data
+    /// directory (no sudo). Without names: the default ones the shell is
+    /// missing (what `goatty-setup` runs).
     Install {
-        /// Tools: autosuggestions, syntax-highlighting, starship, atuin, fzf.
+        /// Built-in plugins: autosuggestions, syntax-highlighting, starship, atuin, fzf.
         tools: Vec<String>,
         /// Don't ask before downloading.
         #[arg(short, long)]
         yes: bool,
     },
-    /// Remove goatty's copies of tools.
+    /// Remove goatty's downloads of built-in plugins' tools (the plugins stay on; system copies still work).
     Uninstall {
         tools: Vec<String>,
         #[arg(long, conflicts_with = "tools")]

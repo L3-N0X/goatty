@@ -11,10 +11,11 @@
 use std::path::Path;
 
 use goatty_config::{HostSettings, PromptStyle};
+use goatty_plugin::manifest::Load;
 
+use crate::builtins;
 use crate::dirs::Dirs;
-use crate::plugins::{Active, lock};
-use crate::tools::{self, Kind};
+use crate::plugins::Active;
 
 pub const ZSHENV: &str = include_str!("../zsh/zshenv.zsh");
 pub const ZPROFILE: &str = include_str!("../zsh/zprofile.zsh");
@@ -27,7 +28,8 @@ pub struct ZshConfig<'a> {
     pub dirs: &'a Dirs,
     /// The goattyd binary `goatty-setup` runs. `None`: `goattyd` from PATH.
     pub daemon_exe: Option<&'a Path>,
-    /// Installed, enabled plugins ([`crate::plugins::active`]).
+    /// Enabled plugins, built-in and installed, in load order
+    /// ([`crate::plugins::active`]).
     pub plugins: &'a [Active],
 }
 
@@ -60,32 +62,36 @@ pub fn render(cfg: &ZshConfig<'_>) -> Vec<GeneratedFile> {
     files
 }
 
-/// `plugins-early.zsh` and `plugins.zsh` (always written, so the `.zshrc`
-/// can source them unconditionally), plus each plugin's generated config
-/// files and the shell files it ships (checked against the lock again).
+/// What each slot file says about itself.
+fn slot_header(load: Load) -> &'static str {
+    match load {
+        Load::LineEditor => "line editor tools (after compinit, before the prompt): fzf, Atuin, autosuggestions, …",
+        Load::Prompt => "the prompt (goatty sets a small one when none loads)",
+        Load::Normal => "aliases and the plugins' shell code (after the prompt, before your aliases and additions)",
+        Load::Last => "what has to load after your additions (syntax highlighting wraps every widget defined before it)",
+    }
+}
+
+/// `plugins-early.zsh` and one file per load slot (always written, so the
+/// `.zshrc` can source them unconditionally), plus each plugin's
+/// generated config files and the shell files it ships (an installed
+/// plugin's checked against the lock again).
 fn render_plugins(cfg: &ZshConfig<'_>) -> Vec<GeneratedFile> {
-    let mut early = String::from(
-        "# goatty plugins, part 1: completion paths and environment (read before compinit).\n\
-         # Generated from the installed plugins and their settings in host.json: change them in goatty's settings window.\n",
-    );
-    let mut main = String::from(
-        "# goatty plugins, part 2: aliases and the plugins' shell code (read after goatty's own features).\n\
-         # Generated from the installed plugins and their settings in host.json: change them in goatty's settings window.\n",
-    );
+    const NOTE: &str = "# Generated from the plugins and their settings in host.json: change them in goatty's settings window.\n";
+    let mut early = format!("# goatty plugins: completion paths and environment (read before compinit).\n{NOTE}");
+    // Built-in plugins that are turned off still show up in goatty-status.
+    for b in builtins::BUILTINS.iter().filter(|b| cfg.settings.plugins.get(b.id).is_some_and(|c| !c.enabled)) {
+        early.push_str(&format!("_goatty_state[{}]=off\n", b.id));
+    }
+    let mut slots: Vec<(Load, String)> = Load::ALL.iter().map(|&l| (l, format!("# goatty plugins: {}.\n{NOTE}", slot_header(l)))).collect();
     let mut files = Vec::new();
     let home = std::env::var("HOME").ok();
     for a in cfg.plugins {
         let id = &a.manifest.id;
         // Shipped files first: a plugin whose files don't check out is left out entirely.
         let mut shipped = Vec::new();
-        let wanted = a
-            .manifest
-            .zsh
-            .init
-            .iter()
-            .chain(a.entry.files.keys().filter(|f| a.manifest.zsh.fpath.iter().any(|d| f.starts_with(&format!("{d}/")))));
-        let checked: Result<(), String> = wanted.into_iter().try_for_each(|rel| {
-            let bytes = lock::read_checked(cfg.dirs, id, &a.entry, rel).map_err(|e| format!("{e:#}"))?;
+        let checked: Result<(), String> = a.shell_files().into_iter().try_for_each(|rel| {
+            let bytes = a.read(cfg.dirs, &rel).map_err(|e| format!("{e:#}"))?;
             let text = String::from_utf8(bytes).map_err(|_| format!("{id}: {rel} isn't text"))?;
             shipped.push(GeneratedFile::new(format!("plugins/{id}/{rel}"), text));
             Ok(())
@@ -94,36 +100,34 @@ fn render_plugins(cfg: &ZshConfig<'_>) -> Vec<GeneratedFile> {
             log::warn!("leaving plugin {id} out of the shell configuration: {e}");
             continue;
         }
-        let ctx = goatty_plugin::zsh::Ctx { dir: format!("$_goatty_dir/plugins/{id}"), home: home.as_deref(), label: a.label.clone() };
+        let ctx = goatty_plugin::zsh::Ctx {
+            dir: format!("$_goatty_dir/plugins/{id}"),
+            home: home.as_deref(),
+            label: a.label.clone(),
+            feature: a.feature(),
+            packages: "$_goatty_pkgs".into(),
+        };
         let r = goatty_plugin::zsh::render(&a.manifest, &a.values, &ctx);
         if !r.early.is_empty() {
             early.push('\n');
             early.push_str(&r.early);
         }
-        main.push('\n');
-        main.push_str(&r.main);
+        let slot = &mut slots.iter_mut().find(|(l, _)| *l == r.load).expect("every slot").1;
+        slot.push('\n');
+        slot.push_str(&r.main);
         files.extend(shipped);
         files.extend(r.files.into_iter().map(|(name, contents)| GeneratedFile::new(format!("plugins/{id}/{name}"), contents)));
     }
-    let mut out = vec![GeneratedFile::new("plugins-early.zsh", early), GeneratedFile::new("plugins.zsh", main)];
+    let mut out = vec![GeneratedFile::new("plugins-early.zsh", early)];
+    out.extend(slots.into_iter().map(|(l, text)| GeneratedFile::new(l.file(), text)));
     out.extend(files);
     out
 }
 
-/// Feature names as the `.zshrc` knows them, for the enabled ones.
+/// goatty's own features (not plugins) as the `.zshrc` knows them, for the
+/// enabled ones.
 pub fn enabled_features(s: &HostSettings) -> Vec<&'static str> {
-    let z = &s.shell.zsh;
-    [
-        ("autosuggestions", z.autosuggestions),
-        ("syntax-highlighting", z.syntax_highlighting),
-        ("starship", s.prompt.starship),
-        ("atuin", s.history.atuin),
-        ("fzf", z.fzf),
-        ("integration", z.integration),
-    ]
-    .into_iter()
-    .filter_map(|(name, on)| on.then_some(name))
-    .collect()
+    [("integration", s.shell.zsh.integration)].into_iter().filter_map(|(name, on)| on.then_some(name)).collect()
 }
 
 fn flag(b: bool) -> &'static str {
@@ -140,6 +144,7 @@ fn render_settings(cfg: &ZshConfig<'_>) -> String {
     let mut scalar = |name: &str, value: &str| out.push_str(&format!("typeset -g {name}={}\n", quote(value)));
     scalar("_goatty_dir", &d.zsh_dir().to_string_lossy());
     scalar("_goatty_bin", &d.bin_dir().to_string_lossy());
+    scalar("_goatty_pkgs", &d.plugins_dir().to_string_lossy());
     scalar("_goatty_cache", &d.cache.to_string_lossy());
     scalar("_goatty_user_zshrc", &d.user_zshrc().to_string_lossy());
     scalar("_goatty_hint_marker", &d.hint_marker().to_string_lossy());
@@ -148,7 +153,6 @@ fn render_settings(cfg: &ZshConfig<'_>) -> String {
     scalar("_goatty_user_rc", flag(s.shell.zsh.user_rc));
     scalar("_goatty_hist_size", &s.history.size.to_string());
     scalar("_goatty_prompt_two_line", flag(s.prompt.two_line));
-    scalar("_goatty_prompt_user_config", flag(s.prompt.prefer_user_config));
 
     let h = &s.history;
     let mut hist = vec!["extended_history", "hist_expire_dups_first", "hist_reduce_blanks", "hist_verify"];
@@ -160,15 +164,11 @@ fn render_settings(cfg: &ZshConfig<'_>) -> String {
     }
     hist.push(if h.share_between_sessions { "share_history" } else { "inc_append_history" });
     out.push_str(&format!("typeset -ga _goatty_hist_opts=({})\n", hist.join(" ")));
-    let atuin_flags = if h.atuin_up_arrow { "" } else { "--disable-up-arrow" };
-    out.push_str(&format!("typeset -ga _goatty_atuin_flags=({atuin_flags})\n"));
     out.push_str(&format!("typeset -ga _goatty_features=({})\n", enabled_features(s).join(" ")));
-    for t in tools::TOOLS {
-        if let Kind::ZshPlugin { .. } = t.kind {
-            let paths: Vec<String> = t.plugin_candidates(d).iter().map(|p| quote(&p.to_string_lossy())).collect();
-            out.push_str(&format!("typeset -ga _goatty_paths_{}=(\n  {}\n)\n", t.id.replace('-', "_"), paths.join("\n  ")));
-        }
-    }
+    // What goatty-setup installs when they're missing (built-in plugins that are on).
+    let defaults: Vec<&str> =
+        builtins::BUILTINS.iter().filter(|b| b.default_install && s.plugins.get(b.id).is_none_or(|c| c.enabled)).map(|b| b.id).collect();
+    out.push_str(&format!("typeset -ga _goatty_setup_defaults=({})\n", defaults.join(" ")));
     out
 }
 
@@ -223,21 +223,43 @@ mod tests {
     fn settings_reflect_toggles() {
         let dirs = Dirs::under(Path::new("/r o/ot's"));
         let mut s = HostSettings::default();
-        s.prompt.starship = false;
+        s.plugins.entry("starship".into()).or_default().enabled = false;
         s.shell.zsh.user_rc = true;
         s.history.size = 5000;
         s.history.share_between_sessions = true;
-        s.history.atuin_up_arrow = true;
         let out = render_settings(&ZshConfig { settings: &s, dirs: &dirs, daemon_exe: Some(Path::new("/usr/bin/goattyd")), plugins: &[] });
         assert!(out.contains(r"_goatty_dir='/r o/ot'\''s/data/current/zsh'"), "{out}");
         assert!(out.contains("_goatty_user_rc='1'"));
         assert!(out.contains("_goatty_hist_size='5000'"));
         assert!(out.contains("hist_ignore_space share_history)"), "{out}");
-        assert!(out.contains("_goatty_atuin_flags=()"));
         assert!(out.contains("_goatty_daemon='/usr/bin/goattyd'"));
-        assert!(out.contains("_goatty_features=(autosuggestions syntax-highlighting atuin fzf integration)"));
-        assert!(out.contains("_goatty_paths_syntax_highlighting=("));
-        assert!(out.contains("/data/plugins/autosuggestions/zsh-autosuggestions.zsh'"));
+        assert!(out.contains("_goatty_features=(integration)"));
+        assert!(out.contains("_goatty_pkgs='/r o/ot'\\''s/data/plugins'"), "{out}");
+        assert!(out.contains("_goatty_setup_defaults=(atuin autosuggestions syntax-highlighting)"), "starship is off: {out}");
+    }
+
+    #[test]
+    fn plugins_render_into_their_slots_in_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = Dirs::under(tmp.path());
+        let mut s = HostSettings::default();
+        s.plugins.entry("fzf".into()).or_default().enabled = false;
+        s.plugins.entry("atuin".into()).or_default().settings.insert("up_arrow".into(), true.into());
+        let (plugins, issues) = crate::plugins::active(&dirs, &s);
+        assert!(issues.is_empty(), "{issues:?}");
+        let files = render(&ZshConfig { settings: &s, dirs: &dirs, daemon_exe: None, plugins: &plugins });
+        let get = |n: &str| &files.iter().find(|f| f.name == n).unwrap_or_else(|| panic!("no {n}")).contents;
+        assert!(get("plugins-early.zsh").contains("_goatty_state[fzf]=off"));
+        let line = get("plugins-line-editor.zsh");
+        let (atuin, auto) = (line.find("# --- atuin").unwrap(), line.find("# --- autosuggestions").unwrap());
+        assert!(atuin < auto, "Atuin's widgets exist before autosuggestions wraps them:\n{line}");
+        assert!(!line.contains("fzf 1.0.0"), "fzf is off");
+        assert!(line.contains("goatty_settings=(up_arrow 'true')"), "{line}");
+        assert!(line.contains("_goatty_state[atuin]=\"ok\""), "built-in plugins report under their id: {line}");
+        assert!(get("plugins-prompt.zsh").contains("typeset -g _goatty_prompt=starship"));
+        assert!(get("plugins-last.zsh").contains("_goatty_src[syntax-highlighting]"));
+        assert!(!get("plugins.zsh").contains("# ---"), "nothing in the normal slot");
+        assert!(files.iter().any(|f| f.name == "plugins/starship/zsh/init.zsh"), "the shipped init file");
     }
 
     #[test]

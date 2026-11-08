@@ -131,8 +131,21 @@ pub struct Package {
     /// The tool's version (as upstream names it).
     pub version: String,
     /// Executables to put on the shell's `PATH`, relative to the asset's
-    /// `root`. The link is named after the file (`bin/eza`).
+    /// `root`. The link is named after the file (`bin/eza`). May be empty
+    /// for a package that only has a [`source`](Self::source) script.
+    #[serde(default)]
     pub bin: Vec<String>,
+    /// A zsh script in the package (relative to the asset's `root`) that
+    /// goatty sources at the plugin's place in the load order, after its
+    /// `zsh.init` ran: a zsh plugin like zsh-autosuggestions. The package
+    /// directory is linked as `plugins/<id>/`.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Where distributions put that script (absolute paths under `/usr/`,
+    /// `/opt/homebrew/`, `/opt/local/` or a Nix profile), checked in order
+    /// before goatty's own copy when `prefer_system` is on.
+    #[serde(default)]
+    pub system_paths: Vec<String>,
     /// Use a copy that's already on `PATH` instead of downloading one.
     #[serde(default = "yes")]
     pub prefer_system: bool,
@@ -338,6 +351,56 @@ pub struct ZshIntegration {
     pub fpath: Vec<String>,
     #[serde(default)]
     pub when: Option<String>,
+    /// Where in the managed `.zshrc` the plugin loads ([`Load`]).
+    #[serde(default)]
+    pub load: Load,
+    /// Plugins this one loads after when they're there (same `load` slot;
+    /// an earlier slot always comes first). Atuin loads after fzf so that
+    /// Ctrl+R stays Atuin's.
+    #[serde(default)]
+    pub after: Vec<String>,
+}
+
+/// The slots of the managed `.zshrc` a plugin can load in, in order. The
+/// plugin's environment and `fpath` always go in before `compinit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Load {
+    /// After completion is set up, before the prompt: tools that add line
+    /// editor widgets and key bindings (fzf, Atuin, autosuggestions).
+    LineEditor,
+    /// The prompt. When no prompt plugin loads, goatty sets a small one.
+    Prompt,
+    /// After goatty's prompt, before the user's aliases and additions.
+    #[default]
+    Normal,
+    /// After the user's additions (`~/.config/goatty/zshrc`): only for what
+    /// has to wrap everything defined before it (syntax highlighting).
+    Last,
+}
+
+impl Load {
+    pub const ALL: [Load; 4] = [Load::LineEditor, Load::Prompt, Load::Normal, Load::Last];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Load::LineEditor => "line-editor",
+            Load::Prompt => "prompt",
+            Load::Normal => "normal",
+            Load::Last => "last",
+        }
+    }
+
+    /// The file of the shell configuration generation this slot is
+    /// rendered into (sourced by the managed `.zshrc` at its place).
+    pub fn file(self) -> &'static str {
+        match self {
+            Load::LineEditor => "plugins-line-editor.zsh",
+            Load::Prompt => "plugins-prompt.zsh",
+            Load::Normal => "plugins.zsh",
+            Load::Last => "plugins-last.zsh",
+        }
+    }
 }
 
 impl Manifest {
@@ -352,6 +415,11 @@ impl Manifest {
     /// Every executable the plugin's packages put on `PATH`.
     pub fn executables(&self) -> impl Iterator<Item = &str> {
         self.packages.iter().flat_map(|p| p.bin.iter().map(|b| bin_name(b)))
+    }
+
+    /// The packages' zsh scripts goatty sources: (package, script).
+    pub fn sources(&self) -> impl Iterator<Item = (&Package, &str)> {
+        self.packages.iter().filter_map(|p| p.source.as_deref().map(|s| (p, s)))
     }
 
     /// The shells it integrates with (default zsh).
@@ -509,6 +577,15 @@ const PROTECTED_ENV: &[&str] = &[
     "SSH_AUTH_SOCK",
 ];
 
+/// Where a package's `system_paths` may point: directories only root (or
+/// the package manager) writes. A path in `/tmp` or a home directory could
+/// be planted by someone else and would then be sourced.
+pub const SYSTEM_PREFIXES: &[&str] = &["/usr/", "/opt/homebrew/", "/opt/local/", "/run/current-system/sw/", "/nix/var/nix/profiles/"];
+
+fn is_system_path(s: &str) -> bool {
+    SYSTEM_PREFIXES.iter().any(|p| s.starts_with(p)) && s[1..].split('/').all(is_plain)
+}
+
 /// A relative path inside the plugin directory, without `..` or hidden parts.
 pub fn is_bundle_path(s: &str) -> bool {
     !s.is_empty() && !s.starts_with('/') && s.split('/').all(is_plain)
@@ -579,8 +656,24 @@ fn validate(m: &Manifest, files: Option<&BTreeSet<String>>) -> Vec<Problem> {
         if !is_plain(&p.version) {
             err(format!("{at}.version"), format!("{:?} is not a plain version string", p.version));
         }
-        if p.bin.is_empty() {
-            err(format!("{at}.bin"), "list the executables to put on PATH".into());
+        if p.bin.is_empty() && p.source.is_none() {
+            err(format!("{at}.bin"), "list the executables to put on PATH (or a `source` script for a zsh plugin)".into());
+        }
+        if let Some(src) = &p.source
+            && (!is_bundle_path(src) || !src.ends_with(".zsh"))
+        {
+            err(format!("{at}.source"), format!("{src:?}: a .zsh file inside the archive"));
+        }
+        if !p.system_paths.is_empty() && p.source.is_none() {
+            err(format!("{at}.system_paths"), "only for a package with a `source` script (programs are found on PATH)".into());
+        }
+        for sp in &p.system_paths {
+            if !is_system_path(sp) {
+                err(
+                    format!("{at}.system_paths"),
+                    format!("{sp:?}: an absolute path under {} without hidden or `..` parts", SYSTEM_PREFIXES.join(", ")),
+                );
+            }
         }
         for b in &p.bin {
             if !is_bundle_path(b) {
@@ -749,6 +842,11 @@ fn validate(m: &Manifest, files: Option<&BTreeSet<String>>) -> Vec<Problem> {
         }
     }
     cond("zsh.when".into(), &m.zsh.when, &mut out);
+    for a in &m.zsh.after {
+        if !is_id(a) || *a == m.id {
+            out.push(Problem { path: "zsh.after".into(), message: format!("{a:?} is not another plugin's id") });
+        }
+    }
 
     for p in crate::permissions::check(m) {
         out.push(p);
@@ -945,6 +1043,33 @@ binaries = "eza is a program: goatty downloads it from its GitHub releases."
         assert_eq!(p.len(), 2, "{p:?}");
         let files: BTreeSet<String> = ["plugin.toml", "zsh/init.zsh", "zsh/completions/_eza"].map(String::from).into();
         assert!(parse(&text, Some(&files)).is_ok());
+    }
+
+    #[test]
+    fn zsh_plugin_packages_and_load_order() {
+        let base = EXAMPLE
+            .replace("bin = [\"eza\"]", "source = \"eza.zsh\"\nsystem_paths = [\"/usr/share/eza/eza.zsh\"]")
+            .replace("[[alias]]\nname = \"ls\"\ncommand = \"eza\"\nargs = [\"{args}\"]\nwhen = \"replace_ls\"\n", "");
+        let ok = format!("{base}\n[zsh]\nload = \"line-editor\"\nafter = [\"fzf\"]\n");
+        let m = parse(&ok, None).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(m.zsh.load, Load::LineEditor);
+        assert_eq!(m.sources().map(|(p, s)| (p.id.as_str(), s)).collect::<Vec<_>>(), [("eza", "eza.zsh")]);
+        assert_eq!(m.executables().count(), 0);
+
+        for (bad, want) in
+            [("/tmp/eza.zsh", "system_paths"), ("/usr/share/../../home/x.zsh", "system_paths"), ("relative/eza.zsh", "system_paths")]
+        {
+            let p = problems(&ok.replace("/usr/share/eza/eza.zsh", bad));
+            assert!(p.iter().any(|x| x.contains(want)), "{bad}: {p:?}");
+        }
+        let p = problems(&ok.replace("source = \"eza.zsh\"", "source = \"eza.sh\""));
+        assert!(p.iter().any(|x| x.contains("source")), "{p:?}");
+        let p = problems(&ok.replace("source = \"eza.zsh\"\n", ""));
+        assert!(p.iter().any(|x| x.contains("package[0].bin")), "{p:?}");
+        let p = problems(&ok.replace("after = [\"fzf\"]", "after = [\"eza\"]"));
+        assert!(p.iter().any(|x| x.contains("zsh.after")), "{p:?}");
+        let p = problems(&ok.replace("load = \"line-editor\"", "load = \"first\""));
+        assert!(p.iter().any(|x| x.contains("first")), "{p:?}");
     }
 
     #[test]
