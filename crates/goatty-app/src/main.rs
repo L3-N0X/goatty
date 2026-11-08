@@ -13,6 +13,7 @@ mod session;
 mod settings;
 mod settings_window;
 mod terminal;
+mod toast;
 mod ui;
 mod workspace;
 

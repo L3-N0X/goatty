@@ -1,6 +1,6 @@
 //! The root view of a window. Owns the terminal panes and everything
 //! window-level: the title, closing when the shell exits, the command
-//! palette overlay.
+//! palette overlay, and the window's toasts (`crate::toast`).
 //!
 //! Today it holds exactly one pane. Tabs and splits (#30) grow here: a tab
 //! strip plus a split tree whose leaves are `TerminalView`s, with the window
@@ -14,10 +14,12 @@ use crate::actions::ToggleCommandPalette;
 use crate::command_palette::{CommandPalette, PaletteEvent};
 use crate::session::Session;
 use crate::terminal::{TerminalEvent, TerminalView};
+use crate::toast::ToastLayer;
 
 pub struct Workspace {
     pane: Entity<TerminalView>,
     palette: Option<(Entity<CommandPalette>, Subscription)>,
+    toasts: Entity<ToastLayer>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -29,7 +31,8 @@ impl Workspace {
         let appearance = cx.observe_window_appearance(window, |_, window, cx| {
             crate::settings::AppSettings::set_system_dark(cx, crate::settings::is_dark(window.appearance()));
         });
-        Self { pane, palette: None, _subscriptions: vec![sub, appearance] }
+        let toasts = cx.new(|cx| ToastLayer::new(window, cx));
+        Self { pane, palette: None, toasts, _subscriptions: vec![sub, appearance] }
     }
 
     fn on_terminal_event(&mut self, pane: &Entity<TerminalView>, ev: &TerminalEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -72,11 +75,14 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
-        div().size_full().relative().on_action(cx.listener(Self::toggle_palette)).child(self.pane.clone()).when_some(
-            self.palette.as_ref(),
-            |d, (palette, _)| {
+        div()
+            .size_full()
+            .relative()
+            .on_action(cx.listener(Self::toggle_palette))
+            .child(self.pane.clone())
+            .child(self.toasts.clone())
+            .when_some(self.palette.as_ref(), |d, (palette, _)| {
                 d.child(div().absolute().top(px(48.)).left_0().right_0().px_4().flex().justify_center().child(palette.clone()))
-            },
-        )
+            })
     }
 }

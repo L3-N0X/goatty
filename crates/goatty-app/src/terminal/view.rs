@@ -26,10 +26,13 @@ use crate::actions::{
 };
 use crate::session::Session;
 use crate::settings::{AppSettings, palette};
+use crate::toast::{self, Toast};
 
 /// Cursor blink half-period (xterm/GTK default is ~530 ms).
 const BLINK: Duration = Duration::from_millis(530);
 const DEFAULT_TITLE: &str = "goatty";
+/// The zoom toast is brief: the text size itself is the feedback.
+const ZOOM_TOAST: Duration = Duration::from_millis(1800);
 
 /// What a pane tells its parent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,8 +248,18 @@ impl TerminalView {
         }
     }
 
-    fn copy(&mut self, _: &Copy, _window: &mut Window, cx: &mut Context<'_, Self>) {
-        self.copy_selection(cx);
+    /// The explicit copy action (menu, palette, Ctrl+Shift+C) says what it
+    /// did; Ctrl+C with a selection (`copy_or_interrupt`) stays quiet.
+    fn copy(&mut self, _: &Copy, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let toast = match self.session.terminal.selection_text() {
+            Some(text) => {
+                let chars = text.chars().count();
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                Toast::success("Copied to clipboard").body(if chars == 1 { "1 character".into() } else { format!("{chars} characters") })
+            }
+            None => Toast::info("Nothing to copy").body("Select text with the mouse first."),
+        };
+        toast::show_in(window, cx, toast.key("terminal.copy"));
     }
 
     fn copy_or_interrupt(&mut self, _: &CopyOrInterrupt, _window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -259,16 +272,19 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn paste(&mut self, _: &Paste, _window: &mut Window, cx: &mut Context<'_, Self>) {
-        self.paste_clipboard(cx);
+    fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if !self.paste_clipboard(cx) {
+            toast::show_in(window, cx, Toast::info("Nothing to paste").body("The clipboard has no text.").key("terminal.paste"));
+        }
     }
 
-    fn paste_clipboard(&mut self, cx: &mut Context<'_, Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
-            // Multiline/suspicious paste confirmation: #29.
-            let bytes = encode_paste(&text, self.session.terminal.mode());
-            self.send(&bytes);
-        }
+    /// Returns false if the clipboard had no text.
+    fn paste_clipboard(&mut self, cx: &mut Context<'_, Self>) -> bool {
+        let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else { return false };
+        // Multiline/suspicious paste confirmation: #29.
+        let bytes = encode_paste(&text, self.session.terminal.mode());
+        self.send(&bytes);
+        true
     }
 
     fn scroll_page_up(&mut self, _: &ScrollPageUp, _window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -281,24 +297,37 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn zoom_by(&mut self, delta: f32, cx: &mut Context<'_, Self>) {
+    /// Zoom this pane (0 resets) and show the new size in a toast that
+    /// replaces itself while zooming.
+    fn zoom_by(&mut self, delta: f32, window: &mut Window, cx: &mut Context<'_, Self>) {
         let base = cx.global::<AppSettings>().client.font.size;
+        let before = self.zoom;
         self.zoom =
             if delta == 0.0 { 0.0 } else { (base + self.zoom + delta).clamp(FontSettings::MIN_SIZE, FontSettings::MAX_SIZE) - base };
         self.font_size = px(base + self.zoom);
         cx.notify();
+        let size = base + self.zoom;
+        let toast = if delta != 0.0 && self.zoom == before {
+            let limit = if delta > 0.0 { "largest" } else { "smallest" };
+            Toast::info(format!("Text size {size} px")).body(format!("That's the {limit} size."))
+        } else if self.zoom == 0.0 {
+            Toast::info(format!("Text size {size} px")).body("The size from your settings.")
+        } else {
+            Toast::info(format!("Text size {size} px")).action("Reset", |window, cx| window.dispatch_action(Box::new(ResetFontSize), cx))
+        };
+        toast::show_in(window, cx, toast.key("view.zoom").duration(ZOOM_TOAST));
     }
 
-    fn increase_font_size(&mut self, _: &IncreaseFontSize, _window: &mut Window, cx: &mut Context<'_, Self>) {
-        self.zoom_by(1.0, cx);
+    fn increase_font_size(&mut self, _: &IncreaseFontSize, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.zoom_by(1.0, window, cx);
     }
 
-    fn decrease_font_size(&mut self, _: &DecreaseFontSize, _window: &mut Window, cx: &mut Context<'_, Self>) {
-        self.zoom_by(-1.0, cx);
+    fn decrease_font_size(&mut self, _: &DecreaseFontSize, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.zoom_by(-1.0, window, cx);
     }
 
-    fn reset_font_size(&mut self, _: &ResetFontSize, _window: &mut Window, cx: &mut Context<'_, Self>) {
-        self.zoom_by(0.0, cx);
+    fn reset_font_size(&mut self, _: &ResetFontSize, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.zoom_by(0.0, window, cx);
     }
 
     // ---- raw input ----------------------------------------------------------
@@ -347,7 +376,9 @@ impl TerminalView {
                 self.selecting = true;
                 cx.notify();
             }
-            GMouseButton::Middle => self.paste_clipboard(cx),
+            GMouseButton::Middle => {
+                self.paste_clipboard(cx);
+            }
             _ => {}
         }
     }

@@ -74,12 +74,17 @@ settings_window/
   mod.rs       the settings window: pages, host draft → preview → apply, export/import
   host.rs      HostLink: the daemon connection or the local HostService
   pages.rs     rendering of every page
+toast/
+  mod.rs       Toast (level, title, body, buttons, key, lifetime) and the API: show/show_in/update/dismiss/dismiss_all, routed to a window's layer
+  stack.rs     one window's toasts without UI: replace by key, eviction, pausable timers (unit-tested with explicit clocks)
+  layer.rs     ToastLayer view: bottom-right cards, spring enter/exit, pause on hover / inactive window, one timer task
 ui/
   style.rs     UI colors derived from the terminal theme
+  icons.rs     Icon enum + Assets (SVGs from assets/icons/, embedded, served to svg())
   controls.rs  toggle, segmented, stepper, button, rows
   text_input.rs single-line text field (IME-aware; adapted from GPUI's example)
   color_picker.rs color picker widget: `Entity<ColorPicker>` emitting `Changed`/`Committed`; `Pick` (float state), `Wheel` geometry, painting, drag handling
-workspace.rs   root view per window: owns panes, window title, closes on exit, shows the command palette
+workspace.rs   root view per window: owns panes, window title, closes on exit, shows the command palette and the toast layer
 session.rs     a pane's data: local PTY or goattyd session → mirror Terminal; coalescing waker
 terminal/
   view.rs      TerminalView: input → terminal, actions, emits TerminalEvent
@@ -90,6 +95,8 @@ terminal/
 ```
 
 View tree: `Workspace` → `TerminalView` (one today). A `TerminalView` never touches the window directly. It emits `TerminalEvent::{TitleChanged, Exited}` and the workspace decides what that means (window title, close the pane or the window).
+
+Feedback: anything that finishes without a visible result (a palette command, a background request, later plugins) reports through `crate::toast`: `toast::show(cx, Toast::success(…))`, or `Toast::loading` first and `toast::update` with the result. Give repeated feedback a `key` so it replaces itself. Toasts never take focus.
 
 Input: GPUI dispatches a bound action before the view's raw `on_key_down`. Shortcuts are actions in `actions.rs`, and anything unbound goes to the shell through `terminal::keys` and `goatty_term::input`. Don't add shortcuts as `match` arms in `on_key`.
 
