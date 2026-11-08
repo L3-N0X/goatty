@@ -46,10 +46,7 @@ fn fetch_to(url: &str, out: &Path) -> Result<()> {
 
 /// Lowercase hex sha256.
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Verify `archive` against `asset`, unpack it and make it the active
