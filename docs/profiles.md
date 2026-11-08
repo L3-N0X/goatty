@@ -57,8 +57,9 @@ Settings travel as JSON documents rather than typed structs, so a schema change 
 
 - `settings::AppSettings` (GPUI global) holds the loaded file, the effective value (file + env, with the font family resolved against the installed fonts), the installed font list and problems. `AppSettings::update` edits, validates, saves and replaces the global. Every view observes the global, so font, size, line height, padding, renderer, cursor shape/blink and theme apply live. The file is polled every 500 ms, so edits in an editor apply live too.
 - Keybindings: `goatty_config::keys` holds the action table and defaults. `actions::apply_keybindings` rebuilds every binding with `KeyBinding::load`, so an invalid keystroke is reported instead of panicking.
+- Keystrokes are stored canonically (`keys::canonical_keystroke`): lowercase, modifiers ordered `ctrl-alt-shift-super-fn`, aliases like `plus` resolved, and no `shift` in front of a symbol or digit. GPUI on Linux names a symbol key by the character it types and never reports Shift with it (Ctrl+Shift+= is `ctrl-+`, Ctrl+Shift with the German + key is `ctrl-*`), so `ctrl-shift-+` could never fire. Loading rewrites old spellings and drops overrides that repeat a default.
 - Theme: `ThemeSettings { name, bold_is_bright, overrides }` resolves to `ThemeColors`. The terminal palette is swappable at runtime (`Terminal::set_palette`), and goatty's own UI colors derive from it (`ui::style::Ui`).
-- Ctrl+Shift+= / - zoom on top of the configured size until Ctrl+0 resets it. Changing the size in settings keeps the zoom offset.
+- Ctrl with + / - (Shift optional; on German layouts Ctrl+Shift++ types `*`, also bound) zooms on top of the configured size until Ctrl+0 resets it. Changing the size in settings keeps the zoom offset.
 
 ### The settings window
 
@@ -70,7 +71,7 @@ Settings travel as JSON documents rather than typed structs, so a schema change 
 | Shell | program, managed zsh, user dotfiles, autosuggestions/highlighting/fzf/integration | staged → preview → apply |
 | Prompt | Starship, rich/minimal style, two-line, blank line, duration threshold, prefer own starship.toml | staged |
 | History | size, duplicates, leading space, sharing, Atuin, Atuin on Up | staged |
-| Shortcuts | per action: key chips (× removes), + records a new keystroke, reset | live |
+| Shortcuts | per action: key chips (× removes), + records a new keystroke, reset; warns when a recorded key took over another action's key, when a key you added is one the shell uses (Ctrl+R, Ctrl+W, Alt+letters, plain typing keys), and when a keystroke doesn't parse | live |
 | Workspace | reattach newest session vs. start new on launch | next launch |
 | Profile | file locations, problems, env overrides, export/import, reset, generations with rollback | – |
 

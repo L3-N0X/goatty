@@ -119,6 +119,9 @@ impl SettingsWindow {
             cx.notify();
             return;
         }
+        if matches!(k.key.as_str(), "shift" | "control" | "alt" | "platform" | "function") {
+            return; // wait for the actual key
+        }
         let mut parts = Vec::new();
         if k.modifiers.control {
             parts.push("ctrl");
@@ -132,9 +135,19 @@ impl SettingsWindow {
         if k.modifiers.platform {
             parts.push("super");
         }
+        if k.modifiers.function {
+            parts.push("fn");
+        }
         parts.push(k.key.as_str());
-        let keystroke = parts.join("-");
+        let keystroke = keys::normalize_keystroke(&parts.join("-"));
         self.recording = None;
+        let overrides = &cx.global::<AppSettings>().file.value.keybindings;
+        // One keystroke runs one action: say which one this took it from.
+        // (Shell conflicts stay visible on the row.)
+        self.shortcut_note = keys::action_for(&keystroke, overrides).filter(|a| a != action).map(|prev| {
+            let label = keys::find_action(&prev).map_or(prev.as_str(), |a| a.label);
+            (action, format!("{} was bound to \"{label}\"; it now does this instead.", pretty_keys(&keystroke)))
+        });
         AppSettings::update(cx, |s| keys::set_binding(&mut s.keybindings, &keystroke, Some(action)));
         cx.stop_propagation();
         cx.notify();
@@ -805,8 +818,11 @@ impl SettingsWindow {
     fn shortcuts(&self, ui: Ui, cx: &Context<'_, Self>) -> AnyElement {
         let app = cx.global::<AppSettings>();
         let overrides = app.file.value.keybindings.clone();
-        let mut page =
-            div().flex().flex_col().child(note(ui, "Shortcuts work in terminal panes. Click + and press the new keys; Esc cancels."));
+        let mut page = div().flex().flex_col().child(note(
+            ui,
+            "Shortcuts work in terminal panes. Click + and press the new keys; Esc cancels. \
+             Symbol keys show the character they type, so Ctrl+Shift with the + key on a German layout is Ctrl+*.",
+        ));
         if !app.key_errors.is_empty() {
             page = page.child(notice(ui, ui.warning, app.key_errors.clone()));
         }
@@ -817,6 +833,35 @@ impl SettingsWindow {
             });
             let recording = self.recording == Some(a.name);
             let name = a.name;
+            // Problems per keystroke: unreadable ones, and keys the user added
+            // that the shell would otherwise get (the defaults are curated).
+            let mut warnings = Vec::new();
+            let problem: Vec<bool> = keys_for
+                .iter()
+                .map(|k| {
+                    let gpui_error = format!("keybindings.{k}: ");
+                    let broken = match keys::canonical_keystroke(k) {
+                        Err(e) => Some(e),
+                        Ok(_) => app.key_errors.iter().find_map(|e| e.strip_prefix(&gpui_error)).map(str::to_owned),
+                    };
+                    if let Some(e) = broken {
+                        warnings.push(format!("{k} doesn't work: {e}"));
+                        return true;
+                    }
+                    if !keys::is_default(k, a.name)
+                        && let Some(c) = keys::shell_conflict(k)
+                    {
+                        warnings.push(format!("{}: {c}; bound here, the shell no longer gets it.", pretty_keys(k)));
+                        return true;
+                    }
+                    false
+                })
+                .collect();
+            if let Some((for_action, msg)) = &self.shortcut_note
+                && *for_action == a.name
+            {
+                warnings.insert(0, msg.clone());
+            }
             let chips = div()
                 .flex()
                 .flex_wrap()
@@ -832,7 +877,7 @@ impl SettingsWindow {
                         .px_2()
                         .rounded_md()
                         .border_1()
-                        .border_color(ui.border)
+                        .border_color(if problem[ki] { ui.warning } else { ui.border })
                         .bg(ui.surface)
                         .text_sm()
                         .child(SharedString::from(pretty_keys(&k)))
@@ -862,6 +907,7 @@ impl SettingsWindow {
                         move |window, cx| {
                             let _ = this.update(cx, |v, cx| {
                                 v.recording = Some(name);
+                                v.shortcut_note = None;
                                 window.focus(&v.focus, cx);
                                 cx.notify();
                             });
@@ -875,6 +921,9 @@ impl SettingsWindow {
                     }))
                 });
             page = page.child(row(ui, a.label, None, chips));
+            if !warnings.is_empty() {
+                page = page.child(notice(ui, ui.warning, warnings));
+            }
         }
         page.into_any_element()
     }
@@ -1109,6 +1158,8 @@ mod tests {
     fn key_names() {
         assert_eq!(pretty_keys("ctrl-shift-c"), "Ctrl+Shift+C");
         assert_eq!(pretty_keys("ctrl-shift--"), "Ctrl+Shift+-");
+        assert_eq!(pretty_keys("ctrl--"), "Ctrl+-");
+        assert_eq!(pretty_keys("ctrl-*"), "Ctrl+*");
         assert_eq!(pretty_keys("shift-pageup"), "Shift+PageUp");
         assert_eq!(pretty_keys("ctrl-,"), "Ctrl+,");
     }

@@ -153,14 +153,15 @@ impl Document for ClientSettings {
             issues.push(Issue::new("theme.overrides.ansi", "only 16 ANSI colors exist; the rest are ignored"));
             self.theme.overrides.ansi.truncate(16);
         }
+        // Old spellings (`ctrl-shift-+`) become the ones GPUI reports (`ctrl-+`).
+        for (key, problem) in keys::canonicalize_overrides(&mut self.keybindings) {
+            issues.push(Issue::new(format!("keybindings.{key}"), problem));
+        }
         for (key, action) in &self.keybindings {
             if let Some(a) = action
                 && find_action(a).is_none()
             {
                 issues.push(Issue::new(format!("keybindings.{key}"), format!("unknown action {a:?}")));
-            }
-            if keys::normalize_keystroke(key).is_empty() {
-                issues.push(Issue::new("keybindings", "empty keystroke"));
             }
         }
         issues

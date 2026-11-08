@@ -137,7 +137,9 @@ pub fn settings(cmd: SettingsCmd) -> Result<()> {
                     problems.push(i.to_string());
                 }
             }
-            for key in loaded.value.keybindings.keys() {
+            // Keystrokes goatty can't read are already in `issues`; this
+            // catches what only GPUI rejects.
+            for key in loaded.value.keybindings.keys().filter(|k| goatty_config::keys::canonical_keystroke(k).is_ok()) {
                 if gpui::Keystroke::parse(Box::leak(key.clone().into_boxed_str())).is_err() {
                     problems.push(format!("keybindings.{key}: not a valid keystroke"));
                 }
