@@ -11,6 +11,7 @@
 pub mod fuzzy;
 pub mod registry;
 
+use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -154,6 +155,33 @@ pub fn rank(entries: &[Entry<'_>], query: &str) -> Vec<Hit> {
     }
     scored.sort_by(|(sa, a), (sb, b)| sb.cmp(sa).then_with(|| entries[a.index].label.len().cmp(&entries[b.index].label.len())));
     scored.into_iter().map(|(_, h)| h).collect()
+}
+
+/// How part of a label is drawn (the rest is plain text).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Span {
+    /// The "Category: " prefix, muted so the title stands out.
+    Category,
+    /// Letters the query matched.
+    Match,
+}
+
+/// Non-overlapping, sorted styled ranges of a label: the matched `matches`,
+/// and the category prefix (`..title_start`) around them.
+pub fn label_spans(title_start: usize, matches: &[Range<usize>]) -> Vec<(Range<usize>, Span)> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    for m in matches {
+        if at < m.start.min(title_start) {
+            out.push((at..m.start.min(title_start), Span::Category));
+        }
+        out.push((m.clone(), Span::Match));
+        at = m.end;
+    }
+    if at < title_start {
+        out.push((at..title_start, Span::Category));
+    }
+    out
 }
 
 pub struct CommandPalette {
@@ -303,9 +331,19 @@ impl CommandPalette {
                 let hit = self.hits.get(ix)?;
                 let label = self.labels[hit.index].clone();
                 let selected = ix == self.selected;
-                let highlight = HighlightStyle { color: Some(ui.accent), font_weight: Some(FontWeight::BOLD), ..Default::default() };
-                let text = StyledText::new(label.clone())
-                    .with_highlights(fuzzy::byte_ranges(&label, &hit.positions).into_iter().map(|r| (r, highlight)));
+                let matched = HighlightStyle { color: Some(ui.accent), font_weight: Some(FontWeight::BOLD), ..Default::default() };
+                let category = HighlightStyle { color: Some(ui.muted), ..Default::default() };
+                let matches = fuzzy::byte_ranges(&label, &hit.positions);
+                let spans = label_spans(self.commands[hit.index].title_start(), &matches);
+                let text = StyledText::new(label.clone()).with_highlights(spans.into_iter().map(|(r, span)| {
+                    (
+                        r,
+                        match span {
+                            Span::Category => category,
+                            Span::Match => matched,
+                        },
+                    )
+                }));
                 let keys = self.shortcuts[hit.index].clone();
                 let recent = hit.recent && self.query_empty;
                 Some(
@@ -450,6 +488,17 @@ mod tests {
         let data = [("View: Bigger text", none, None), ("View: Bigger text!", none, Some(0))];
         let e = entries(&data);
         assert_eq!(labels(&e, &rank(&e, "bigger"))[0], "View: Bigger text!");
+    }
+
+    #[test]
+    fn category_is_muted_around_matches() {
+        use Span::*;
+        // "Settings: Open settings", title at 10.
+        assert_eq!(label_spans(10, &[]), [(0..10, Category)]);
+        assert_eq!(label_spans(10, std::slice::from_ref(&(15..19))), [(0..10, Category), (15..19, Match)]);
+        assert_eq!(label_spans(10, &[0..4, 15..17]), [(0..4, Match), (4..10, Category), (15..17, Match)]);
+        assert_eq!(label_spans(10, &[2..3, 6..12]), [(0..2, Category), (2..3, Match), (3..6, Category), (6..12, Match)]);
+        assert_eq!(label_spans(0, std::slice::from_ref(&(1..2))), [(1..2, Match)], "no category");
     }
 
     #[test]
