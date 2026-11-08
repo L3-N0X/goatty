@@ -2,7 +2,7 @@
 //! sessions on that host get. Edited through the daemon, so a remote host
 //! keeps its own.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -15,6 +15,9 @@ pub struct HostSettings {
     pub shell: ShellSettings,
     pub prompt: PromptSettings,
     pub history: HistorySettings,
+    /// The user's own aliases, by name (#88). Rendered after the plugins'
+    /// aliases, so one of these with the same name wins.
+    pub aliases: BTreeMap<String, UserAlias>,
     /// Installed plugins' configuration, by plugin id (Stage 5). Which
     /// plugins are installed is host state, not a setting (goatty-shell's
     /// lock file); an entry for a plugin that isn't installed is ignored.
@@ -31,11 +34,79 @@ pub struct PluginConfig {
     /// the shell configuration is built (bad values fall back to the
     /// plugin's default and are reported there).
     pub settings: BTreeMap<String, Value>,
+    /// Names of the plugin's aliases the user switched off (the rest of
+    /// the plugin stays on).
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub disabled_aliases: BTreeSet<String>,
 }
 
 impl Default for PluginConfig {
     fn default() -> Self {
-        Self { enabled: true, settings: BTreeMap::new() }
+        Self { enabled: true, settings: BTreeMap::new(), disabled_aliases: BTreeSet::new() }
+    }
+}
+
+/// One of the user's aliases (`aliases.<name>` in `host.json`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UserAlias {
+    /// What typing the name runs: shell code as you'd type it
+    /// (`git status --short`, `ls -l | less`).
+    pub command: String,
+    /// Heading it's listed under ("" = no group).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub group: String,
+    /// A few words for the list.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Off keeps it in the list but out of the shell.
+    #[serde(skip_serializing_if = "is_true")]
+    pub enabled: bool,
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
+}
+
+impl Default for UserAlias {
+    fn default() -> Self {
+        Self { command: String::new(), group: String::new(), description: String::new(), enabled: true }
+    }
+}
+
+impl UserAlias {
+    pub fn new(command: impl Into<String>) -> Self {
+        Self { command: command.into(), ..Self::default() }
+    }
+}
+
+/// Names an alias can have: no quoting or globbing surprises in zsh
+/// (letters, digits, `_ . + - : , @ %`; not starting with `-`; `..` and
+/// `...` are fine, `.` alone is the `source` builtin).
+pub fn is_alias_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.+-:,@%".contains(&b))
+        && !s.starts_with('-')
+        && s != "."
+}
+
+/// Why `name` can't be an alias name, in words; `None` when it can.
+pub fn alias_name_problem(name: &str) -> Option<String> {
+    if name.is_empty() {
+        Some("give the alias a name".into())
+    } else if name.chars().any(char::is_whitespace) {
+        Some("an alias name can't contain spaces".into())
+    } else if name.len() > 64 {
+        Some("at most 64 characters".into())
+    } else if name.starts_with('-') {
+        Some("an alias name can't start with -".into())
+    } else if name == "." {
+        Some("`.` is the source builtin".into())
+    } else if !is_alias_name(name) {
+        Some("use letters, digits and _ . + - : , @ % only".into())
+    } else {
+        None
     }
 }
 
@@ -159,7 +230,7 @@ impl Default for HistorySettings {
 impl Document for HostSettings {
     const NAME: &'static str = "host";
     const VERSION: u32 = 1;
-    const OPEN_MAPS: &'static [&'static str] = &["plugins"];
+    const OPEN_MAPS: &'static [&'static str] = &["aliases", "plugins"];
 
     fn migrations() -> &'static [Migration] {
         &[]
@@ -179,6 +250,22 @@ impl Document for HostSettings {
         if self.prompt.duration_threshold_ms > 3_600_000 {
             issues.push(Issue::new("prompt.duration_threshold_ms", "more than an hour; using one hour"));
             self.prompt.duration_threshold_ms = 3_600_000;
+        }
+        let bad: Vec<String> = self.aliases.keys().filter(|n| !is_alias_name(n)).cloned().collect();
+        for name in bad {
+            let why = alias_name_problem(&name).unwrap_or_default();
+            issues.push(Issue::new(format!("aliases.{name}"), format!("not a usable alias name ({why}); ignored")));
+            self.aliases.remove(&name);
+        }
+        let empty: Vec<String> = self.aliases.iter().filter(|(_, a)| a.command.trim().is_empty()).map(|(n, _)| n.clone()).collect();
+        for name in empty {
+            issues.push(Issue::new(format!("aliases.{name}.command"), "empty; alias ignored"));
+            self.aliases.remove(&name);
+        }
+        for a in self.aliases.values_mut() {
+            if a.group.trim() != a.group {
+                a.group = a.group.trim().to_owned();
+            }
         }
         let bad: Vec<String> = self.plugins.keys().filter(|id| !is_plugin_id(id)).cloned().collect();
         for id in bad {
@@ -278,5 +365,48 @@ mod tests {
         let json = crate::store::to_json(&loaded.value, &loaded.unknown);
         assert!(json.contains("\"icons\": \"always\"") && json.contains("\"zoxide\""), "{json}");
         assert!(crate::store::is_known_key::<HostSettings>("plugins.eza.settings.icons"));
+    }
+
+    #[test]
+    fn user_aliases() {
+        let loaded = crate::store::parse::<HostSettings>(
+            r#"{"aliases": {
+                "gs": {"command": "git status", "group": " Git "},
+                "..": {"command": "cd ..", "enabled": false},
+                "bad name": {"command": "x"},
+                "empty": {"command": "  "},
+                "half": {"command": "ls", "enabled": "yes"}
+            },
+            "plugins": {"docker": {"disabled_aliases": ["di"]}}}"#,
+        );
+        let a = &loaded.value.aliases;
+        assert_eq!(a["gs"].command, "git status");
+        assert_eq!(a["gs"].group, "Git", "trimmed");
+        assert!(a["gs"].enabled, "enabled by default");
+        assert!(!a[".."].enabled);
+        assert!(a["half"].enabled, "a bad value falls back, the alias stays");
+        assert!(!a.contains_key("bad name") && !a.contains_key("empty"));
+        assert_eq!(loaded.issues.len(), 3, "{:?}", loaded.issues);
+        assert!(loaded.unknown.is_empty(), "alias names aren't unknown settings");
+        assert!(loaded.value.plugins["docker"].disabled_aliases.contains("di"));
+        let json = crate::store::to_json(&loaded.value, &loaded.unknown);
+        assert!(json.contains("\"gs\": {\n      \"command\": \"git status\",\n      \"group\": \"Git\"\n    }"), "only what's set: {json}");
+        let back = crate::store::parse::<HostSettings>(&json);
+        assert_eq!(back.value, loaded.value, "{json}");
+        assert!(crate::store::is_known_key::<HostSettings>("aliases.gs.command"));
+        let set = crate::store::set_key::<HostSettings>("", "aliases.ll.command", "ls -l").unwrap();
+        assert_eq!(set.value.aliases["ll"], UserAlias::new("ls -l"));
+    }
+
+    #[test]
+    fn alias_names() {
+        for ok in ["gs", "..", "...", "g+", "docker:ps", "a.b", "x_1", "c,d", "@x", "%"] {
+            assert!(is_alias_name(ok), "{ok}");
+            assert_eq!(alias_name_problem(ok), None);
+        }
+        for bad in ["", ".", "-x", "a b", "a=b", "a'b", "$x", "a;b", "a*", "~", "ö"] {
+            assert!(!is_alias_name(bad), "{bad}");
+            assert!(alias_name_problem(bad).is_some(), "{bad}");
+        }
     }
 }

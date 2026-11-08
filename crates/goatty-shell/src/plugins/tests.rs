@@ -103,7 +103,7 @@ fn plan_install_render_uninstall() {
 
     // Rendered with the user's setting.
     let mut s = settings.clone();
-    s.plugins.insert("demo".into(), PluginConfig { enabled: true, settings: BTreeMap::from([("loud".into(), true.into())]) });
+    s.plugins.insert("demo".into(), PluginConfig { settings: BTreeMap::from([("loud".into(), true.into())]), ..Default::default() });
     let (active, issues) = active(&w.dirs, &s);
     assert!(issues.is_empty(), "{issues:?}");
     let files = crate::zsh::render(&crate::zsh::ZshConfig { settings: &s, dirs: &w.dirs, daemon_exe: None, plugins: &active });

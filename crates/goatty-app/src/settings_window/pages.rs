@@ -538,7 +538,7 @@ impl SettingsWindow {
 
     /// Header of host pages: which host, problems, overrides. `None` when
     /// the settings aren't available (the error is shown instead).
-    fn host_header(&self, ui: Ui) -> (AnyElement, bool) {
+    pub(super) fn host_header(&self, ui: Ui) -> (AnyElement, bool) {
         let label = self.link.as_ref().map(|l| l.label()).unwrap_or_else(|| "no host".into());
         let mut d = div().flex().flex_col().child(note(
             ui,
@@ -1101,6 +1101,7 @@ impl Render for SettingsWindow {
             Page::Shell => self.shell(ui, cx),
             Page::Prompt => self.prompt(ui, cx),
             Page::History => self.history(ui, cx),
+            Page::Aliases => self.aliases_page(ui, cx),
             Page::Plugins => self.plugins_page(ui, cx),
             Page::Shortcuts => self.shortcuts(ui, cx),
             Page::Workspace => self.workspace(ui, cx),

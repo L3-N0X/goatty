@@ -158,6 +158,10 @@ fi
 # override a plugin's alias) and syntax highlighting.
 builtin source -- "$_goatty_dir/plugins.zsh"
 
+# --- Your aliases from goatty's settings (Aliases page, `goattyd alias`) ----
+# After the plugins' aliases, so one of yours with the same name wins.
+builtin source -- "$_goatty_dir/aliases.zsh"
+
 # --- Shell integration: OSC 133 prompt marks, OSC 7 working directory -------
 if _goatty_on integration && builtin source -- "$_goatty_dir/integration.zsh"; then
   _goatty_ok integration "$_goatty_dir/integration.zsh"

@@ -5,6 +5,7 @@
 //! * [`manifest`]: `plugin.toml`: identity, packages (pinned downloads),
 //!   settings, aliases, environment, config files, zsh code,
 //! * [`schema`]: settings values: defaults, validation, lenient resolution,
+//! * [`alias`]: a plugin's aliases as rows for the GUI and CLI,
 //! * [`template`]: how setting values reach aliases, variables and files,
 //! * [`permissions`]: what a plugin may do, derived from its manifest,
 //! * [`zsh`]: a plugin's shell integration, rendered and quoted,
@@ -17,6 +18,7 @@
 //! `validate`, `render`, `hash`) and registry maintainers (`index build`,
 //! `index sign`, `index verify`, `keygen`). See `docs/plugins.md`.
 
+pub mod alias;
 pub mod api;
 pub mod bundle;
 pub mod fetch;

@@ -36,7 +36,7 @@ pub struct Cli {
     pub via: Option<String>,
 
     /// Also open the settings window, optionally at a page (appearance,
-    /// shell, prompt, history, shortcuts, workspace, profile).
+    /// shell, prompt, history, aliases, plugins, shortcuts, workspace, profile).
     #[arg(long, value_name = "PAGE", num_args = 0..=1, default_missing_value = "appearance")]
     pub settings: Option<String>,
 

@@ -177,6 +177,12 @@ pub fn builtins() -> Vec<Command> {
         page("settings.prompt", "Prompt", Page::Prompt, &["starship"]),
         page("settings.history", "History", Page::History, &["atuin"]),
         page(
+            "settings.aliases",
+            "Aliases: add, edit and switch aliases",
+            Page::Aliases,
+            &["alias", "abbreviations", "commands", "shorthand"],
+        ),
+        page(
             "plugins.open",
             "Plugins: browse, install and configure",
             Page::Plugins,

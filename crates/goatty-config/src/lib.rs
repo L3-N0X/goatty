@@ -46,7 +46,10 @@ pub use client::{ClientSettings, CursorShape, DebugSettings, FontSettings, OnLau
 pub use color_history::ColorHistory;
 pub use colorspace::ColorFormat;
 pub use command_history::CommandHistory;
-pub use host::{HistorySettings, HostSettings, PluginConfig, PromptSettings, PromptStyle, ShellSettings, ZshSettings};
+pub use host::{
+    HistorySettings, HostSettings, PluginConfig, PromptSettings, PromptStyle, ShellSettings, UserAlias, ZshSettings, alias_name_problem,
+    is_alias_name,
+};
 pub use store::{Document, FileStamp, Issue, Loaded};
 pub use theme::{
     Color, ColorSlot, DEFAULT_LIGHT_THEME, DEFAULT_THEME, THEMES, Theme, ThemeColors, ThemeOverrides, ThemeSettings, find_theme,

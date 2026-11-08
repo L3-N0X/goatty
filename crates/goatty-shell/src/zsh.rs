@@ -54,6 +54,7 @@ pub fn render(cfg: &ZshConfig<'_>) -> Vec<GeneratedFile> {
         GeneratedFile::new(".zshrc", ZSHRC),
         GeneratedFile::new("integration.zsh", INTEGRATION),
         GeneratedFile::new("starship.toml", render_starship(cfg.settings)),
+        GeneratedFile::new("aliases.zsh", crate::aliases::render(cfg.settings)),
     ];
     files.extend(render_plugins(cfg));
     files
