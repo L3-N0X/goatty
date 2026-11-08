@@ -784,7 +784,8 @@ impl Condition {
         Ok(Condition::On(s.into()))
     }
 
-    fn setting(&self) -> &str {
+    /// The setting it tests.
+    pub fn setting(&self) -> &str {
         match self {
             Condition::On(k) | Condition::Off(k) | Condition::Is(k, _) | Condition::IsNot(k, _) => k,
         }

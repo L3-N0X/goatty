@@ -6,6 +6,7 @@
 //! as a diff of the generated shell configuration, and are applied as a new
 //! generation (validated first, rollback-able). See `docs/profiles.md`.
 
+mod aliases;
 mod host;
 mod pages;
 mod plugins;
@@ -56,7 +57,7 @@ pub fn open_at(cx: &mut App, page: Option<Page>) {
                     view.page = p;
                     cx.notify();
                 }
-                if page == Some(Page::Plugins) {
+                if matches!(page, Some(Page::Plugins | Page::Aliases)) {
                     view.load_plugins(false, cx);
                 }
             })
@@ -94,6 +95,7 @@ pub enum Page {
     Shell,
     Prompt,
     History,
+    Aliases,
     Shortcuts,
     Plugins,
     Workspace,
@@ -101,8 +103,17 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 8] =
-        [Page::Appearance, Page::Shell, Page::Prompt, Page::History, Page::Plugins, Page::Shortcuts, Page::Workspace, Page::Profile];
+    pub const ALL: [Page; 9] = [
+        Page::Appearance,
+        Page::Shell,
+        Page::Prompt,
+        Page::History,
+        Page::Aliases,
+        Page::Plugins,
+        Page::Shortcuts,
+        Page::Workspace,
+        Page::Profile,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -110,6 +121,7 @@ impl Page {
             Page::Shell => "Shell",
             Page::Prompt => "Prompt",
             Page::History => "History",
+            Page::Aliases => "Aliases",
             Page::Plugins => "Plugins",
             Page::Shortcuts => "Shortcuts",
             Page::Workspace => "Workspace",
@@ -123,7 +135,7 @@ impl Page {
 
     /// Edits the connected host's settings (staged, then applied).
     pub fn is_host(self) -> bool {
-        matches!(self, Page::Shell | Page::Prompt | Page::History | Page::Plugins)
+        matches!(self, Page::Shell | Page::Prompt | Page::History | Page::Aliases | Page::Plugins)
     }
 }
 
@@ -187,6 +199,7 @@ pub struct SettingsWindow {
     /// (action it was recorded for, message).
     shortcut_note: Option<(&'static str, String)>,
     plugins: plugins::PluginsPage,
+    aliases: aliases::AliasesPage,
     _subs: Vec<Subscription>,
 }
 
@@ -254,6 +267,7 @@ impl SettingsWindow {
             recording: None,
             shortcut_note: None,
             plugins: plugins::PluginsPage::default(),
+            aliases: aliases::AliasesPage::new(cx),
             _subs: subs,
         };
         this.load_host(cx);

@@ -35,6 +35,72 @@ enum Cmd {
     /// Plugins on this host: search, install (with a review of what they do), configure, remove.
     #[command(subcommand)]
     Plugin(PluginCmd),
+    /// Aliases in goatty's shells on this host: yours and the ones plugins bring.
+    #[command(subcommand)]
+    Alias(AliasCmd),
+}
+
+#[derive(Subcommand)]
+enum AliasCmd {
+    /// Your aliases by group, then each plugin's, with what they run.
+    List,
+    /// Add an alias: `goattyd alias add gs git status`. Quote a command with options, pipes or
+    /// quotes (`'git log --oneline'`), or put it after `--`.
+    Add {
+        name: String,
+        /// What typing NAME runs.
+        #[arg(required = true)]
+        command: Vec<String>,
+        /// List it under this heading.
+        #[arg(short, long)]
+        group: Option<String>,
+        #[arg(short, long)]
+        description: Option<String>,
+        /// Add it switched off.
+        #[arg(long)]
+        disabled: bool,
+        /// Replace an alias of yours with that name.
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Change one of your aliases.
+    Edit {
+        name: String,
+        /// New command.
+        #[arg(short, long, allow_hyphen_values = true)]
+        command: Option<String>,
+        /// Rename it.
+        #[arg(short = 'n', long = "name", value_name = "NEW")]
+        rename: Option<String>,
+        /// Move it to another group ("" = none).
+        #[arg(short, long)]
+        group: Option<String>,
+        #[arg(short, long)]
+        description: Option<String>,
+    },
+    /// Remove aliases of yours.
+    #[command(visible_alias = "rm")]
+    Remove {
+        #[arg(required = true)]
+        names: Vec<String>,
+    },
+    /// Switch aliases on: yours or plugins' by name, a group of yours, or a plugin's.
+    Enable {
+        names: Vec<String>,
+        #[arg(short, long, conflicts_with = "plugin")]
+        group: Option<String>,
+        /// That plugin's aliases (all of them without names).
+        #[arg(short, long)]
+        plugin: Option<String>,
+    },
+    /// Switch aliases off without removing them (plugin aliases too).
+    Disable {
+        names: Vec<String>,
+        #[arg(short, long, conflicts_with = "plugin")]
+        group: Option<String>,
+        #[arg(short, long)]
+        plugin: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -159,7 +225,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let cmd = cli.cmd.unwrap_or(Cmd::Serve);
     // The proxy's stderr goes back over ssh into the GUI's log: keep it quiet.
-    let default_level = if matches!(cmd, Cmd::Proxy | Cmd::Shell(_) | Cmd::Settings(_) | Cmd::Plugin(_)) { "warn" } else { "info" };
+    let default_level =
+        if matches!(cmd, Cmd::Proxy | Cmd::Shell(_) | Cmd::Settings(_) | Cmd::Plugin(_) | Cmd::Alias(_)) { "warn" } else { "info" };
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_level)).init();
 
     match cmd {
@@ -221,6 +288,22 @@ fn main() -> Result<()> {
                     RegistryCmd::Add { name, url, keys } => cmd::registry_add(&svc, &name, &url, &keys),
                     RegistryCmd::Remove { name } => cmd::registry_remove(&svc, &name),
                 },
+            }
+        }
+        Cmd::Alias(cmd) => {
+            use goatty_shell::aliases::cmd;
+            let svc = goatty_shell::HostService::from_env(std::env::current_exe().ok());
+            match cmd {
+                AliasCmd::List => cmd::list(&svc),
+                AliasCmd::Add { name, command, group, description, disabled, force } => {
+                    cmd::add(&svc, &name, &cmd::command_from(&command), group.as_deref(), description.as_deref(), !disabled, force)
+                }
+                AliasCmd::Edit { name, command, rename, group, description } => {
+                    cmd::edit(&svc, &name, cmd::Edit { rename, command, group, description })
+                }
+                AliasCmd::Remove { names } => cmd::remove(&svc, &names),
+                AliasCmd::Enable { names, group, plugin } => cmd::set_enabled(&svc, cmd::Selection { names, group, plugin }, true),
+                AliasCmd::Disable { names, group, plugin } => cmd::set_enabled(&svc, cmd::Selection { names, group, plugin }, false),
             }
         }
         Cmd::Shell(cmd) => {

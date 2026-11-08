@@ -216,11 +216,11 @@ impl Plugins<'_> {
             .aliases
             .iter()
             .map(|a| {
-                let words = template::expand_list(&a.args, m, &values);
-                let mut s = format!("{} → {}", a.name, std::iter::once(a.command.clone()).chain(words).collect::<Vec<_>>().join(" "));
+                let mut s = format!("{} → {}", a.name, goatty_plugin::alias::expansion(m, a, &values));
                 if let Some(w) = &a.when {
                     let on = manifest::applies(&a.when, &values);
-                    s.push_str(&format!("  (when {w}: {})", if on { "on now" } else { "off now" }));
+                    let when = goatty_plugin::alias::describe(m, w);
+                    s.push_str(&format!("  (while {when}: {})", if on { "on now" } else { "off now" }));
                 }
                 s
             })
@@ -535,7 +535,7 @@ pub fn active(dirs: &Dirs, settings: &HostSettings) -> (Vec<Active>, Vec<String>
         if config.is_some_and(|c| !c.enabled) {
             continue;
         }
-        let m = match lock::manifest_of(dirs, id, entry) {
+        let mut m = match lock::manifest_of(dirs, id, entry) {
             Ok(m) => m,
             Err(e) => {
                 issues.push(format!("{e:#}"));
@@ -557,6 +557,10 @@ pub fn active(dirs: &Dirs, settings: &HostSettings) -> (Vec<Active>, Vec<String>
         let (values, problems) = schema::resolve(&m, &stored);
         for (k, msg) in problems {
             issues.push(format!("plugins.{id}.settings.{k}: {msg}"));
+        }
+        // Aliases the user switched off stay out of the shell (#88).
+        if let Some(off) = config.map(|c| &c.disabled_aliases).filter(|d| !d.is_empty()) {
+            m.aliases.retain(|a| !off.contains(&a.name));
         }
         let label = format!("{} {} ({})", m.id, m.version, entry.source);
         out.push(Active { manifest: m, values, entry: entry.clone(), label });

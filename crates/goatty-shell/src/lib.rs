@@ -6,6 +6,7 @@
 //! dotfiles. The user's `.zshenv`/`.zprofile` still run (and `.zshrc` on
 //! request); the user's `ZDOTDIR` is restored once startup is done.
 //!
+//! * [`aliases`]: the user's and the plugins' aliases, `goattyd alias …`,
 //! * [`launch`]: which shell a session runs, and its environment,
 //! * [`zsh`]: the startup files, rendered from the host settings,
 //! * [`generation`]: build, validate, activate and roll back configurations,
@@ -18,6 +19,7 @@
 //! goatty never writes outside its own directories ([`dirs`]): no edits to
 //! `~/.zshrc`, the global PATH or the login shell.
 
+pub mod aliases;
 pub mod cmd;
 pub mod dirs;
 pub mod doctor;

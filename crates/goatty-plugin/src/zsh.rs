@@ -130,9 +130,7 @@ pub fn render(m: &Manifest, values: &Values, ctx: &Ctx<'_>) -> Rendered {
     let needed: Vec<&str> = m.executables().chain(m.requires.commands.iter().map(String::as_str)).collect();
     let mut body = Vec::new();
     for a in m.aliases.iter().filter(|a| applies(&a.when, values)) {
-        let mut words = vec![word(&a.command)];
-        words.extend(expand_list(&a.args, m, values).iter().map(|w| word(w)));
-        body.push(format!("alias -- {}={}", a.name, quote(&words.join(" "))));
+        body.push(format!("alias -- {}={}", a.name, quote(&crate::alias::expansion(m, a, values))));
     }
     if let Some(init) = m.zsh.init.as_ref().filter(|_| applies(&m.zsh.when, values)) {
         let pairs: Vec<String> =

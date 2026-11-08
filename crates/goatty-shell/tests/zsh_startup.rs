@@ -95,8 +95,12 @@ impl Sandbox {
 
     fn launch(&self, zsh: ZshSettings, orig_zdotdir: Option<&Path>) -> Launch {
         let mut settings = HostSettings::default();
-        settings.shell.program = Some(self.zsh.clone());
         settings.shell.zsh = zsh;
+        self.launch_with(settings, orig_zdotdir)
+    }
+
+    fn launch_with(&self, mut settings: HostSettings, orig_zdotdir: Option<&Path>) -> Launch {
+        settings.shell.program = Some(self.zsh.clone());
         let mut l = Launcher::new(Some(self.dirs.clone()), Some(self.home.join("goattyd"))).launch(&Effective::plain(settings));
         assert!(l.managed);
         // Don't inherit the test runner's ZDOTDIR.
@@ -155,7 +159,7 @@ fn generated_files_parse() {
     let Some(zsh) = zsh() else { return };
     let sb = Sandbox::new(zsh.clone());
     sb.launch(ZshSettings::default(), None);
-    for f in [".zshenv", ".zprofile", ".zshrc", "integration.zsh", "settings.zsh"] {
+    for f in [".zshenv", ".zprofile", ".zshrc", "integration.zsh", "settings.zsh", "aliases.zsh"] {
         let out = Command::new(&zsh).arg("-n").arg(sb.dirs.zsh_dir().join(f)).output().unwrap();
         assert!(out.status.success(), "{f}: {}", String::from_utf8_lossy(&out.stderr));
     }
@@ -538,6 +542,49 @@ shell-code = "defines the greet function the plugin is about"
     use goatty_shell::doctor::State;
     assert!(matches!(state("plugin:meow"), Some(State::Ok(d)) if d.ends_with("/cat")), "{status:?}");
     assert_eq!(state("plugin:ghost"), Some(State::Missing));
+}
+
+/// The user's aliases from host.json (#88): defined in a real shell,
+/// quoted intact, a switched-off one left out, one with a plugin alias's
+/// name replacing it, and a plugin alias the user switched off missing.
+#[test]
+fn user_aliases_in_a_real_shell() {
+    let Some(zsh) = zsh() else { return };
+    let sb = Sandbox::new(zsh);
+    let dir = sb.home.join("plugins-src/kitty");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("plugin.toml"),
+        "schema = 1\nid = \"kitty\"\nname = \"Kitty\"\nversion = \"1.0.0\"\nsummary = \"s\"\npublisher = \"tests\"\n[requires]\ncommands = [\"cat\"]\n\
+         [[alias]]\nname = \"meow\"\ncommand = \"cat\"\n[[alias]]\nname = \"purr\"\ncommand = \"cat\"\nargs = [\"-n\"]\n[[alias]]\nname = \"hiss\"\ncommand = \"cat\"\n",
+    )
+    .unwrap();
+    let none = goatty_plugin::fetch::Fixed::default();
+    let p = goatty_shell::plugins::Plugins { dirs: &sb.dirs, fetch: &none, builtin: &[] };
+    let c = goatty_shell::plugins::Candidate::local(&dir).unwrap();
+    let plan = p.plan(&c, &HostSettings::default()).unwrap();
+    p.install(&c, &plan.digest, &HostSettings::default()).unwrap();
+
+    let mut settings = HostSettings::default();
+    settings.shell.zsh.syntax_highlighting = false;
+    let alias = |command: &str, group: &str, enabled: bool| goatty_config::UserAlias {
+        group: group.into(),
+        enabled,
+        ..goatty_config::UserAlias::new(command)
+    };
+    settings.aliases.insert("say".into(), alias(r#"print -r -- "it's ok" | cat"#, "Fun", true));
+    settings.aliases.insert("meow".into(), alias("print -r -- mine", "", true));
+    settings.aliases.insert("nope".into(), alias("print -r -- nope", "Fun", false));
+    settings.aliases.insert("..".into(), alias("cd ..", "", true));
+    settings.plugins.entry("kitty".into()).or_default().disabled_aliases.insert("hiss".into());
+    let launch = sb.launch_with(settings, None);
+    let out =
+        sb.run(&launch, "say; meow; print -r -- \"purr=$aliases[purr] hiss=${+aliases[hiss]} nope=${+aliases[nope]} dots=$aliases[..]\"");
+    let text = stdout(&out);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.trim().is_empty(), "startup printed errors:\n{stderr}");
+    assert!(text.contains("it's ok\nmine\n"), "{text}");
+    assert!(text.contains("purr=cat -n hiss=0 nope=0 dots=cd .."), "{text}");
 }
 
 /// A reload request that arrives while the prompt is being drawn (after
