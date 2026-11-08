@@ -21,6 +21,7 @@ Full plan: `docs/goatty-project-plan.md`. Code structure and where new work goes
 - **Stage 3 core done:** `goatty-shell` crate: sessions run zsh with a generated ZDOTDIR (autosuggestions, syntax highlighting, completion, Starship, Atuin, fzf, OSC 133/7), user dotfiles untouched; pinned sha256-verified user-space tool installs; `goattyd shell status|install|uninstall|dismiss`, `goatty-setup` inside the shell.
 - **Themes and settings CLI:** user themes (`~/.config/goatty/themes/`, importers for base16/iTerm2/Windows Terminal), theme editor, follow the desktop's light/dark, `goatty settings|theme` and `goattyd settings` commands.
 - **Stage 4 core done:** client/host settings documents (`settings.json` / `host.json`, lenient versioned store, sparse saves with backups), themes, configurable keybindings, host config built as validated generations with rollback, protocol v3 (host settings + `SetPalette`), live-applying settings window (`Ctrl+,`) with preview/apply for host settings, profile export/import.
+- **Color picker:** `ui/color_picker.rs` (hue ring + SV square, RGB/HSL/HSV/OKLCH sliders, paste-anything field, copy as hex/rgb/hsl/hsv/oklch/oklab, history in `$XDG_STATE_HOME/goatty/color-history.json`), used by the theme editor. Color math and parsing: `goatty_config::colorspace`.
 - **Next:** Stage 1 (tabs/splits, IME, box drawing, …) in parallel with remote R1, plus the rest of Stages 3/4 (GUI first-run/diagnostics, OSC 133 in the UI, settings polish). See the GitHub issues and milestones.
 
 Roadmap: Stage 1 terminal → Stage 2 daemon/sessions (partly done) → Stage 3 managed Zsh environment → Stage 4 profile engine + settings GUI → Stage 5 plugin system → Stage 6 more shells/OSes → Stage 7 remote/web ecosystem. Remote track R1–R3 runs alongside.
@@ -45,10 +46,10 @@ crates/
   goatty-term/    terminal engine: the ONLY crate that touches rio-vt. Terminal, Frame snapshots, palette, input encoding, PTY, reattach/resync snapshots
   goatty-proto/   wire protocol v2: msg.rs (types), codec.rs (framing), paths.rs (socket path)
   goatty-client/  Connection (reconnecting, multiplexed; reader/writer/heartbeat threads), Control (blocking CLI client), transports. No UI deps
-  goatty-config/  profile model: ClientSettings/HostSettings, store (lenient load, migrations, sparse save, backups), themes, keys, profile export/import, GOATTY_* overrides
+  goatty-config/  profile model: ClientSettings/HostSettings, store (lenient load, migrations, sparse save, backups), themes, keys, profile export/import, GOATTY_* overrides, colorspace (HSV/HSL/Oklch + lenient color parser), color picker history
   goatty-shell/   managed zsh: Launcher, rendering (zsh/*.zsh + settings.zsh/starship.toml), generations, HostService, pinned tools + installer, doctor, `shell` commands
   goatty-daemon/  lib (server, client, session, proxy) + bin goattyd: `serve`, `proxy`, `list`, `kill`, `send`, `stop`, `shell …`
-  goatty-app/     GPUI client (bin `goatty`): cli, app, settings (AppSettings global), actions, workspace, session, terminal/{view,element,glyphs,keys,stats}, settings_window/, ui/
+  goatty-app/     GPUI client (bin `goatty`): cli, app, settings (AppSettings global), actions, workspace, session, terminal/{view,element,glyphs,keys,stats}, settings_window/, ui/ (controls, text_input, color_picker)
 docs/             plan, architecture, findings, remote architecture, archive/
 .github/          CI (fmt, clippy -D warnings, tests, bench smoke), release on v* tags, dependabot, issue/PR templates
 scripts/          smoke.sh (visual), bench.sh/perf.sh (GUI throughput)

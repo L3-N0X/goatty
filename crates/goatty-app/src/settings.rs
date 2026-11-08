@@ -157,16 +157,32 @@ impl AppSettings {
     /// Edit the stored settings (the settings window). Validates, saves
     /// (with a backup), and applies live.
     pub fn update(cx: &mut App, f: impl FnOnce(&mut ClientSettings)) {
+        Self::update_with(cx, f, true);
+    }
+
+    /// Like [`update`](Self::update) but only applies the change, without
+    /// writing the file: a live preview while a color is being dragged. The
+    /// caller saves with `update` once the user lets go.
+    pub fn preview(cx: &mut App, f: impl FnOnce(&mut ClientSettings)) {
+        Self::update_with(cx, f, false);
+    }
+
+    fn update_with(cx: &mut App, f: impl FnOnce(&mut ClientSettings), save: bool) {
         let mut file = cx.global::<Self>().file.clone();
         f(&mut file.value);
         file.issues = file.value.validate();
-        let save_error = match &cx.global::<Self>().path {
-            Some(p) => store::save(p, &file.value, &file.unknown).err().map(|e| format!("couldn't save {}: {e}", p.display())),
-            None => Some("$HOME is not set: settings apply until goatty quits".into()),
+        let save_error = if !save {
+            cx.global::<Self>().save_error.clone()
+        } else {
+            let e = match &cx.global::<Self>().path {
+                Some(p) => store::save(p, &file.value, &file.unknown).err().map(|e| format!("couldn't save {}: {e}", p.display())),
+                None => Some("$HOME is not set: settings apply until goatty quits".into()),
+            };
+            if let Some(e) = &e {
+                log::warn!("{e}");
+            }
+            e
         };
-        if let Some(e) = &save_error {
-            log::warn!("{e}");
-        }
         Self::replace(cx, file, save_error);
     }
 
