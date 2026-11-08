@@ -15,13 +15,42 @@ use super::style::Ui;
 
 pub const CONTEXT: &str = "TextInput";
 
-actions!(text_input, [Backspace, Delete, Left, Right, SelectLeft, SelectRight, SelectAll, Home, End, Paste, Cut, Copy, Submit]);
+actions!(
+    text_input,
+    [
+        Backspace,
+        Delete,
+        DeleteWordLeft,
+        DeleteWordRight,
+        Left,
+        Right,
+        WordLeft,
+        WordRight,
+        SelectLeft,
+        SelectRight,
+        SelectWordLeft,
+        SelectWordRight,
+        SelectAll,
+        Home,
+        End,
+        Paste,
+        Cut,
+        Copy,
+        Submit
+    ]
+);
 
 pub fn bindings() -> Vec<KeyBinding> {
     let c = Some(CONTEXT);
     vec![
         KeyBinding::new("backspace", Backspace, c),
         KeyBinding::new("delete", Delete, c),
+        KeyBinding::new("ctrl-backspace", DeleteWordLeft, c),
+        KeyBinding::new("ctrl-delete", DeleteWordRight, c),
+        KeyBinding::new("ctrl-left", WordLeft, c),
+        KeyBinding::new("ctrl-right", WordRight, c),
+        KeyBinding::new("ctrl-shift-left", SelectWordLeft, c),
+        KeyBinding::new("ctrl-shift-right", SelectWordRight, c),
         KeyBinding::new("left", Left, c),
         KeyBinding::new("right", Right, c),
         KeyBinding::new("shift-left", SelectLeft, c),
@@ -150,6 +179,44 @@ impl TextInput {
         self.replace_text_in_range(None, "", window, cx)
     }
 
+    fn delete_word_left(&mut self, _: &DeleteWordLeft, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if self.selected_range.is_empty() {
+            let start = word_start_before(&self.content, self.cursor_offset());
+            if start == self.cursor_offset() {
+                return;
+            }
+            self.select_to(start, window, cx)
+        }
+        self.replace_text_in_range(None, "", window, cx)
+    }
+
+    fn delete_word_right(&mut self, _: &DeleteWordRight, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if self.selected_range.is_empty() {
+            let end = word_end_after(&self.content, self.cursor_offset());
+            if end == self.cursor_offset() {
+                return;
+            }
+            self.select_to(end, window, cx)
+        }
+        self.replace_text_in_range(None, "", window, cx)
+    }
+
+    fn word_left(&mut self, _: &WordLeft, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.move_to(word_start_before(&self.content, self.cursor_offset()), window, cx);
+    }
+
+    fn word_right(&mut self, _: &WordRight, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.move_to(word_end_after(&self.content, self.cursor_offset()), window, cx);
+    }
+
+    fn select_word_left(&mut self, _: &SelectWordLeft, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.select_to(word_start_before(&self.content, self.cursor_offset()), window, cx);
+    }
+
+    fn select_word_right(&mut self, _: &SelectWordRight, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.select_to(word_end_after(&self.content, self.cursor_offset()), window, cx);
+    }
+
     fn submit(&mut self, _: &Submit, _window: &mut Window, cx: &mut Context<'_, Self>) {
         cx.emit(TextInputEvent::Submitted(self.content.to_string()));
     }
@@ -273,6 +340,43 @@ impl TextInput {
     fn next_boundary(&self, offset: usize) -> usize {
         self.content.char_indices().find_map(|(idx, _)| (idx > offset).then_some(idx)).unwrap_or(self.content.len())
     }
+}
+
+/// Character classes for word motions: spaces, word characters, and other
+/// symbols (a run of which counts as one word: `#1e1e2e,` is `#`, `1e1e2e`, `,`).
+fn char_class(c: char) -> u8 {
+    if c.is_whitespace() {
+        0
+    } else if c.is_alphanumeric() || c == '_' {
+        1
+    } else {
+        2
+    }
+}
+
+/// Where Ctrl+Backspace / Ctrl+Left goes from byte `offset`: back over
+/// spaces, then over one run of word (or punctuation) characters.
+pub fn word_start_before(text: &str, offset: usize) -> usize {
+    let mut chars = text[..offset].char_indices().rev().peekable();
+    while chars.next_if(|&(_, c)| char_class(c) == 0).is_some() {}
+    let Some(&(_, first)) = chars.peek() else { return 0 };
+    let class = char_class(first);
+    let mut start = offset;
+    while let Some((i, _)) = chars.next_if(|&(_, c)| char_class(c) == class) {
+        start = i;
+    }
+    start
+}
+
+/// Where Ctrl+Delete / Ctrl+Right goes from byte `offset`: forward over
+/// spaces, then over one run of word (or punctuation) characters.
+pub fn word_end_after(text: &str, offset: usize) -> usize {
+    let mut chars = text[offset..].char_indices().map(|(i, c)| (i + offset, c)).peekable();
+    while chars.next_if(|&(_, c)| char_class(c) == 0).is_some() {}
+    let Some(&(_, first)) = chars.peek() else { return text.len() };
+    let class = char_class(first);
+    while chars.next_if(|&(_, c)| char_class(c) == class).is_some() {}
+    chars.peek().map_or(text.len(), |&(i, _)| i)
 }
 
 impl EntityInputHandler for TextInput {
@@ -561,6 +665,12 @@ impl Render for TextInput {
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
+            .on_action(cx.listener(Self::delete_word_left))
+            .on_action(cx.listener(Self::delete_word_right))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))
             .on_action(cx.listener(Self::select_left))
@@ -597,5 +707,35 @@ impl Render for TextInput {
 impl Focusable for TextInput {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn word_start() {
+        let t = "open settings  now";
+        assert_eq!(word_start_before(t, t.len()), 15);
+        assert_eq!(word_start_before(t, 15), 5, "spaces, then the word before them");
+        assert_eq!(word_start_before(t, 9), 5, "from inside a word: its start");
+        assert_eq!(word_start_before(t, 5), 0);
+        assert_eq!(word_start_before(t, 0), 0);
+        assert_eq!(word_start_before("   ", 3), 0);
+        assert_eq!(word_start_before("rgb(30, 30", 10), 8);
+        assert_eq!(word_start_before("rgb(30, ", 8), 6, "punctuation is its own run");
+        assert_eq!(word_start_before("Öffnen Über", 13), 8, "multi-byte chars");
+    }
+
+    #[test]
+    fn word_end() {
+        let t = "open settings  now";
+        assert_eq!(word_end_after(t, 0), 4);
+        assert_eq!(word_end_after(t, 4), 13);
+        assert_eq!(word_end_after(t, 13), t.len());
+        assert_eq!(word_end_after(t, t.len()), t.len());
+        assert_eq!(word_end_after("a.b", 1), 2);
+        assert_eq!(word_end_after("Über x", 0), 5);
     }
 }

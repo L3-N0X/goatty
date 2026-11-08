@@ -66,6 +66,10 @@ cli.rs         clap definition
 app.rs         GPUI bootstrap: settings, host link, main window, OpenSettings handler
 settings.rs    AppSettings global: client settings file ⇄ live values, file polling, keybindings
 actions.rs     actions, name → action map, loading user keybindings (Terminal key context)
+command_palette/
+  mod.rs       the Ctrl+Shift+P overlay: ranking (fuzzy + keywords + recently used), list, keys
+  registry.rs  Command (id, category, title, keywords, action or handler), CommandRegistry global, built-ins
+  fuzzy.rs     fzf-style matcher: word starts, consecutive runs, gaps; any word order; highlight positions
 settings_window/
   mod.rs       the settings window: pages, host draft → preview → apply, export/import
   host.rs      HostLink: the daemon connection or the local HostService
@@ -75,7 +79,7 @@ ui/
   controls.rs  toggle, segmented, stepper, button, rows
   text_input.rs single-line text field (IME-aware; adapted from GPUI's example)
   color_picker.rs color picker widget: `Entity<ColorPicker>` emitting `Changed`/`Committed`; `Pick` (float state), `Wheel` geometry, painting, drag handling
-workspace.rs   root view per window: owns panes, window title, closes on exit
+workspace.rs   root view per window: owns panes, window title, closes on exit, shows the command palette
 session.rs     a pane's data: local PTY or goattyd session → mirror Terminal; coalescing waker
 terminal/
   view.rs      TerminalView: input → terminal, actions, emits TerminalEvent

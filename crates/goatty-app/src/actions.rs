@@ -36,6 +36,10 @@ actions!(
         ResetFontSize,
         /// Open (or focus) the settings window.
         OpenSettings,
+        /// Show the command palette (or close it).
+        ToggleCommandPalette,
+        /// Ask the host's running managed shells to reload their configuration.
+        ReloadShells,
     ]
 );
 
@@ -51,6 +55,8 @@ pub fn action_by_name(name: &str) -> Option<Box<dyn Action>> {
         "decrease_font_size" => Box::new(DecreaseFontSize),
         "reset_font_size" => Box::new(ResetFontSize),
         "open_settings" => Box::new(OpenSettings),
+        "command_palette" => Box::new(ToggleCommandPalette),
+        "reload_shells" => Box::new(ReloadShells),
         _ => return None,
     })
 }
@@ -85,6 +91,9 @@ pub fn apply_keybindings(overrides: &BTreeMap<String, Option<String>>, cx: &mut 
     cx.bind_keys(crate::ui::text_input::bindings());
     cx.bind_keys(crate::ui::color_picker::bindings());
     cx.bind_keys(crate::settings_window::bindings());
+    let palette_keys = goatty_config::keys::keys_for("command_palette", overrides);
+    let palette = crate::command_palette::bindings(&palette_keys, cx);
+    cx.bind_keys(palette);
     errors
 }
 

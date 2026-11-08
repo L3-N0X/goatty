@@ -22,6 +22,7 @@ Full plan: `docs/goatty-project-plan.md`. Code structure and where new work goes
 - **Themes and settings CLI:** user themes (`~/.config/goatty/themes/`, importers for base16/iTerm2/Windows Terminal), theme editor, follow the desktop's light/dark, `goatty settings|theme` and `goattyd settings` commands.
 - **Stage 4 core done:** client/host settings documents (`settings.json` / `host.json`, lenient versioned store, sparse saves with backups), themes, configurable keybindings, host config built as validated generations with rollback, protocol v4 (host settings, `SetPalette`, `ReloadShells`), live-applying settings window (`Ctrl+,`) with preview/apply for host settings, profile export/import, reloading running shells after an apply (`goattyd shell reload`, SIGURG → reload at the next idle prompt).
 - **Color picker:** `ui/color_picker.rs` (hue ring + SV square, RGB/HSL/HSV/OKLCH sliders, paste-anything field, history in `$XDG_STATE_HOME/goatty/color-history.json`), used by the theme editor. Color math and parsing: `goatty_config::colorspace`.
+- **Command palette:** `Ctrl+Shift+P` (`command_palette/`): fuzzy search over the `CommandRegistry` global (built-ins now, plugin commands later, #77), recently used first (`$XDG_STATE_HOME/goatty/command-history.json`). New user-facing actions should get a palette command (`registry::builtins`).
 - **Next:** Stage 1 (tabs/splits, IME, box drawing, …) in parallel with remote R1, plus the rest of Stages 3/4 (GUI first-run/diagnostics, OSC 133 in the UI, settings polish). See the GitHub issues and milestones.
 
 Roadmap: Stage 1 terminal → Stage 2 daemon/sessions (partly done) → Stage 3 managed Zsh environment → Stage 4 profile engine + settings GUI → Stage 5 plugin system → Stage 6 more shells/OSes → Stage 7 remote/web ecosystem. Remote track R1–R3 runs alongside.
@@ -49,7 +50,7 @@ crates/
   goatty-config/  profile model: ClientSettings/HostSettings, store (lenient load, migrations, sparse save, backups), themes, keys, profile export/import, GOATTY_* overrides, colorspace (HSV/HSL/Oklch + lenient color parser), color picker history
   goatty-shell/   managed zsh: Launcher, rendering (zsh/*.zsh + settings.zsh/starship.toml), generations, HostService, pinned tools + installer, doctor, `shell` commands
   goatty-daemon/  lib (server, client, session, proxy) + bin goattyd: `serve`, `proxy`, `list`, `kill`, `send`, `stop`, `shell …`
-  goatty-app/     GPUI client (bin `goatty`): cli, app, settings (AppSettings global), actions, workspace, session, terminal/{view,element,glyphs,keys,stats}, settings_window/, ui/ (controls, text_input, color_picker)
+  goatty-app/     GPUI client (bin `goatty`): cli, app, settings (AppSettings global), actions, workspace, session, command_palette/ (registry, fuzzy), terminal/{view,element,glyphs,keys,stats}, settings_window/, ui/ (controls, text_input, color_picker)
 docs/             plan, architecture, findings, remote architecture, archive/
 .github/          CI (fmt, clippy -D warnings, tests, bench smoke), release on v* tags, dependabot, issue/PR templates
 scripts/          smoke.sh (visual), bench.sh/perf.sh (GUI throughput)
@@ -98,6 +99,7 @@ Settings live in `~/.config/goatty/settings.json` (client) and `host.json` (host
 - Don't use `std::io::copy` between pipes and Unix sockets: on Linux it uses `splice()`, which stalled the proxy. Use plain read/write loops, and write binary data to stdout through the raw fd.
 - **Settings go through `goatty-config`.** Don't read `GOATTY_*` env vars elsewhere (only `GOATTY_SOCKET`, in `goatty_proto::socket_path`). The app reads client settings from the `AppSettings` global and edits them only via `AppSettings::update`; host settings go through the daemon (`HostLink`/`HostService`), never by writing another host's file. Loading never fails: bad values fall back with an `Issue`. Saves write only non-defaults.
 - **Host config changes are generations:** build, `zsh -n`, then atomic `current` switch; rollback restores the generation's `host.json` too. Don't write into `current/` directly.
+- **Commands live in the palette registry.** A new user-facing action gets a `Command` in `command_palette::registry::builtins` (stable `area.name` id; ids are stored in the recently-used list). Bindable ones go through `goatty_config::keys::ACTIONS` + `actions::action_by_name` so the palette shows their shortcut.
 - **Shortcuts are GPUI actions** (`goatty-app/src/actions.rs`, `Terminal` key context), never `match` arms in `on_key`. Bound actions run before the raw key handler; unbound keys go to the shell via `terminal/keys.rs`.
 - **Panes don't touch the window.** `TerminalView` emits `TerminalEvent`s; `Workspace` owns titles, closing, and (later) tabs/splits.
 - Workspace lints live in the root `Cargo.toml` (`[workspace.lints]`); every crate has `[lints] workspace = true`. Every `unsafe` block needs a `// SAFETY:` comment.

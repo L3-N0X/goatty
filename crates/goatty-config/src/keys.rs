@@ -33,6 +33,8 @@ pub static ACTIONS: &[ActionInfo] = &[
     ActionInfo { name: "decrease_font_size", label: "Smaller text" },
     ActionInfo { name: "reset_font_size", label: "Reset text size" },
     ActionInfo { name: "open_settings", label: "Open settings" },
+    ActionInfo { name: "command_palette", label: "Show the command palette" },
+    ActionInfo { name: "reload_shells", label: "Reload running shells (pick up shell settings)" },
 ];
 
 pub fn find_action(name: &str) -> Option<&'static ActionInfo> {
@@ -58,6 +60,7 @@ pub static DEFAULT_BINDINGS: &[(&str, &str)] = &[
     ("ctrl-_", "decrease_font_size"),
     ("ctrl-0", "reset_font_size"),
     ("ctrl-,", "open_settings"),
+    ("ctrl-shift-p", "command_palette"),
 ];
 
 /// Modifiers in canonical order, with the spellings accepted for each.
