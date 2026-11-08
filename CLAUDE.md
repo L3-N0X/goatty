@@ -63,6 +63,8 @@ scripts/          smoke.sh (visual), bench.sh/perf.sh (GUI throughput)
 
 ## Build, run, test
 
+Dev environment: `nix develop` (or direnv, `.envrc` is `use flake`) gives the Rust toolchain, `just` and the GPUI system libraries from `flake.nix`; without nix, install them with `scripts/ci-deps.sh` and rustup. The `justfile` wraps the commands below (`just` lists the recipes; `just ci` runs what CI checks). Keep `flake.nix` in sync with `scripts/ci-deps.sh`.
+
 ```sh
 cargo build --release --workspace
 ./target/release/goatty                 # attach newest detached session (auto-starts goattyd)

@@ -43,6 +43,10 @@ Environment variables: `GOATTY_FONT`, `GOATTY_FONT_SIZE`, `GOATTY_SHELL`, `GOATT
 
 Keys: `Ctrl+C` copies when text is selected and sends an interrupt otherwise. `Ctrl+V` / `Ctrl+Shift+V` paste, `Ctrl+Shift+C` copies, `Shift+PgUp/PgDn` scroll back, `Ctrl` with `+`/`-` (with or without Shift, on US and German layouts) changes the font size, `Ctrl+0` resets it. `Ctrl+Shift+P` opens the command palette (fuzzy search over every command), `Ctrl+,` opens settings.
 
+## Development environment
+
+With [nix](https://nixos.org) (flakes enabled), `nix develop` (or [direnv](https://direnv.net) with the checked-in `.envrc`) provides the Rust toolchain, [`just`](https://just.systems) and the system libraries GPUI needs. Run `just` to list the common tasks (`just build`, `just run`, `just test`, `just ci`). Without nix, install the libraries with `scripts/ci-deps.sh` and Rust with rustup.
+
 ## Test & benchmark
 
 ```sh
