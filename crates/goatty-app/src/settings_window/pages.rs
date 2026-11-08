@@ -353,14 +353,15 @@ impl SettingsWindow {
                 div()
                     .flex()
                     .items_center()
+                    .justify_between()
                     .gap_2()
                     .py_2()
-                    .child(div().w(px(110.)).text_sm().child(SharedString::from(edit.label())))
-                    .child(div().w(px(180.)).child(self.color_input.clone()))
+                    .child(div().text_sm().child(SharedString::from(format!("Editing {}", edit.label().to_lowercase()))))
                     .when(overrides.get(edit).is_some(), |d| {
-                        d.child(button("revert-color", "Revert", ButtonKind::Normal, ui, self.act(cx, |v, cx| v.revert_color(cx))))
+                        d.child(button("revert-color", "Revert to theme", ButtonKind::Normal, ui, self.act(cx, |v, cx| v.revert_color(cx))))
                     }),
-            );
+            )
+            .child(self.picker.clone());
         let has_overrides = !overrides.is_empty();
         let mut actions = div().flex().flex_wrap().items_center().gap_2().py_1();
         if has_overrides {

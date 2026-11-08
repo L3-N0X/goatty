@@ -83,6 +83,7 @@ pub fn apply_keybindings(overrides: &BTreeMap<String, Option<String>>, cx: &mut 
     cx.clear_key_bindings();
     cx.bind_keys(terminal);
     cx.bind_keys(crate::ui::text_input::bindings());
+    cx.bind_keys(crate::ui::color_picker::bindings());
     cx.bind_keys(crate::settings_window::bindings());
     errors
 }

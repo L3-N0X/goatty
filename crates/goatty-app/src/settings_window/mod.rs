@@ -9,7 +9,9 @@
 mod host;
 mod pages;
 
-use goatty_config::{ColorSlot, HostSettings, Loaded, store};
+use std::time::Duration;
+
+use goatty_config::{Color, ColorSlot, HostSettings, Loaded, store};
 use gpui::{
     App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable, Global, KeyBinding, Subscription, Window, WindowBounds, WindowHandle,
     WindowOptions, actions, px, size,
@@ -18,9 +20,14 @@ use gpui::{
 pub use host::{GenRow, HostLink, HostLinkGlobal};
 
 use crate::settings::AppSettings;
+use crate::ui::color_picker::{ColorPicker, ColorPickerEvent};
 use crate::ui::text_input::{TextInput, TextInputEvent};
 
 pub const CONTEXT: &str = "SettingsWindow";
+
+/// A color that was typed or dragged is saved this long after the last change
+/// (letting go of the mouse or pressing Enter saves right away).
+const COLOR_SAVE_DELAY: Duration = Duration::from_millis(600);
 
 actions!(settings_window, [CloseSettings]);
 
@@ -161,7 +168,10 @@ pub struct SettingsWindow {
     pub theme_target: ThemeTarget,
     /// The color being edited in the theme editor.
     pub edit_slot: ColorSlot,
-    color_input: Entity<TextInput>,
+    picker: Entity<ColorPicker>,
+    /// A color change applied live but not yet written to settings.json.
+    pending_color: Option<(ColorSlot, Color)>,
+    color_save_gen: u64,
     theme_name: Entity<TextInput>,
     /// Shortcut being recorded: the next keystroke binds to this action.
     recording: Option<&'static str>,
@@ -180,18 +190,19 @@ impl SettingsWindow {
         window.focus(&focus, cx);
         let font_filter = cx.new(|cx| TextInput::new("Filter fonts…", "", cx));
         let shell_path = cx.new(|cx| TextInput::new("/path/to/shell, then Enter", "", cx));
-        let color_input = cx.new(|cx| TextInput::new("#rrggbb, then Enter", "", cx));
+        let picker = cx.new(|cx| ColorPicker::new(cx.global::<AppSettings>().colors.get(ColorSlot::Background), cx));
         let theme_name = cx.new(|cx| TextInput::new("Name for a new theme", "", cx));
         let subs = vec![
             // The colors can change underneath the editor (theme switch,
-            // desktop light/dark, outside edits): keep its hex field current.
-            cx.observe_global::<AppSettings>(|this, cx| this.select_slot(this.edit_slot, cx)),
+            // desktop light/dark, outside edits): keep the picker current.
+            cx.observe_global::<AppSettings>(|this, cx| this.sync_picker(cx)),
             cx.subscribe(&font_filter, |_, _, _: &TextInputEvent, cx| cx.notify()),
-            cx.subscribe(&color_input, |this, _, ev: &TextInputEvent, cx| {
-                if let TextInputEvent::Submitted(text) = ev {
-                    this.set_color(text.clone(), cx);
-                }
+            cx.subscribe(&picker, |this, _, ev: &ColorPickerEvent, cx| match *ev {
+                ColorPickerEvent::Changed(c) => this.color_changed(c, cx),
+                ColorPickerEvent::Committed(_) => this.flush_color(cx),
             }),
+            // Closing the window right after a change must not lose it.
+            cx.on_release(|this, cx| this.flush_color(cx)),
             cx.subscribe(&theme_name, |this, _, ev: &TextInputEvent, cx| {
                 if let TextInputEvent::Submitted(_) = ev {
                     this.save_theme_as(cx);
@@ -224,7 +235,9 @@ impl SettingsWindow {
                 ThemeTarget::Fixed
             },
             edit_slot: ColorSlot::Background,
-            color_input,
+            picker,
+            pending_color: None,
+            color_save_gen: 0,
             theme_name,
             recording: None,
             _subs: subs,
@@ -238,6 +251,7 @@ impl SettingsWindow {
 
     /// Point the current gallery target at theme `id`.
     pub fn choose_theme(&mut self, id: String, cx: &mut Context<'_, Self>) {
+        self.flush_color(cx);
         let target = self.theme_target;
         AppSettings::update(cx, |s| match target {
             ThemeTarget::Fixed => s.theme.name = id,
@@ -247,30 +261,57 @@ impl SettingsWindow {
         self.select_slot(self.edit_slot, cx);
     }
 
-    /// Edit `slot`: show its current color in the hex field.
+    /// Edit `slot`: open its current color in the picker.
     pub fn select_slot(&mut self, slot: ColorSlot, cx: &mut Context<'_, Self>) {
+        self.flush_color(cx);
         self.edit_slot = slot;
-        let hex = cx.global::<AppSettings>().colors.get(slot).to_string();
-        self.color_input.update(cx, |i, cx| i.set_text(hex, cx));
+        let color = cx.global::<AppSettings>().colors.get(slot);
+        self.picker.update(cx, |p, cx| p.open(color, cx));
         cx.notify();
     }
 
-    fn set_color(&mut self, text: String, cx: &mut Context<'_, Self>) {
-        let slot = self.edit_slot;
-        match goatty_config::Color::parse(text.trim()) {
-            Some(c) => AppSettings::update(cx, |s| s.theme.overrides.set(slot, Some(c))),
-            None => self.outcome = Some(Outcome { ok: false, lines: vec![format!("{text:?} isn't a #rrggbb color")], diff: Vec::new() }),
-        }
+    /// The colors changed under the picker: follow them.
+    fn sync_picker(&mut self, cx: &mut Context<'_, Self>) {
+        let color = cx.global::<AppSettings>().colors.get(self.edit_slot);
+        self.picker.update(cx, |p, cx| p.sync(color, cx));
         cx.notify();
+    }
+
+    /// The picker moved to `color`: show it live, and save it once the changes stop.
+    fn color_changed(&mut self, color: Color, cx: &mut Context<'_, Self>) {
+        let slot = self.edit_slot;
+        self.pending_color = Some((slot, color));
+        AppSettings::preview(cx, |s| s.theme.overrides.set(slot, Some(color)));
+        self.color_save_gen += 1;
+        let generation = self.color_save_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(COLOR_SAVE_DELAY).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.color_save_gen == generation {
+                    this.flush_color(cx);
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Write a live color change to settings.json.
+    fn flush_color(&mut self, cx: &mut App) {
+        if let Some((slot, color)) = self.pending_color.take() {
+            AppSettings::update(cx, |s| s.theme.overrides.set(slot, Some(color)));
+        }
     }
 
     pub fn revert_color(&mut self, cx: &mut Context<'_, Self>) {
+        self.flush_color(cx);
         let slot = self.edit_slot;
         AppSettings::update(cx, |s| s.theme.overrides.set(slot, None));
         self.select_slot(slot, cx);
     }
 
     pub fn reset_colors(&mut self, cx: &mut Context<'_, Self>) {
+        self.flush_color(cx);
         AppSettings::update(cx, |s| s.theme.overrides = Default::default());
         self.select_slot(self.edit_slot, cx);
     }
@@ -282,6 +323,7 @@ impl SettingsWindow {
 
     /// Save the colors on screen as a new user theme and switch to it.
     pub fn save_theme_as(&mut self, cx: &mut Context<'_, Self>) {
+        self.flush_color(cx);
         let name = self.theme_name.read(cx).text().trim().to_string();
         if name.is_empty() {
             return self.message(false, "Give the new theme a name first.".into(), cx);
@@ -303,6 +345,7 @@ impl SettingsWindow {
 
     /// Write the colors on screen into the active user theme.
     pub fn update_theme(&mut self, id: String, cx: &mut Context<'_, Self>) {
+        self.flush_color(cx);
         let app = cx.global::<AppSettings>();
         let (lib, colors) = (app.themes.clone(), app.colors);
         let Some(entry) = lib.get(&id).filter(|t| t.user) else { return };
@@ -318,6 +361,7 @@ impl SettingsWindow {
 
     /// Delete a user theme; settings pointing at it fall back to the defaults.
     pub fn delete_theme(&mut self, id: String, cx: &mut Context<'_, Self>) {
+        self.flush_color(cx);
         let lib = cx.global::<AppSettings>().themes.clone();
         match lib.delete(&id) {
             Ok(_) => {

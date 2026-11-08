@@ -29,6 +29,8 @@
 //! handled by `goatty_proto::socket_path`.
 
 mod client;
+pub mod color_history;
+pub mod colorspace;
 mod host;
 pub mod keys;
 pub mod profile;
@@ -40,6 +42,8 @@ pub mod themes;
 use std::path::PathBuf;
 
 pub use client::{ClientSettings, CursorShape, DebugSettings, FontSettings, OnLaunch, Renderer, TerminalSettings, WorkspaceSettings};
+pub use color_history::ColorHistory;
+pub use colorspace::ColorFormat;
 pub use host::{HistorySettings, HostSettings, PromptSettings, PromptStyle, ShellSettings, ZshSettings};
 pub use store::{Document, FileStamp, Issue, Loaded};
 pub use theme::{
