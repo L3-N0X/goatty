@@ -150,7 +150,7 @@ Echo latency includes the PTY round trip and the benchmark's 0.2 ms polling. On 
 ### R0: protocol and transports ✅ (this change)
 Protocol v2, `goatty-client` crate, multiplexed connections, ack/window flow control with resync, encode-once broadcast, `goattyd proxy`, `--ssh` / `--via`, reconnect with reattach, heartbeat/RTT, socket watchdog, tests for all of it.
 
-### R1: remote MVP polish (next; tracked in the [R1 milestone](https://github.com/L3-N0X/goatty/milestone/1))
+### R1: remote MVP polish (next; tracked in the [R1 milestone](https://github.com/goatty-dev/goatty/milestone/1))
 1. **Host list and switcher UI**: parse `~/.ssh/config` `Host` entries plus "Add host". Show user@host, OS and RTT, plus a sessions-per-host picker (`list_sessions` already exists).
 2. **Remote goattyd install and version match**: if `Hello` fails or the version differs, offer to upload the matching static goattyd (`x86_64`/`aarch64` musl) to `~/.local/share/goatty/bin/goattyd-<ver>` over the same ssh and use it. Like VS Code Server, this makes "it just works" possible for new-to-Linux users. Needs version-range negotiation instead of exact match.
 3. **SSH prompts in the GUI**: set `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force` pointing at a tiny goatty askpass helper. Today prompts only work when goatty was launched from a terminal.

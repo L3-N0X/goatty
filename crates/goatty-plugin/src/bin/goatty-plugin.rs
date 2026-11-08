@@ -261,11 +261,11 @@ fn new(id: &str, dir: &Path) -> Result<()> {
     std::fs::write(dir.join(manifest::FILE), text)?;
     println!("created {}", dir.join(manifest::FILE).display());
     println!("next: fill in [[package.asset]] with `goatty-plugin hash <url>`, then `goatty-plugin validate {}`", dir.display());
-    println!("the template repository has a complete, commented example: https://github.com/L3-N0X/goatty-plugin-template");
+    println!("the template repository has a complete, commented example: https://github.com/goatty-dev/goatty-plugin-template");
     Ok(())
 }
 
-const SKELETON: &str = r#"# A goatty plugin. Format: https://github.com/L3-N0X/goatty/blob/main/docs/plugins.md
+const SKELETON: &str = r#"# A goatty plugin. Format: https://github.com/goatty-dev/goatty/blob/main/docs/plugins.md
 schema = 1
 id = "{{id}}"
 name = "{{id}}"
