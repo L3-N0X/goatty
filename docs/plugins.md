@@ -2,7 +2,7 @@
 
 A goatty plugin packages a command-line tool so that someone who has never used it gets a good setup in one click: goatty downloads the tool into its own directory, shows its most useful options on the **Plugins** settings page with plain-words explanations, and wires those settings into goatty's managed zsh. Nothing outside goatty's directories changes, and nothing runs as root.
 
-Code: `crates/goatty-plugin` (format, trust, bin `goatty-plugin`), `crates/goatty-shell/src/plugins/` (on a host: registries, plans, installs, rendering), `crates/goatty-app/src/settings_window/plugins.rs` (the page). Repositories: [goatty-registry](https://github.com/L3-N0X/goatty-registry) (the official registry) and [goatty-plugin-template](https://github.com/L3-N0X/goatty-plugin-template) (start here to write one; includes a Claude Code skill).
+Code: `crates/goatty-plugin` (format, trust, bin `goatty-plugin`), `crates/goatty-shell/src/plugins/` (on a host: registries, plans, installs, rendering), `crates/goatty-app/src/settings_window/plugins.rs` (the page). Repositories: [goatty-registry](https://github.com/goatty-dev/goatty-registry) (the official registry) and [goatty-plugin-template](https://github.com/goatty-dev/goatty-plugin-template) (start here to write one; includes a Claude Code skill).
 
 ## What a plugin can do
 
@@ -23,7 +23,7 @@ Not yet: application plugins (goatty commands, UI) need a runtime goatty doesn't
 
 ## The manifest (`plugin.toml`)
 
-The template's [`plugin.toml`](https://github.com/L3-N0X/goatty-plugin-template/blob/main/plugin.toml) explains every field in comments. In short:
+The template's [`plugin.toml`](https://github.com/goatty-dev/goatty-plugin-template/blob/main/plugin.toml) explains every field in comments. In short:
 
 ```toml
 schema = 1                      # format version; a newer one is refused ("needs a newer goatty")
@@ -131,7 +131,7 @@ While a plugin's `zsh.init` runs, `$goatty_settings[<id>]` holds each value (lis
 
 goatty doesn't take a plugin's word for what it does. Permissions are derived from the manifest's contents (`goatty_plugin::permissions::derived`): a `[[package]]` *is* the `binaries` permission. The author must explain the powerful ones (`binaries`, `shell-code`, `network`) in `[permissions]`; using one without a reason, or declaring one the manifest doesn't use, fails validation. The install plan lists each permission with its meaning, the author's reason and the concrete details (programs, alias names, variable names, files).
 
-`binaries` and `shell-code` run code with the user's privileges. A registry signature proves where a plugin came from and that it wasn't changed; it doesn't make a program harmless. That's what the registry review ([REVIEW.md](https://github.com/L3-N0X/goatty-registry/blob/main/REVIEW.md)) and the approval step are for.
+`binaries` and `shell-code` run code with the user's privileges. A registry signature proves where a plugin came from and that it wasn't changed; it doesn't make a program harmless. That's what the registry review ([REVIEW.md](https://github.com/goatty-dev/goatty-registry/blob/main/REVIEW.md)) and the approval step are for.
 
 ## Registries and trust
 
@@ -196,7 +196,7 @@ set ID KEY VALUE | unset ID KEY   checked against the plugin's schema
 registry list|refresh|add NAME URL --key HEX|remove NAME
 ```
 
-**Authors** (`goatty-plugin`, `cargo install --git https://github.com/L3-N0X/goatty --locked goatty-plugin`): `new ID`, `validate [DIR]`, `render [DIR] --set k=v`, `hash URL|FILE…` (sha256, size, executables in the archive), `check-downloads [DIR…]`; maintainers: `index build|sign --key|verify [--trust HEX]|check`, `keygen FILE`.
+**Authors** (`goatty-plugin`, `cargo install --git https://github.com/goatty-dev/goatty --locked goatty-plugin`): `new ID`, `validate [DIR]`, `render [DIR] --set k=v`, `hash URL|FILE…` (sha256, size, executables in the archive), `check-downloads [DIR…]`; maintainers: `index build|sign --key|verify [--trust HEX]|check`, `keygen FILE`.
 
 ## Protocol (v5)
 

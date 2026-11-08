@@ -20,8 +20,8 @@ use serde::{Deserialize, Serialize};
 use crate::dirs::Dirs;
 
 pub const OFFICIAL_NAME: &str = "official";
-/// The official registry: <https://github.com/L3-N0X/goatty-registry>.
-pub const OFFICIAL_URL: &str = "https://github.com/L3-N0X/goatty-registry/archive/refs/heads/main.tar.gz";
+/// The official registry: <https://github.com/goatty-dev/goatty-registry>.
+pub const OFFICIAL_URL: &str = "https://github.com/goatty-dev/goatty-registry/archive/refs/heads/main.tar.gz";
 /// Keys allowed to sign the official registry's index (made offline by
 /// its maintainers; see the registry's README for rotation).
 pub const OFFICIAL_KEYS: &[&str] = &["8b70a3acaf8193884b5e34f8341768d42d4f54ddcbe6e650178f6b458e409901"];

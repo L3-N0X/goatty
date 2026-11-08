@@ -258,6 +258,19 @@ TRAPURG() {
   return 0
 }
 
+# The signal can also land after precmd but before zle reads the new line
+# (while the prompt is drawn): `zle` isn't active yet, so the trap only sets
+# the flag. Catch that when the line editor starts, or an idle shell would
+# wait for the next command to reload.
+if (( $+builtins[zle] )); then
+  _goatty_reload_line_init() {
+    (( _goatty_reload_pending )) && [[ -z $BUFFER ]] && zle .send-break
+    return 0
+  }
+  builtin autoload -Uz add-zle-hook-widget
+  add-zle-hook-widget line-init _goatty_reload_line_init
+fi
+
 builtin autoload -Uz add-zsh-hook
 add-zsh-hook precmd _goatty_reload_requested
 
