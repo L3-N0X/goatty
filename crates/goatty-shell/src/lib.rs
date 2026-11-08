@@ -10,8 +10,11 @@
 //! * [`launch`]: which shell a session runs, and its environment,
 //! * [`zsh`]: the startup files, rendered from the host settings,
 //! * [`generation`]: build, validate, activate and roll back configurations,
-//! * [`tools`]: pinned tool versions + checksums, and where tools are found,
-//! * [`install`]: user-space installs of those tools (no sudo),
+//! * [`builtins`]: the plugins that come with goatty (autosuggestions,
+//!   syntax highlighting, Starship, Atuin, fzf),
+//! * [`plugins`]: registries, install plans, installs, what goes into the shell,
+//! * [`packages`]: where a plugin's package is found (system or goatty's copy),
+//! * [`install`]: user-space installs of packages (no sudo),
 //! * [`doctor`]: asks a real managed shell what it loaded,
 //! * [`service`]: host settings operations (goattyd's API, `goatty --local`),
 //! * [`cmd`]: the `goattyd shell ...` commands.
@@ -20,15 +23,16 @@
 //! `~/.zshrc`, the global PATH or the login shell.
 
 pub mod aliases;
+pub mod builtins;
 pub mod cmd;
 pub mod dirs;
 pub mod doctor;
 pub mod generation;
 pub mod install;
 pub mod launch;
+pub mod packages;
 pub mod plugins;
 pub mod service;
-pub mod tools;
 pub mod zsh;
 
 pub use dirs::Dirs;

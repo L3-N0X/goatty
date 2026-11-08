@@ -10,12 +10,13 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use goatty_config::{Effective, HostSettings, store};
 
+use crate::builtins::{self, BUILTINS, Builtin};
 use crate::dirs::Dirs;
 use crate::doctor::{self, State};
 use crate::generation;
-use crate::install;
 use crate::launch::Launcher;
-use crate::tools::{self, Location, TOOLS, Tool};
+use crate::packages::{self, Location};
+use crate::plugins::{Candidate, Plugins};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -82,9 +83,9 @@ pub fn status(host: &Effective<HostSettings>, launcher: &Launcher) -> Result<()>
                 let line = match &f.state {
                     State::Ok(detail) => format!("\u{2713} {}", describe_ok(&f.name, detail, dirs)),
                     State::Off => "- off".into(),
-                    State::Missing => match tools::find(&f.name) {
-                        Some(t) => format!("\u{2717} not installed: goattyd shell install {} ({} {})", t.id, t.name, t.version),
-                        None => "\u{2717} not available".into(),
+                    State::Missing => match builtins::get(&f.name) {
+                        Some(b) => format!("\u{2717} not installed: goattyd shell install {} ({})", b.id, pinned(b)),
+                        None => "\u{2717} its command isn't installed (see `goattyd plugin info`)".into(),
                     },
                 };
                 println!("  {:<20} {line}", f.name);
@@ -93,7 +94,7 @@ pub fn status(host: &Effective<HostSettings>, launcher: &Launcher) -> Result<()>
             if !stderr.is_empty() {
                 println!("\nThe shell printed errors while starting:\n{stderr}");
             }
-            if p.missing().any(|m| tools::find(m).is_some_and(|t| t.default)) {
+            if p.missing().any(|m| builtins::get(m).is_some_and(|b| b.default_install)) {
                 println!("\nInstall what's missing with `goattyd shell install` (or `goatty-setup` in a goatty shell).");
             }
         }
@@ -101,17 +102,25 @@ pub fn status(host: &Effective<HostSettings>, launcher: &Launcher) -> Result<()>
             println!("  startup     failed: {e:#}");
             println!("\n  as seen from goattyd's PATH:");
             let path = std::env::var("PATH").ok();
-            for t in TOOLS {
-                let line = match t.locate(dirs, path.as_deref()) {
-                    Location::System(p) => format!("\u{2713} {}", tilde(&p)),
-                    Location::Managed { version, .. } => format!("\u{2713} managed {}", version.unwrap_or_default()),
-                    Location::Missing => "\u{2717} not found".into(),
-                };
-                println!("  {:<20} {line}", t.id);
+            for b in BUILTINS {
+                for p in &b.manifest().packages {
+                    let line = match packages::locate(dirs, p, path.as_deref()) {
+                        Location::System(found) => format!("\u{2713} {}", tilde(&found)),
+                        Location::Managed { version, .. } => format!("\u{2713} managed {version}"),
+                        Location::Missing => "\u{2717} not found".into(),
+                    };
+                    println!("  {:<20} {line}", b.id);
+                }
             }
         }
     }
     Ok(())
+}
+
+/// `Starship 1.27.0`: what a built-in plugin's packages pin.
+fn pinned(b: &Builtin) -> String {
+    let m = b.manifest();
+    m.packages.iter().map(|p| format!("{} {}", m.name, p.version)).collect::<Vec<_>>().join(", ")
 }
 
 fn describe_ok(feature: &str, detail: &str, dirs: &Dirs) -> String {
@@ -120,80 +129,106 @@ fn describe_ok(feature: &str, detail: &str, dirs: &Dirs) -> String {
         return "OSC 133 prompt marks, OSC 7 working directory".into();
     }
     let managed = path.starts_with(dirs.bin_dir()) || path.starts_with(dirs.plugins_dir());
-    match tools::find(feature) {
-        Some(t) if managed => format!("managed {} {}", t.name, t.managed_version(dirs).unwrap_or_default()),
-        _ => tilde(path),
+    let version = builtins::get(feature)
+        .filter(|_| managed)
+        .and_then(|b| b.manifest().packages.iter().find_map(|p| packages::managed(dirs, p)).map(|(v, _)| (b, v)));
+    match version {
+        Some((b, v)) => format!("managed {} {v}", b.manifest().name),
+        None => tilde(path),
     }
 }
 
-/// Default tools the managed shell reports missing. Falls back to
-/// goattyd's own `PATH` when the shell can't be probed.
-fn missing_defaults(host: &Effective<HostSettings>, launcher: &Launcher, dirs: &Dirs) -> Vec<&'static Tool> {
+/// Built-in plugins that are on, installed by default, and that the
+/// managed shell reports missing. Falls back to goattyd's own `PATH` when
+/// the shell can't be probed.
+fn missing_defaults(host: &Effective<HostSettings>, launcher: &Launcher, dirs: &Dirs) -> Vec<&'static Builtin> {
+    let wanted = |b: &&Builtin| b.default_install && host.value.plugin_enabled(b.id);
     let launch = launcher.launch(host);
     match doctor::probe(&launch, PROBE_TIMEOUT) {
-        Ok(p) => p.missing().filter_map(tools::find).filter(|t| t.default).collect(),
+        Ok(p) => p.missing().filter_map(builtins::get).filter(wanted).collect(),
         Err(e) => {
             log::warn!("couldn't probe the shell ({e:#}); checking goattyd's PATH instead");
             let path = std::env::var("PATH").ok();
-            TOOLS.iter().filter(|t| t.default && t.locate(dirs, path.as_deref()) == Location::Missing).collect()
+            BUILTINS
+                .iter()
+                .filter(wanted)
+                .filter(|b| b.manifest().packages.iter().any(|p| packages::locate(dirs, p, path.as_deref()) == Location::Missing))
+                .collect()
         }
     }
 }
 
-fn resolve_names(names: &[String]) -> Result<Vec<&'static Tool>> {
-    let mut out: Vec<&'static Tool> = Vec::new();
+fn resolve_names(names: &[String]) -> Result<Vec<&'static Builtin>> {
+    let mut out: Vec<&'static Builtin> = Vec::new();
     for n in names {
-        let Some(t) = tools::find(n) else {
-            let ids: Vec<_> = TOOLS.iter().map(|t| t.id).collect();
-            bail!("unknown tool {n:?}; known: {}", ids.join(", "));
+        let Some(b) = builtins::find(n) else {
+            let ids: Vec<_> = BUILTINS.iter().map(|b| b.id).collect();
+            bail!("{n:?} isn't one of goatty's built-in plugins ({}); other plugins: goattyd plugin install {n}", ids.join(", "));
         };
-        if !out.iter().any(|o| o.id == t.id) {
-            out.push(t);
+        if !out.iter().any(|o| o.id == b.id) {
+            out.push(b);
         }
     }
     Ok(out)
 }
 
-/// `goattyd shell install [TOOL...]`: no names installs the default tools
-/// the shell is missing. Asks before downloading unless `yes`.
+/// `goattyd shell install [NAME...]`: download the tools of goatty's
+/// built-in plugins. No names installs the default ones the shell is
+/// missing (`goatty-setup`). Asks before downloading unless `yes`.
 pub fn install(host: &Effective<HostSettings>, launcher: &Launcher, names: &[String], yes: bool) -> Result<()> {
     let dirs = dirs_of(launcher)?;
     let requested = if names.is_empty() { missing_defaults(host, launcher, dirs) } else { resolve_names(names)? };
-    let target = tools::current_target();
-    let mut plan = Vec::new();
-    for t in requested {
-        if t.managed_version(dirs).as_deref() == Some(t.version) {
-            println!("{} {} is already installed.", t.name, t.version);
+    let fetch = goatty_plugin::fetch::Curl { cache: dirs.cache.clone() };
+    let plugins = Plugins { dirs, fetch: &fetch, builtin: &[] };
+    let mut todo = Vec::new();
+    for b in requested {
+        let c = Candidate::builtin(b);
+        let plan = match plugins.plan(&c, &host.value) {
+            Ok(plan) => plan,
+            Err(e) => {
+                println!("{e:#}");
+                continue;
+            }
+        };
+        if plan.downloads.iter().any(|d| d.fetches()) {
+            todo.push((c, plan));
             continue;
         }
-        let Some(asset) = t.asset_for(&target) else {
-            println!("{} has no goatty-managed build for {target}; install it with your package manager ({}).", t.name, t.homepage);
-            continue;
-        };
-        plan.push((t, asset));
+        for d in &plan.downloads {
+            match &d.system {
+                Some(p) => println!("{} is already installed at {}; goatty uses that.", plan.name, tilde(Path::new(p))),
+                None => println!("{} {} is already installed.", plan.name, d.version),
+            }
+        }
     }
-    if plan.is_empty() {
+    if todo.is_empty() {
         println!("Nothing to install.");
         return Ok(());
     }
 
     println!("goatty will download and install into {} (no sudo):", tilde(&dirs.data));
-    let width = plan.iter().map(|(t, _)| t.name.len() + t.version.len() + 1).max().unwrap_or(0);
-    for (t, a) in &plan {
-        println!("  {:<width$}  {:>8}  {}", format!("{} {}", t.name, t.version), size(a.size), t.summary);
+    let rows: Vec<(String, u64, &str)> = todo
+        .iter()
+        .flat_map(|(_, plan)| {
+            plan.downloads.iter().filter(|d| d.fetches()).map(|d| (format!("{} {}", plan.name, d.version), d.size, plan.summary.as_str()))
+        })
+        .collect();
+    let width = rows.iter().map(|(n, ..)| n.len()).max().unwrap_or(0);
+    for (name, bytes, summary) in &rows {
+        println!("  {name:<width$}  {:>8}  {summary}", size(*bytes));
     }
-    println!("  {:<width$}  {:>8}", "", size(plan.iter().map(|(_, a)| a.size).sum()));
-    println!("Each download is checked against a pinned sha256 checksum.");
+    println!("  {:<width$}  {:>8}", "", size(rows.iter().map(|(_, b, _)| b).sum()));
+    println!("Each download is checked against the sha256 checksum goatty pins for it.");
     if !yes && !confirm("Continue? [Y/n] ")? {
         println!("Cancelled.");
         return Ok(());
     }
 
     let mut failed = 0;
-    for (t, a) in &plan {
-        print!("  {} {} ... ", t.name, t.version);
+    for (c, plan) in &todo {
+        print!("  {} ... ", plan.name);
         let _ = std::io::stdout().flush();
-        match install::download(a.url, &dirs.cache).and_then(|bytes| install::install_archive(t, a, &bytes, dirs)) {
+        match plugins.install(c, &plan.digest, &host.value) {
             Ok(_) => println!("\u{2713}"),
             Err(e) => {
                 println!("\u{2717} {e:#}");
@@ -202,7 +237,7 @@ pub fn install(host: &Effective<HostSettings>, launcher: &Launcher, names: &[Str
         }
     }
     if failed > 0 {
-        bail!("{failed} of {} installs failed", plan.len());
+        bail!("{failed} of {} installs failed", todo.len());
     }
     println!("Done. New goatty shells use them; `goatty-reload` restarts the current one.");
     Ok(())
@@ -220,18 +255,22 @@ fn confirm(prompt: &str) -> Result<bool> {
     Ok(matches!(line.trim().to_ascii_lowercase().as_str(), "" | "y" | "yes"))
 }
 
-/// `goattyd shell uninstall TOOL...|--all`: remove managed copies.
+/// `goattyd shell uninstall NAME...|--all`: remove goatty's downloads of
+/// built-in plugins' tools (the plugins stay; system copies still work).
 pub fn uninstall(launcher: &Launcher, names: &[String], all: bool) -> Result<()> {
     let dirs = dirs_of(launcher)?;
-    let list = if all { TOOLS.iter().collect() } else { resolve_names(names)? };
+    let list = if all { BUILTINS.iter().collect() } else { resolve_names(names)? };
     if list.is_empty() {
         bail!("name the tools to remove, or pass --all");
     }
-    for t in list {
-        if install::uninstall(t, dirs)? {
-            println!("Removed goatty's copy of {}.", t.name);
+    let fetch = goatty_plugin::fetch::Curl { cache: dirs.cache.clone() };
+    let plugins = Plugins { dirs, fetch: &fetch, builtin: &[] };
+    for b in list {
+        let name = &b.manifest().name;
+        if !plugins.remove_packages(b)?.is_empty() {
+            println!("Removed goatty's copy of {name}.");
         } else if !all {
-            println!("{} has no goatty-managed copy.", t.name);
+            println!("{name} has no goatty-managed copy.");
         }
     }
     Ok(())

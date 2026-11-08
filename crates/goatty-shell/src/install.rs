@@ -1,14 +1,14 @@
-//! User-space installs of the pinned tools in [`crate::tools`].
+//! User-space installs of plugin packages (the built-in plugins' tools
+//! and registry plugins' programs alike).
 //!
-//! An install downloads the release archive, checks it against the pinned
-//! sha256, unpacks it into `tools/<id>/<version>/` (staged, then renamed),
-//! and switches the `bin/<exe>` or `plugins/<id>` symlink atomically. No
-//! sudo, nothing outside goatty's data directory.
+//! An install checks the download against the manifest's sha256, unpacks
+//! it into `tools/<id>/<version>/` (staged, then renamed), and switches the
+//! `bin/<exe>` and `plugins/<id>` symlinks atomically. No sudo, nothing
+//! outside goatty's data directory.
 //!
 //! Downloads go through `curl` (or `wget`): the checksum, not the transport,
 //! is what makes an archive trusted, so goattyd needs no TLS stack of its own.
 
-use std::io::ErrorKind;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -16,7 +16,6 @@ use anyhow::{Context, Result, bail};
 use goatty_plugin::manifest::AssetFormat;
 
 use crate::dirs::Dirs;
-use crate::tools::{Asset, Kind, Tool};
 
 /// Download `url` with curl (or wget) through a temp file under `cache`.
 pub fn download(url: &str, cache: &Path) -> Result<Vec<u8>> {
@@ -37,13 +36,17 @@ pub struct PackageInstall<'a> {
     pub root: &'a str,
     /// Paths of the executables relative to `root`; linked as `bin/<file name>`.
     pub bins: &'a [String],
+    /// A zsh script relative to `root`: the package directory is linked as
+    /// `plugins/<id>`.
+    pub source: Option<&'a str>,
 }
 
-/// Verify and unpack a plugin package into `tools/<id>/<version>/` and
-/// link its executables into `bin/`. A `bin/` link that belongs to
-/// something else (a built-in tool, another package, a user's file) is
-/// never replaced. Older versions of the package are removed. Returns the
-/// activated links.
+/// Verify and unpack a plugin package into `tools/<id>/<version>/`, link
+/// its executables into `bin/` and its directory as `plugins/<id>` when it
+/// has a script to source. A `bin/` link that belongs to something else
+/// (another package, a user's file) is never replaced. Older versions of
+/// the package are removed (running processes keep their open files).
+/// Returns the activated links.
 pub fn install_package(p: &PackageInstall<'_>, archive: &[u8], dirs: &Dirs) -> Result<Vec<PathBuf>> {
     let got = sha256_hex(archive);
     if !got.eq_ignore_ascii_case(p.sha256) {
@@ -84,6 +87,13 @@ pub fn install_package(p: &PackageInstall<'_>, archive: &[u8], dirs: &Dirs) -> R
             }
             std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755))?;
         }
+        if let Some(src) = p.source {
+            let meta = std::fs::symlink_metadata(staging.join(p.root).join(src))
+                .with_context(|| format!("the download has no {}/{src}", p.root))?;
+            if !meta.is_file() {
+                bail!("{}/{src} in the download is not a regular file", p.root);
+            }
+        }
         Ok(())
     })();
     if let Err(e) = result {
@@ -99,6 +109,11 @@ pub fn install_package(p: &PackageInstall<'_>, archive: &[u8], dirs: &Dirs) -> R
     for (b, name) in p.bins.iter().zip(&names) {
         let link = dirs.bin_dir().join(name);
         replace_symlink(&version_dir.join(p.root).join(b), &link)?;
+        links.push(link);
+    }
+    if p.source.is_some() {
+        let link = dirs.plugins_dir().join(p.id);
+        replace_symlink(&version_dir.join(p.root), &link)?;
         links.push(link);
     }
     for entry in std::fs::read_dir(&tool_dir)?.flatten() {
@@ -123,86 +138,29 @@ pub fn link_owner(dirs: &Dirs, name: &str) -> Option<String> {
     Some(owner.unwrap_or_else(|| "?".into()))
 }
 
-/// Remove a plugin package: its `bin/` links (only those pointing into its
-/// own directory) and `tools/<id>/`.
-pub fn uninstall_package(id: &str, bins: &[String], dirs: &Dirs) -> Result<()> {
+/// Remove a plugin package: its `bin/` links and `plugins/<id>` link (only
+/// those pointing into its own directory) and `tools/<id>/`. Returns
+/// whether there was anything to remove.
+pub fn uninstall_package(id: &str, bins: &[String], dirs: &Dirs) -> Result<bool> {
+    let mut had = false;
     for b in bins {
         let name = goatty_plugin::manifest::bin_name(b);
         if link_owner(dirs, name).as_deref() == Some(id) {
             std::fs::remove_file(dirs.bin_dir().join(name)).with_context(|| format!("remove bin/{name}"))?;
+            had = true;
         }
     }
-    let dir = dirs.tools_dir().join(id);
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).with_context(|| format!("remove {}", dir.display()))?;
+    let tool_dir = dirs.tools_dir().join(id);
+    let plugin_link = dirs.plugins_dir().join(id);
+    if std::fs::read_link(&plugin_link).is_ok_and(|t| t.starts_with(&tool_dir)) {
+        std::fs::remove_file(&plugin_link).with_context(|| format!("remove {}", plugin_link.display()))?;
+        had = true;
     }
-    Ok(())
-}
-
-/// Verify `archive` against `asset`, unpack it and make it the active
-/// managed copy of `tool`. Returns the activated path (binary or plugin
-/// entry file). Older managed versions of the tool are removed.
-pub fn install_archive(tool: &Tool, asset: &Asset, archive: &[u8], dirs: &Dirs) -> Result<PathBuf> {
-    let got = sha256_hex(archive);
-    if !got.eq_ignore_ascii_case(asset.sha256) {
-        bail!("checksum mismatch for {} {}: expected {}, got {got}; not installing", tool.name, tool.version, asset.sha256);
+    if tool_dir.exists() {
+        std::fs::remove_dir_all(&tool_dir).with_context(|| format!("remove {}", tool_dir.display()))?;
+        had = true;
     }
-
-    let tool_dir = dirs.tools_dir().join(tool.id);
-    std::fs::create_dir_all(&tool_dir).with_context(|| format!("create {}", tool_dir.display()))?;
-    let staging = tool_dir.join(format!(".{}.partial-{}", tool.version, std::process::id()));
-    let _ = std::fs::remove_dir_all(&staging);
-    std::fs::create_dir_all(&staging)?;
-    let result = unpack_and_check(tool, asset, archive, &staging);
-    if let Err(e) = result {
-        let _ = std::fs::remove_dir_all(&staging);
-        return Err(e);
-    }
-
-    let version_dir = tool_dir.join(tool.version);
-    if version_dir.exists() {
-        std::fs::remove_dir_all(&version_dir).with_context(|| format!("remove old {}", version_dir.display()))?;
-    }
-    std::fs::rename(&staging, &version_dir)?;
-
-    let payload = version_dir.join(asset.root);
-    let (link_target, active) = match tool.kind {
-        Kind::Binary { exe } => (payload.join(exe), payload.join(exe)),
-        Kind::ZshPlugin { entry } => (payload.clone(), payload.join(entry)),
-    };
-    replace_symlink(&link_target, &tool.link_path(dirs))?;
-
-    // One managed version per tool. Running processes keep their open
-    // files, so removing an older version under them is safe on Unix.
-    for entry in std::fs::read_dir(&tool_dir)?.flatten() {
-        if entry.file_name() != tool.version {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
-    }
-    Ok(active)
-}
-
-fn unpack_and_check(tool: &Tool, asset: &Asset, archive: &[u8], staging: &Path) -> Result<()> {
-    let mut ar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
-    ar.set_preserve_permissions(true);
-    // `unpack` refuses entries that would land outside `staging`.
-    ar.unpack(staging).with_context(|| format!("unpack {}", asset.url))?;
-    let payload = staging.join(asset.root);
-    match tool.kind {
-        Kind::Binary { exe } => {
-            let bin = payload.join(exe);
-            if !bin.is_file() {
-                bail!("{} archive has no {}/{exe}", tool.name, asset.root);
-            }
-            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))?;
-        }
-        Kind::ZshPlugin { entry } => {
-            if !payload.join(entry).is_file() {
-                bail!("{} archive has no {}/{entry}", tool.name, asset.root);
-            }
-        }
-    }
-    Ok(())
+    Ok(had)
 }
 
 /// Point `link` at `target`, atomically (symlink beside it, then rename).
@@ -217,25 +175,9 @@ fn replace_symlink(target: &Path, link: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Remove the managed copy of `tool`. Returns whether there was one.
-pub fn uninstall(tool: &Tool, dirs: &Dirs) -> Result<bool> {
-    let link = tool.link_path(dirs);
-    let tool_dir = dirs.tools_dir().join(tool.id);
-    let had = link.symlink_metadata().is_ok() || tool_dir.exists();
-    match std::fs::remove_file(&link) {
-        Err(e) if e.kind() != ErrorKind::NotFound => return Err(e).context(format!("remove {}", link.display())),
-        _ => {}
-    }
-    if tool_dir.exists() {
-        std::fs::remove_dir_all(&tool_dir).with_context(|| format!("remove {}", tool_dir.display()))?;
-    }
-    Ok(had)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::Location;
 
     fn targz(files: &[(&str, &[u8], u32)]) -> Vec<u8> {
         let mut b = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()));
@@ -249,53 +191,34 @@ mod tests {
         b.into_inner().unwrap().finish().unwrap()
     }
 
-    fn leak(s: String) -> &'static str {
-        Box::leak(s.into_boxed_str())
-    }
-
-    fn demo_tool(kind: Kind) -> Tool {
-        Tool { id: "demo", name: "demo", summary: "", homepage: "", version: "1.0.0", kind, default: false, system_paths: &[], assets: &[] }
-    }
-
     #[test]
-    fn installs_binary_and_switches_versions() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dirs = Dirs::under(tmp.path());
-        let archive = targz(&[("demo-1.0.0/demo", b"#!/bin/sh\necho hi\n", 0o644), ("demo-1.0.0/README", b"x", 0o644)]);
-        let asset =
-            Asset { target: "any", url: "https://example/demo.tar.gz", sha256: leak(sha256_hex(&archive)), size: 0, root: "demo-1.0.0" };
-        let tool = demo_tool(Kind::Binary { exe: "demo" });
-
-        let active = install_archive(&tool, &asset, &archive, &dirs).unwrap();
-        assert_eq!(active, dirs.tools_dir().join("demo/1.0.0/demo-1.0.0/demo"));
-        let link = dirs.bin_dir().join("demo");
-        assert_eq!(std::fs::read_link(&link).unwrap(), active);
-        assert_eq!(std::fs::metadata(&link).unwrap().permissions().mode() & 0o777, 0o755);
-        assert_eq!(tool.managed_version(&dirs).as_deref(), Some("1.0.0"));
-        assert!(matches!(tool.locate(&dirs, Some("")), Location::Managed { .. }));
-
-        // A new version replaces the old one entirely.
-        let v2 = Tool { version: "2.0.0", ..demo_tool(Kind::Binary { exe: "demo" }) };
-        install_archive(&v2, &asset, &archive, &dirs).unwrap();
-        assert_eq!(v2.managed_version(&dirs).as_deref(), Some("2.0.0"));
-        assert!(!dirs.tools_dir().join("demo/1.0.0").exists());
-
-        assert!(uninstall(&v2, &dirs).unwrap());
-        assert!(link.symlink_metadata().is_err());
-        assert!(!dirs.tools_dir().join("demo").exists());
-        assert!(!uninstall(&v2, &dirs).unwrap());
-    }
-
-    #[test]
-    fn installs_plugin_dir() {
+    fn installs_zsh_plugin_packages() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = Dirs::under(tmp.path());
         let archive = targz(&[("p-1/demo.zsh", b"demo_loaded=1\n", 0o644), ("p-1/src/x.zsh", b"", 0o644)]);
-        let asset = Asset { target: "any", url: "https://example/p.tar.gz", sha256: leak(sha256_hex(&archive)), size: 0, root: "p-1" };
-        let tool = demo_tool(Kind::ZshPlugin { entry: "demo.zsh" });
-        let active = install_archive(&tool, &asset, &archive, &dirs).unwrap();
-        assert_eq!(active, dirs.tools_dir().join("demo/1.0.0/p-1/demo.zsh"));
-        assert!(tool.managed_path(&dirs).is_file(), "plugins/demo/demo.zsh resolves through the link");
+        let sha = sha256_hex(&archive);
+        let p = PackageInstall {
+            id: "demo",
+            version: "1",
+            sha256: &sha,
+            format: AssetFormat::TarGz,
+            root: "p-1",
+            bins: &[],
+            source: Some("demo.zsh"),
+        };
+        let links = install_package(&p, &archive, &dirs).unwrap();
+        assert_eq!(links, [dirs.plugins_dir().join("demo")]);
+        assert!(dirs.plugins_dir().join("demo/demo.zsh").is_file(), "plugins/demo/demo.zsh resolves through the link");
+        assert!(dirs.plugins_dir().join("demo/src/x.zsh").is_file(), "the whole package is there");
+
+        let missing = PackageInstall { source: Some("nope.zsh"), version: "2", ..p };
+        assert!(install_package(&missing, &archive, &dirs).unwrap_err().to_string().contains("nope.zsh"));
+        assert!(dirs.plugins_dir().join("demo/demo.zsh").is_file(), "the failed install left version 1 alone");
+
+        assert!(uninstall_package("demo", &[], &dirs).unwrap());
+        assert!(dirs.plugins_dir().join("demo").symlink_metadata().is_err());
+        assert!(!dirs.tools_dir().join("demo").exists());
+        assert!(!uninstall_package("demo", &[], &dirs).unwrap());
     }
 
     #[test]
@@ -305,7 +228,8 @@ mod tests {
         let archive = targz(&[("eza", b"#!/bin/sh\necho eza\n", 0o644)]);
         let sha = sha256_hex(&archive);
         let bins = vec!["eza".to_string()];
-        let p = PackageInstall { id: "eza", version: "0.23.4", sha256: &sha, format: AssetFormat::TarGz, root: "", bins: &bins };
+        let p =
+            PackageInstall { id: "eza", version: "0.23.4", sha256: &sha, format: AssetFormat::TarGz, root: "", bins: &bins, source: None };
         let links = install_package(&p, &archive, &dirs).unwrap();
         assert_eq!(links, [dirs.bin_dir().join("eza")]);
         assert_eq!(std::fs::metadata(&links[0]).unwrap().permissions().mode() & 0o777, 0o755);
@@ -321,7 +245,15 @@ mod tests {
         let raw = b"\x7fELF...";
         let sha_raw = sha256_hex(raw);
         let bins_raw = vec!["tool".to_string()];
-        let r = PackageInstall { id: "tool", version: "1", sha256: &sha_raw, format: AssetFormat::Binary, root: "", bins: &bins_raw };
+        let r = PackageInstall {
+            id: "tool",
+            version: "1",
+            sha256: &sha_raw,
+            format: AssetFormat::Binary,
+            root: "",
+            bins: &bins_raw,
+            source: None,
+        };
         install_package(&r, raw, &dirs).unwrap();
         assert_eq!(std::fs::read(dirs.bin_dir().join("tool")).unwrap(), raw);
 
@@ -329,24 +261,5 @@ mod tests {
         assert!(dirs.bin_dir().join("eza").symlink_metadata().is_err());
         assert!(!dirs.tools_dir().join("eza").exists());
         assert!(dirs.bin_dir().join("tool").exists(), "other packages untouched");
-    }
-
-    #[test]
-    fn rejects_bad_checksum_and_bad_layout() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dirs = Dirs::under(tmp.path());
-        let archive = targz(&[("demo", b"x", 0o755)]);
-        let tool = demo_tool(Kind::Binary { exe: "demo" });
-
-        let wrong = Asset { target: "any", url: "u", sha256: leak("0".repeat(64)), size: 0, root: "" };
-        let err = install_archive(&tool, &wrong, &archive, &dirs).unwrap_err();
-        assert!(err.to_string().contains("checksum mismatch"), "{err}");
-        assert!(!dirs.tools_dir().join("demo").exists(), "nothing unpacked before the check");
-
-        let missing = Asset { target: "any", url: "u", sha256: leak(sha256_hex(&archive)), size: 0, root: "sub" };
-        assert!(install_archive(&tool, &missing, &archive, &dirs).is_err());
-        assert!(dirs.bin_dir().join("demo").symlink_metadata().is_err(), "nothing activated");
-        let leftovers: Vec<_> = std::fs::read_dir(dirs.tools_dir().join("demo")).unwrap().collect();
-        assert!(leftovers.is_empty(), "staging dir cleaned up");
     }
 }

@@ -182,10 +182,16 @@ fn render(dir: &Path, set: &[String]) -> Result<()> {
     let r = zsh::render(
         &m,
         &values,
-        &zsh::Ctx { dir: format!("$_goatty_dir/plugins/{}", m.id), home: home.as_deref(), label: format!("{} {}", m.id, m.version) },
+        &zsh::Ctx {
+            dir: format!("$_goatty_dir/plugins/{}", m.id),
+            home: home.as_deref(),
+            label: format!("{} {}", m.id, m.version),
+            feature: zsh::feature(&m.id),
+            packages: "$_goatty_pkgs".into(),
+        },
     );
     println!("### plugins-early.zsh (before compinit)\n{}", if r.early.is_empty() { "(nothing)\n" } else { &r.early });
-    println!("### plugins.zsh\n{}", r.main);
+    println!("### {} (load = \"{}\")\n{}", r.load.file(), r.load.key(), r.main);
     for (name, contents) in &r.files {
         println!("### plugins/{}/{name}\n{contents}", m.id);
     }

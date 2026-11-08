@@ -1,0 +1,38 @@
+# Built into goatty (crates/goatty-shell/plugins/): always available, turned
+# off rather than uninstalled. Same format as registry plugins (docs/plugins.md).
+schema = 1
+id = "fzf"
+name = "fzf"
+version = "1.0.0"
+summary = "Fuzzy finder: Ctrl+T picks files, Alt+C changes directory"
+description = """
+fzf filters any list as you type. goatty loads its key bindings: Ctrl+T inserts files picked from the current directory, Alt+C changes into a directory picked the same way (Ctrl+R stays Atuin's when Atuin is on). Used when installed; `goattyd shell install fzf` downloads it."""
+publisher = "goatty"
+homepage = "https://github.com/junegunn/fzf"
+license = "MIT"
+keywords = ["fuzzy", "finder", "files"]
+
+[[package]]
+id = "fzf"
+version = "0.74.5"
+bin = ["fzf"]
+
+[[package.asset]]
+target = "x86_64-linux"
+url = "https://github.com/junegunn/fzf/releases/download/v0.74.5/fzf-0.74.5-linux_amd64.tar.gz"
+sha256 = "d47d7f882972c7d674dbbba998ffa4116e68379616ffac7695d0671e9a722c5f"
+size = 2291079
+
+[[package.asset]]
+target = "aarch64-linux"
+url = "https://github.com/junegunn/fzf/releases/download/v0.74.5/fzf-0.74.5-linux_arm64.tar.gz"
+sha256 = "cf058001da21724a469b714a29cf4aab9cbe860d218a0d6c1b5b661efad7784c"
+size = 2078357
+
+[zsh]
+init = "zsh/init.zsh"
+load = "line-editor"
+
+[permissions]
+binaries = "fzf is a program: unless it's already installed, goatty downloads its official release from GitHub."
+shell-code = "Loads fzf's key bindings (`fzf --zsh`) when the shell has a terminal."

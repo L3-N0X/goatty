@@ -4,16 +4,17 @@
 //!
 //! * **early** (`plugins-early.zsh`, before `compinit`): `fpath` entries and
 //!   exported variables, so completion and the init code see them;
-//! * **main** (`plugins.zsh`, after goatty's own features, before the
-//!   user's additions and syntax highlighting): aliases and the plugin's
-//!   init code, only when its commands are installed.
+//! * **main** (in the file of the plugin's [`Load`] slot, e.g.
+//!   `plugins.zsh`): aliases, the plugin's init code and its packages' zsh
+//!   scripts, only when its commands and scripts are installed.
 //!
 //! Everything goatty writes is quoted here; the only code a plugin brings
-//! is its `zsh.init` file, which is sourced as is (`shell-code` permission).
+//! is its `zsh.init` file, which is sourced as is (`shell-code` permission),
+//! and the scripts of its packages (`binaries`, checked like programs).
 
 use serde_json::Value;
 
-use crate::manifest::{FileFormat, Manifest, SettingKind, applies};
+use crate::manifest::{FileFormat, Load, Manifest, SettingKind, applies};
 use crate::schema::{Values, plain_string};
 use crate::template::{expand_inline, expand_list};
 
@@ -40,6 +41,11 @@ pub struct Ctx<'a> {
     pub home: Option<&'a str>,
     /// Shown in the generated comment: `eza 1.0.0 from official`.
     pub label: String,
+    /// The key in `goatty-status` (`plugin:eza`; built-in plugins use their id).
+    pub feature: String,
+    /// zsh expression (safe inside double quotes) for the directory holding
+    /// goatty's copies of zsh-plugin packages (`plugins/<package>/`).
+    pub packages: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -52,6 +58,8 @@ pub struct Rendered {
     /// contents are copied by the caller: these are the referenced paths).
     pub uses_init: Option<String>,
     pub fpath: Vec<String>,
+    /// The slot `main` goes into.
+    pub load: Load,
 }
 
 /// `~` and `~/x` in path settings and list entries become `$HOME`/`$HOME/x`
@@ -123,11 +131,19 @@ pub fn render(m: &Manifest, values: &Values, ctx: &Ctx<'_>) -> Rendered {
         r.early = format!("# {}\n{}\n", ctx.label, early.join("\n"));
     }
 
-    // --- main: aliases and init code, when the commands are there ----------
+    // --- main: aliases, init code and package scripts, when they're there ---
     // Unquoted on purpose: zsh keeps quotes in an assoc subscript as part of
     // the key. Ids are `[a-z0-9-]`, which needs no quoting there.
-    let feature = feature(&m.id);
-    let needed: Vec<&str> = m.executables().chain(m.requires.commands.iter().map(String::as_str)).collect();
+    r.load = m.zsh.load;
+    let feature = &ctx.feature;
+    let commands: Vec<&str> = m.executables().chain(m.requires.commands.iter().map(String::as_str)).collect();
+    // Each package script: the first of the system's copies and goatty's own.
+    let mut find = Vec::new();
+    for (p, src) in m.sources() {
+        let mut candidates: Vec<String> = if p.prefer_system { p.system_paths.iter().map(|s| quote(s)).collect() } else { Vec::new() };
+        candidates.push(format!("\"{}/{}/{src}\"", ctx.packages, p.id));
+        find.push(format!("_goatty_find {} && _goatty_src[{}]=$REPLY", candidates.join(" "), p.id));
+    }
     let mut body = Vec::new();
     for a in m.aliases.iter().filter(|a| applies(&a.when, values)) {
         body.push(format!("alias -- {}={}", a.name, quote(&crate::alias::expansion(m, a, values))));
@@ -141,18 +157,33 @@ pub fn render(m: &Manifest, values: &Values, ctx: &Ctx<'_>) -> Rendered {
         body.push("builtin unset goatty_settings goatty_plugin_dir".into());
         r.uses_init = Some(init.clone());
     }
-    let detail = match needed.first() {
-        Some(cmd) => format!("\"$commands[{cmd}]\""),
-        None => quote(&m.version),
+    for (p, _) in m.sources() {
+        body.push(format!("builtin source -- \"${{_goatty_src[{}]}}\"", p.id));
+    }
+    if m.zsh.load == Load::Prompt {
+        body.push(format!("typeset -g _goatty_prompt={}", m.id));
+    }
+    let detail = match (m.sources().next(), commands.first()) {
+        (Some((p, _)), _) => format!("\"${{_goatty_src[{}]}}\"", p.id),
+        (None, Some(cmd)) => format!("\"$commands[{cmd}]\""),
+        (None, None) => quote(&m.version),
     };
     body.push(format!("_goatty_state[{feature}]=\"ok\"$'\\t'{detail}"));
     let mut main = format!("# --- {} ---\n", ctx.label);
-    if needed.is_empty() {
+    for line in &find {
+        main.push_str(line);
+        main.push('\n');
+    }
+    let tests: Vec<String> = commands
+        .iter()
+        .map(|c| format!("$+commands[{c}]"))
+        .chain(m.sources().map(|(p, _)| format!("${{+_goatty_src[{}]}}", p.id)))
+        .collect();
+    if tests.is_empty() {
         main.push_str(&body.join("\n"));
         main.push('\n');
     } else {
-        let test = needed.iter().map(|c| format!("$+commands[{c}]")).collect::<Vec<_>>().join(" && ");
-        main.push_str(&format!("if (( {test} )); then\n"));
+        main.push_str(&format!("if (( {} )); then\n", tests.join(" && ")));
         for line in &body {
             main.push_str(&format!("  {line}\n"));
         }
@@ -171,7 +202,13 @@ mod tests {
     use crate::schema::resolve;
 
     fn ctx() -> Ctx<'static> {
-        Ctx { dir: "$_goatty_dir/plugins/eza".into(), home: Some("/home/u"), label: "eza 1.0.0".into() }
+        Ctx {
+            dir: "$_goatty_dir/plugins/eza".into(),
+            home: Some("/home/u"),
+            label: "eza 1.0.0".into(),
+            feature: feature("eza"),
+            packages: "$_goatty_pkgs".into(),
+        }
     }
 
     #[test]
@@ -220,6 +257,51 @@ mod tests {
         assert!(r.main.contains("typeset -gA goatty_settings=(replace_ls 'true' icons 'auto' git 'false')"), "{}", r.main);
         assert!(r.main.contains("builtin source -- \"$goatty_plugin_dir/zsh/init.zsh\""));
         assert_eq!(r.uses_init.as_deref(), Some("zsh/init.zsh"));
+    }
+
+    #[test]
+    fn package_scripts_are_found_and_sourced_after_init() {
+        let text = r#"
+schema = 1
+id = "suggest"
+name = "Suggest"
+version = "1.0.0"
+summary = "zsh plugin"
+publisher = "goatty"
+
+[[package]]
+id = "zsh-suggest"
+version = "0.1"
+source = "suggest.zsh"
+system_paths = ["/usr/share/zsh/plugins/suggest/suggest.zsh"]
+[[package.asset]]
+target = "any"
+url = "https://example.com/s.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+size = 1
+
+[zsh]
+init = "init.zsh"
+load = "prompt"
+
+[permissions]
+binaries = "the zsh plugin itself, from its release tarball"
+shell-code = "sets the plugin's options before it loads"
+"#;
+        let m = parse(text, None).unwrap();
+        let r = render(&m, &BTreeMap::new(), &Ctx { feature: "suggest".into(), ..ctx() });
+        assert_eq!(r.load, Load::Prompt);
+        let main = &r.main;
+        assert!(
+            main.contains("_goatty_find '/usr/share/zsh/plugins/suggest/suggest.zsh' \"$_goatty_pkgs/zsh-suggest/suggest.zsh\" && _goatty_src[zsh-suggest]=$REPLY\nif (( ${+_goatty_src[zsh-suggest]} )); then"),
+            "{main}"
+        );
+        let init = main.find("init.zsh").unwrap();
+        let source = main.find("builtin source -- \"${_goatty_src[zsh-suggest]}\"").unwrap();
+        assert!(init < source, "init runs first, so it can set the plugin's variables: {main}");
+        assert!(main.contains("typeset -g _goatty_prompt=suggest"), "{main}");
+        assert!(main.contains("_goatty_state[suggest]=\"ok\"$'\\t'\"${_goatty_src[zsh-suggest]}\""), "{main}");
+        assert!(main.contains("_goatty_state[suggest]=missing"), "{main}");
     }
 
     #[test]

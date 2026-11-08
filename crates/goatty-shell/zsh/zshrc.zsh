@@ -6,12 +6,17 @@
 # Load order matters: options and completion first, then line-editor
 # plugins, the prompt, shell integration, your additions, and syntax
 # highlighting last (it has to wrap every widget defined before it).
+# The tools themselves (fzf, Atuin, autosuggestions, Starship, syntax
+# highlighting, and the plugins you install) are plugins: each loads in its
+# slot from a generated plugins-*.zsh file.
 #
 # Every feature is optional: a missing tool is skipped and shows up in
 # `goatty-status` and `goattyd shell status`.
 
 # feature -> "ok<TAB>detail" | "missing" | "off"
 typeset -gA _goatty_state
+# package -> the zsh script found for it (system copy or goatty's)
+typeset -gA _goatty_src
 
 _goatty_on() { (( ${_goatty_features[(Ie)$1]} )) }
 _goatty_find() {
@@ -22,7 +27,6 @@ _goatty_find() {
   return 1
 }
 _goatty_ok() { _goatty_state[$1]="ok"$'\t'"$2" }
-_goatty_skip() { if _goatty_on $1; then _goatty_state[$1]=missing; else _goatty_state[$1]=off; fi }
 
 # --- Options ----------------------------------------------------------------
 setopt auto_cd auto_pushd pushd_ignore_dups pushd_silent
@@ -42,7 +46,7 @@ setopt $_goatty_hist_opts
 typeset -gU path fpath
 path+=("$_goatty_bin")
 
-# --- Plugins, part 1: completion paths and environment ----------------------
+# --- Plugins: completion paths and environment -------------------------------
 # Before compinit, so plugin completions are found. `goattyd plugin list`
 # shows what's installed.
 builtin source -- "$_goatty_dir/plugins-early.zsh"
@@ -100,62 +104,29 @@ if (( _goatty_user_rc )); then
   builtin export ZDOTDIR=$_goatty_dir
 fi
 
-# --- fzf: Ctrl+T files, Alt+C cd (Ctrl+R goes to Atuin when it's there) -----
-if _goatty_on fzf && (( $+commands[fzf] )); then
-  # Key bindings need the line editor. (Without a terminal, fzf's script
-  # also fails restoring the `zle` option it saved.)
-  if [[ -o zle && -t 0 ]] && _goatty_init=$(fzf --zsh 2>/dev/null) && [[ -n $_goatty_init ]]; then
-    eval "$_goatty_init"
-  fi
-  _goatty_ok fzf $commands[fzf]
-else
-  _goatty_skip fzf
-fi
-
-# --- Atuin: searchable history on Ctrl+R (Up too if history.atuin_up_arrow) --
-if _goatty_on atuin && (( $+commands[atuin] )); then
-  eval "$(atuin init zsh $_goatty_atuin_flags)"
-  _goatty_ok atuin $commands[atuin]
-else
-  _goatty_skip atuin
-fi
-
-# --- Autosuggestions --------------------------------------------------------
-if _goatty_on autosuggestions && _goatty_find $_goatty_paths_autosuggestions; then
-  (( ${+ZSH_AUTOSUGGEST_STRATEGY} )) || ZSH_AUTOSUGGEST_STRATEGY=(history completion)
-  (( ${+ZSH_AUTOSUGGEST_BUFFER_MAX_SIZE} )) || ZSH_AUTOSUGGEST_BUFFER_MAX_SIZE=80
-  builtin source -- "$REPLY"
-  _goatty_ok autosuggestions $REPLY
-else
-  _goatty_skip autosuggestions
-fi
+# --- Plugins: line editor tools --------------------------------------------
+# fzf (Ctrl+T, Alt+C), then Atuin (Ctrl+R, so it keeps that key), then
+# autosuggestions, which wraps the widgets defined before it.
+builtin source -- "$_goatty_dir/plugins-line-editor.zsh"
 
 # --- Prompt -----------------------------------------------------------------
-if _goatty_on starship && (( $+commands[starship] )); then
-  # goatty's config (from the prompt.* settings), unless the user has their
-  # own and prompt.prefer_user_config is on.
-  if (( ! _goatty_prompt_user_config )) || [[ -z $STARSHIP_CONFIG && ! -e ${XDG_CONFIG_HOME:-$HOME/.config}/starship.toml ]]; then
-    builtin export STARSHIP_CONFIG=$_goatty_dir/starship.toml
+# The Starship plugin (or another prompt plugin); goatty's config for it is
+# generated from the prompt settings.
+builtin source -- "$_goatty_dir/plugins-prompt.zsh"
+if (( ! ${+_goatty_prompt} && ! _goatty_user_rc )); then
+  # Small built-in prompt: directory, then a marker that turns red when
+  # the last command failed.
+  if (( _goatty_prompt_two_line )); then
+    PROMPT='%F{blue}%~%f'$'\n''%(?.%F{green}.%F{red})%(!.#.❯)%f '
+  else
+    PROMPT='%F{blue}%~%f %(?.%F{green}.%F{red})%(!.#.❯)%f '
   fi
-  eval "$(starship init zsh)"
-  _goatty_ok starship $commands[starship]
-else
-  _goatty_skip starship
-  if (( ! _goatty_user_rc )); then
-    # Small built-in prompt: directory, then a marker that turns red when
-    # the last command failed.
-    if (( _goatty_prompt_two_line )); then
-      PROMPT='%F{blue}%~%f'$'\n''%(?.%F{green}.%F{red})%(!.#.❯)%f '
-    else
-      PROMPT='%F{blue}%~%f %(?.%F{green}.%F{red})%(!.#.❯)%f '
-    fi
-    RPROMPT=
-  fi
+  RPROMPT=
 fi
 
-# --- Plugins, part 2: aliases and the plugins' own shell code ----------------
-# After goatty's features and prompt; before your additions (so you can
-# override a plugin's alias) and syntax highlighting.
+# --- Plugins: aliases and the plugins' own shell code ------------------------
+# After the prompt; before your additions (so you can override a plugin's
+# alias) and syntax highlighting.
 builtin source -- "$_goatty_dir/plugins.zsh"
 
 # --- Your aliases from goatty's settings (Aliases page, `goattyd alias`) ----
@@ -178,13 +149,9 @@ if [[ -r $_goatty_user_zshrc ]]; then
   builtin source -- "$_goatty_user_zshrc"
 fi
 
-# --- Syntax highlighting (last) ---------------------------------------------
-if _goatty_on syntax-highlighting && _goatty_find $_goatty_paths_syntax_highlighting; then
-  builtin source -- "$REPLY"
-  _goatty_ok syntax-highlighting $REPLY
-else
-  _goatty_skip syntax-highlighting
-fi
+# --- Plugins that load last: syntax highlighting ---------------------------
+# It wraps every line editor widget defined before it, yours included.
+builtin source -- "$_goatty_dir/plugins-last.zsh"
 
 # --- Commands ---------------------------------------------------------------
 
@@ -196,7 +163,8 @@ goatty-status() {
   done
 }
 
-# Install missing tools into goatty's data directory (no sudo), then reload.
+# Install the missing tools of goatty's built-in plugins into goatty's data
+# directory (no sudo), then reload. Named ones (`goatty-setup fzf`) too.
 goatty-setup() {
   local daemon=${_goatty_daemon:-goattyd}
   if [[ $1 == --dismiss ]]; then
@@ -205,9 +173,7 @@ goatty-setup() {
   fi
   if (( $# == 0 )); then
     local -a missing=(${(ko)_goatty_state[(R)missing]})
-    # Plugins' commands come with the plugin (goattyd plugin install).
-    missing=(${missing:#plugin:*})
-    set -- ${missing:#fzf}
+    set -- ${missing:*_goatty_setup_defaults}
     if (( $# == 0 )); then
       builtin print -r -- "goatty: nothing to install (see goatty-status)"
       return 0
@@ -281,11 +247,11 @@ add-zsh-hook precmd _goatty_reload_requested
 # --- Missing-tools hint -----------------------------------------------------
 () {
   local -a missing=(${(ko)_goatty_state[(R)missing]})
-  missing=(${${missing:#fzf}:#plugin:*})
+  missing=(${missing:*_goatty_setup_defaults})
   (( $#missing )) && [[ -t 1 && ! -e $_goatty_hint_marker ]] || return 0
   builtin print -r -- $'\e[33mgoatty:\e[0m not installed: '"${(j:, :)missing}"$'. Run \e[1mgoatty-setup\e[0m to install (user space, no sudo), \e[1mgoatty-setup --dismiss\e[0m to hide this.'
 }
 
 # --- Done --------------------------------------------------------------------
-builtin unfunction _goatty_zdotdir_user _goatty_zdotdir_capture _goatty_user_file _goatty_on _goatty_find _goatty_ok _goatty_skip
-builtin unset _goatty_user_zdotdir _goatty_init
+builtin unfunction _goatty_zdotdir_user _goatty_zdotdir_capture _goatty_user_file _goatty_on _goatty_find _goatty_ok
+builtin unset _goatty_user_zdotdir _goatty_src _goatty_prompt

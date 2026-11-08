@@ -2,6 +2,8 @@
 
 goatty sessions run zsh with a configuration goatty generates: autosuggestions, syntax highlighting, completion, Starship, Atuin, fzf key bindings and shell integration (OSC 133/7). Nothing in the user's dotfiles changes. Code: `crates/goatty-shell`. Startup files: `crates/goatty-shell/zsh/`.
 
+The tools (autosuggestions, syntax highlighting, Starship, Atuin, fzf) are **built-in plugins** since #98: ordinary plugin manifests in `crates/goatty-shell/plugins/<id>/`, compiled into goatty. They get the same install plans, settings UI and load-order slots as registry plugins ([`plugins.md`](plugins.md#built-in-plugins)).
+
 ## How a session starts
 
 goattyd (or `goatty --local`) asks `goatty_shell::Launcher` for the shell, using the host settings (`~/.config/goatty/host.json`, re-read for every session). If it's zsh and `shell.managed` is on (the default), the launcher makes sure the active *generation* matches those settings: if not, it builds, validates and activates a new one (see [`profiles.md`](profiles.md)). It then starts `zsh -l` with:
@@ -20,10 +22,12 @@ zsh then reads the startup files from goatty's directory:
 .zprofile  (login) source the user's .zprofile with their ZDOTDIR, re-pin goatty's
 .zshrc     options, history, PATH, plugins-early.zsh (plugin fpath + env), keys, compinit
            [user's .zshrc, if shell.zsh.user_rc]
-           fzf → atuin → autosuggestions → starship (or fallback prompt) → plugins.zsh (plugin aliases + code) → integration
+           plugins-line-editor.zsh (fzf → atuin → autosuggestions)
+           plugins-prompt.zsh (starship), or goatty's fallback prompt when no prompt plugin loaded
+           plugins.zsh (plugin aliases + code) → aliases.zsh (yours) → integration
            ZDOTDIR = the user's again
            ~/.config/goatty/zshrc (the user's additions)
-           syntax highlighting (last: it wraps every widget defined before it)
+           plugins-last.zsh (syntax highlighting: it wraps every widget defined before it)
            goatty-status / goatty-setup / goatty-reload, reload-on-request trap, missing-tools hint
 .zlogin    the user's own, because ZDOTDIR is already theirs again
 ```
@@ -45,15 +49,16 @@ Rules that came out of testing against real zsh (`crates/goatty-shell/tests/zsh_
 ```
 ~/.config/goatty/host.json      the host settings (edit in the settings window)
 ~/.local/share/goatty/generations/<n>/   one built configuration each (newest 10 kept):
-  zsh/settings.zsh              paths, feature list, history options, plugin search paths
+  zsh/settings.zsh              paths, feature list, history options, what goatty-setup installs
+  zsh/plugins-*.zsh             the plugins, one file per load slot (see plugins.md)
   zsh/.zshenv .zprofile .zshrc  static, from crates/goatty-shell/zsh/
   zsh/integration.zsh           OSC 133 + OSC 7
   zsh/starship.toml             generated from the prompt settings; used unless you prefer your own starship.toml
   host.json, info.json          the settings it was built from, when
 ~/.local/share/goatty/current → generations/<n>   the active one
-~/.local/share/goatty/tools/<tool>/<version>/   managed installs
+~/.local/share/goatty/tools/<package>/<version>/   managed installs (built-in and registry plugins' packages)
 ~/.local/share/goatty/bin/<exe>                 → active managed binary (appended to the shell's PATH)
-~/.local/share/goatty/plugins/<tool>            → active managed zsh plugin
+~/.local/share/goatty/plugins/<package>         → active managed zsh plugin (a package with a `source` script)
 ~/.config/goatty/zshrc          the user's additions (goatty never writes it)
 ~/.cache/goatty/                zcompdump, completion cache, downloads
 ~/.local/state/goatty/shell-hint-dismissed      set by `goatty-setup --dismiss`
@@ -71,13 +76,20 @@ XDG variables are respected. History stays in the file plain zsh would use (`${Z
 | `shell.managed` | on | `GOATTY_SHELL_MANAGED=0/1` |
 | `shell.zsh.user_env` (`.zshenv`, `.zprofile`) | on | |
 | `shell.zsh.user_rc` (`.zshrc`) | off | `GOATTY_ZSH_USER_RC=0/1` |
-| `shell.zsh.{autosuggestions, syntax_highlighting, fzf, integration}` | on | |
-| `prompt.starship`, `prompt.style` (`rich`/`minimal`), `prompt.two_line`, `prompt.newline_before`, `prompt.duration_threshold_ms` (2000; 0 = never), `prompt.prefer_user_config` | on, rich, on, off, 2000, on | |
-| `history.size` (100 000), `history.ignore_duplicates`, `history.ignore_space`, `history.share_between_sessions`, `history.atuin`, `history.atuin_up_arrow` | 100 000, on, on, off, on, off | |
+| `shell.zsh.integration` | on | |
+| `prompt.style` (`rich`/`minimal`), `prompt.two_line`, `prompt.newline_before`, `prompt.duration_threshold_ms` (2000; 0 = never) | rich, on, off, 2000 | |
+| `history.size` (100 000), `history.ignore_duplicates`, `history.ignore_space`, `history.share_between_sessions` | 100 000, on, on, off | |
+| `plugins.<id>.enabled` for `autosuggestions`, `syntax-highlighting`, `starship`, `atuin`, `fzf` | on | |
+| `plugins.autosuggestions.settings.{strategy, max_length}` | `history-completion`, 80 | |
+| `plugins.syntax-highlighting.settings.brackets` | off | |
+| `plugins.starship.settings.prefer_user_config` | on | |
+| `plugins.atuin.settings.up_arrow` | off | |
 
-`.zshrc` is off by default because most `.zshrc` files load their own prompt and plugins, which would fight goatty's. With it on, it runs after compinit and before goatty's plugins, so goatty's prompt still wins. Turn off `prompt.starship` to keep your own prompt. The `minimal` prompt style uses plain characters only, for fonts without Nerd Font symbols (#46).
+The Shell, Prompt and History pages keep their switches for the built-in plugins; the Plugins page has all their settings. `host.json` version 1 had the switches as `shell.zsh.{autosuggestions, syntax_highlighting, fzf}`, `prompt.starship`, `history.atuin` and the options as `prompt.prefer_user_config`, `history.atuin_up_arrow`: loading one moves them to `plugins.*` (version 2; only keys the file had, so it stays sparse).
 
-Each feature checks for its tool at shell startup and is skipped if the tool is missing. Binaries come from `$commands`, which sees the PATH after the user's `.zprofile` ran; zsh plugins come from a list of distro/Homebrew/NixOS paths, then the managed copy. A system install always wins over a managed one.
+`.zshrc` is off by default because most `.zshrc` files load their own prompt and plugins, which would fight goatty's. With it on, it runs after compinit and before goatty's plugins, so goatty's prompt still wins. Turn off the Starship plugin to keep your own prompt. The `minimal` prompt style uses plain characters only, for fonts without Nerd Font symbols (#46).
+
+Each plugin checks for its tool at shell startup and is skipped if the tool is missing. Binaries come from `$commands`, which sees the PATH after the user's `.zprofile` ran; zsh plugins come from their package's `system_paths` (distro/Homebrew/NixOS), then the managed copy. A system install always wins over a managed one.
 
 Defaults chosen here: emacs keymap; Up/Down search history by prefix; Home/End/Delete/Ctrl+arrows/Ctrl+Backspace/Shift+Tab bound to the sequences goatty sends; word motions stop at `/`; menu completion with case-insensitive matching; `auto_cd`; 100k history entries, `extended_history`, `inc_append_history`, no duplicates; Atuin on Ctrl+R with `--disable-up-arrow`; fzf on Ctrl+T/Alt+C (Atuin keeps Ctrl+R).
 
@@ -87,24 +99,24 @@ Defaults chosen here: emacs keymap; Up/Down search history by prefix; Home/End/D
 
 ## Installing tools
 
-`goattyd shell install [TOOL…] [-y]` (or `goatty-setup` inside a goatty shell, which passes exactly the missing default tools and then reloads the shell). It shows the plan with sizes and asks first; without a terminal it requires `--yes`. Each tool:
+`goattyd shell install [NAME…] [-y]` (or `goatty-setup` inside a goatty shell, which passes exactly the missing tools of the built-in plugins that are on and marked for default install, then reloads the shell) installs the packages of built-in plugins. It plans them like any plugin install (`Plugins::plan` on the built-in candidate: a package already on the system or already installed by goatty at the pinned version downloads nothing), shows the downloads with sizes and asks first; without a terminal it requires `--yes`. `goattyd plugin install starship` does the same with the full plan (permissions, shell code). Each package:
 
 1. Downloads the pinned release archive with `curl` (fallback `wget`). The sha256 pin is what makes an archive trusted, so goattyd needs no TLS stack of its own.
-2. Checks the archive against the pinned sha256 in `tools.rs` before unpacking anything.
-3. Unpacks into `tools/<id>/.<version>.partial-<pid>` (the `tar` crate refuses paths outside it), checks the expected binary or plugin entry, then renames it to `tools/<id>/<version>`.
+2. Checks the archive against the sha256 in the plugin's manifest before unpacking anything.
+3. Unpacks into `tools/<id>/.<version>.partial-<pid>` (the `tar` crate refuses paths outside it), checks the expected binaries or `source` script, then renames it to `tools/<id>/<version>`.
 4. Switches `bin/<exe>` or `plugins/<id>` by renaming a temp symlink over the old one, then removes older versions.
 
-No sudo, nothing outside goatty's data directory. `goattyd shell uninstall TOOL…|--all` removes managed copies. For a remote goattyd this all happens on the remote host, which is also where `goatty-setup` runs.
+No sudo, nothing outside goatty's data directory. `goattyd shell uninstall NAME…|--all` removes goatty's downloads (the plugins stay on and use system copies if there are any). For a remote goattyd this all happens on the remote host, which is also where `goatty-setup` runs.
 
-| Tool                    | Version | Builds                                | Default |
-|-------------------------|---------|---------------------------------------|---------|
-| zsh-autosuggestions     | 0.7.1   | source tarball                        | yes     |
-| zsh-syntax-highlighting | 0.8.0   | source tarball                        | yes     |
-| Starship                | 1.27.0  | x86_64/aarch64 Linux musl             | yes     |
-| Atuin                   | 18.24.2 | x86_64/aarch64 Linux musl             | yes     |
-| fzf                     | 0.74.5  | x86_64/aarch64 Linux                  | no (integrated when present) |
+| Built-in plugin     | Package (id)                               | Version | Builds                    | Load slot   | Installed by goatty-setup |
+|---------------------|--------------------------------------------|---------|---------------------------|-------------|---------------------------|
+| autosuggestions     | zsh-autosuggestions (`autosuggestions`)    | 0.7.1   | source tarball            | line-editor | yes |
+| syntax-highlighting | zsh-syntax-highlighting (`syntax-highlighting`) | 0.8.0 | source tarball          | last        | yes |
+| starship            | Starship (`starship`)                      | 1.27.0  | x86_64/aarch64 Linux musl | prompt      | yes |
+| atuin               | Atuin (`atuin`)                            | 18.24.2 | x86_64/aarch64 Linux musl | line-editor (after fzf) | yes |
+| fzf                 | fzf (`fzf`)                                | 0.74.5  | x86_64/aarch64 Linux      | line-editor | no (integrated when present) |
 
-Pinned 2026-11-07 to releases at least two weeks old. Checksums were computed from the downloads and matched upstream's published `.sha256`/checksums files where they exist (Starship, Atuin, fzf). zsh itself isn't installed: if it's missing, goatty starts `$SHELL` and `goattyd shell status` says so.
+Pinned 2026-11-07 to releases at least two weeks old. Checksums were computed from the downloads and matched upstream's published `.sha256`/checksums files where they exist (Starship, Atuin, fzf). The package ids are the tool ids from before #98, so managed installs made then (`tools/<id>/`, `bin/` and `plugins/` links) are used as they are. zsh itself isn't installed: if it's missing, goatty starts `$SHELL` and `goattyd shell status` says so.
 
 ## Diagnostics
 
@@ -123,6 +135,8 @@ Measured 2026-11-07 on the dev machine (CachyOS, zsh 5.9.2), `zsh -l -i -c exit`
 | + syntax highlighting                                | 44   |
 | + Starship init                                      | 59   |
 | + Atuin init (everything on)                         | 60–67 |
+
+Moving the tools to built-in plugins (#98) didn't change it: 61 ms median on both `main` and the branch (2026-11-08, same machine, sandboxed `$HOME` with the host's Starship, fzf and distro zsh plugins, Atuin missing; `goattyd shell status` built the generation, then 21 runs of `zsh -l -i -c exit` each, two rounds).
 
 goatty's part is about 30 ms, half of it `starship init` (two process spawns). Caching the init scripts is #41. The first start after a zsh upgrade or on a fresh machine builds the completion dump (178 ms once in the real home dir; 47 ms after that, measured with `goattyd shell status`).
 

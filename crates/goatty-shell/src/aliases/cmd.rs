@@ -122,7 +122,7 @@ pub fn add(
     }
     let path = std::env::var("PATH").ok();
     if let Some(dirs) = svc.launcher.dirs()
-        && let Some(p) = crate::tools::which(name, path.as_deref(), &dirs.bin_dir())
+        && let Some(p) = crate::packages::which(name, path.as_deref(), &dirs.bin_dir())
     {
         println!("Note: `{name}` is also a command ({}); in goatty shells the alias runs instead.", p.display());
     }

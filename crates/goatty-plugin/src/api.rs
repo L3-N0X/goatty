@@ -60,7 +60,8 @@ pub struct Catalog {
 pub struct Installed {
     pub id: String,
     pub version: String,
-    /// Registry name, or `local` for a plugin installed from a directory.
+    /// Registry name, `local` for a plugin installed from a directory, or
+    /// `goatty` for one that comes with goatty.
     pub source: String,
     /// Came from a registry with a valid signature.
     pub verified: bool,
@@ -72,6 +73,48 @@ pub struct Installed {
     /// A newer version in its registry.
     pub update: Option<String>,
     pub installed_unix: u64,
+    /// Comes with goatty: can be turned off, not uninstalled.
+    #[serde(default)]
+    pub builtin: bool,
+    /// Where each of its packages is on this host.
+    #[serde(default)]
+    pub packages: Vec<PackageStatus>,
+}
+
+/// One package of an installed plugin, as found on the host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageStatus {
+    pub id: String,
+    /// The version the plugin pins.
+    pub version: String,
+    pub state: PackageState,
+    /// goatty has a build of it for this host (it can install it).
+    pub available: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PackageState {
+    /// The system's copy (preferred over goatty's own).
+    System {
+        path: String,
+    },
+    /// goatty's copy; an older `version` than the pinned one can be updated.
+    Managed {
+        version: String,
+    },
+    Missing,
+}
+
+impl PackageStatus {
+    /// Installing the plugin would download something.
+    pub fn needs_install(&self) -> bool {
+        match &self.state {
+            PackageState::Missing => true,
+            PackageState::Managed { version } => *version != self.version,
+            PackageState::System { .. } => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +162,9 @@ pub struct Plan {
     pub source: String,
     /// From a signed registry (`false`: a local directory, unreviewed).
     pub verified: bool,
+    /// Comes with goatty: the plan only concerns its packages.
+    #[serde(default)]
+    pub builtin: bool,
     /// The installed version this replaces (an update).
     pub replaces: Option<String>,
     pub downloads: Vec<Download>,
@@ -144,8 +190,28 @@ pub struct Download {
     pub size: u64,
     pub sha256: String,
     pub bins: Vec<String>,
-    /// Already on PATH here: goatty uses that copy and downloads nothing.
+    /// A zsh script in the package that the shell sources.
+    #[serde(default)]
+    pub script: Option<String>,
+    /// Already installed on the system: goatty uses that copy and downloads nothing.
     pub system: Option<String>,
+    /// goatty's copy of exactly this version is already installed: nothing to download.
+    #[serde(default)]
+    pub current: bool,
+}
+
+impl Download {
+    /// Something will be downloaded.
+    pub fn fetches(&self) -> bool {
+        self.system.is_none() && !self.current
+    }
+}
+
+impl Plan {
+    /// Bytes to download.
+    pub fn download_size(&self) -> u64 {
+        self.downloads.iter().filter(|d| d.fetches()).map(|d| d.size).sum()
+    }
 }
 
 impl Plan {

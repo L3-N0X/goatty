@@ -138,6 +138,14 @@ impl Sandbox {
     }
 }
 
+/// Default settings with the syntax highlighting plugin off (the host's
+/// distro copy would otherwise load in some tests and not in others).
+fn no_highlighting() -> HostSettings {
+    let mut s = HostSettings::default();
+    s.edit_plugin("syntax-highlighting", |p| p.enabled = false);
+    s
+}
+
 fn exe(p: &Path, body: &str) {
     std::fs::write(p, body).unwrap();
     std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -159,7 +167,19 @@ fn generated_files_parse() {
     let Some(zsh) = zsh() else { return };
     let sb = Sandbox::new(zsh.clone());
     sb.launch(ZshSettings::default(), None);
-    for f in [".zshenv", ".zprofile", ".zshrc", "integration.zsh", "settings.zsh", "aliases.zsh"] {
+    for f in [
+        ".zshenv",
+        ".zprofile",
+        ".zshrc",
+        "integration.zsh",
+        "settings.zsh",
+        "aliases.zsh",
+        "plugins-early.zsh",
+        "plugins-line-editor.zsh",
+        "plugins-prompt.zsh",
+        "plugins.zsh",
+        "plugins-last.zsh",
+    ] {
         let out = Command::new(&zsh).arg("-n").arg(sb.dirs.zsh_dir().join(f)).output().unwrap();
         assert!(out.status.success(), "{f}: {}", String::from_utf8_lossy(&out.stderr));
     }
@@ -176,7 +196,7 @@ fn default_startup_sources_user_env_not_rc() {
     std::fs::create_dir_all(&sb.dirs.config).unwrap();
     std::fs::write(sb.dirs.user_zshrc(), TRACE.replace("$NAME", "additions")).unwrap();
 
-    let launch = sb.launch(ZshSettings { syntax_highlighting: false, ..Default::default() }, None);
+    let launch = sb.launch_with(no_highlighting(), None);
     let out = sb.run(
         &launch,
         "print -r -- \"Z=${ZDOTDIR-unset} E=$FROM_ZSHENV\"; goatty-status; zsh -c 'print -r -- nested=${ZDOTDIR-unset}'; goatty-setup",
@@ -525,7 +545,7 @@ shell-code = "defines the greet function the plugin is about"
         p.install(&c, &plan.digest, &HostSettings::default()).unwrap();
     }
 
-    let launch = sb.launch(ZshSettings { syntax_highlighting: false, ..Default::default() }, None);
+    let launch = sb.launch_with(no_highlighting(), None);
     let out = sb.run(
         &launch,
         "print -r -- \"alias=$aliases[meow] mode=$MEOW_MODE boo=${+aliases[boo]}\"; command cat -- \"$MEOW_CONFIG\"; greet; print -r -- after=${+goatty_settings}; goatty-status",
@@ -542,6 +562,61 @@ shell-code = "defines the greet function the plugin is about"
     use goatty_shell::doctor::State;
     assert!(matches!(state("plugin:meow"), Some(State::Ok(d)) if d.ends_with("/cat")), "{status:?}");
     assert_eq!(state("plugin:ghost"), Some(State::Missing));
+}
+
+/// The built-in plugins in a real shell (#98): fzf, then Atuin (so Ctrl+R
+/// stays Atuin's), Atuin's setting reaching its init, a zsh plugin found
+/// through a managed install from before plugins existed, and the fallback
+/// prompt with Starship turned off (reported as off).
+#[test]
+fn builtin_plugins_load_in_their_slots() {
+    let Some(zsh) = zsh() else { return };
+    let sb = Sandbox::new(zsh);
+    let sysbin = sb.home.join("sysbin");
+    exe(
+        &sysbin.join("fzf"),
+        "#!/bin/sh
+[ \"$1\" = --zsh ] && echo 'fzf_w() { :; }; zle -N fzf_w; bindkey \"^R\" fzf_w; bindkey \"^T\" fzf_w'\n",
+    );
+    exe(
+        &sysbin.join("atuin"),
+        "#!/bin/sh
+echo \"print -r -- atuin-args:$*\"; echo 'atuin_w() { :; }; zle -N atuin_w; bindkey \"^R\" atuin_w'\n",
+    );
+    // goatty's own copy of autosuggestions, laid out like the old tool installer did.
+    let root = sb.dirs.tools_dir().join("autosuggestions/0.7.1/zsh-autosuggestions-0.7.1");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("zsh-autosuggestions.zsh"), "typeset -g fake_suggest=\"${(j:,:)ZSH_AUTOSUGGEST_STRATEGY}\"\n").unwrap();
+    std::fs::create_dir_all(sb.dirs.plugins_dir()).unwrap();
+    std::os::unix::fs::symlink(&root, sb.dirs.plugins_dir().join("autosuggestions")).unwrap();
+
+    let mut settings = no_highlighting();
+    settings.edit_plugin("autosuggestions", |p| {
+        p.settings.insert("strategy".into(), "history".into());
+    });
+    settings.edit_plugin("starship", |p| p.enabled = false);
+    let launch = sb.launch_with(settings, None);
+    let out = pty_session(
+        &sb,
+        &launch,
+        &[
+            "bindkey '^R'; bindkey '^T'",
+            "[[ $PROMPT == *'%F{blue}%~%f'* ]] && p=fallback; print -r -- strat=${(j:,:)ZSH_AUTOSUGGEST_STRATEGY} suggest=$fake_suggest prompt=$p",
+            "goatty-status",
+        ],
+    );
+    assert!(out.contains("atuin-args:init zsh --disable-up-arrow"), "{out}");
+    assert!(out.contains("\"^R\" atuin_w") && out.contains("\"^T\" fzf_w"), "Atuin loads after fzf: {out}");
+    let host_copy = Path::new("/usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh").exists()
+        || Path::new("/usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh").exists();
+    assert!(out.contains("strat=history "), "the plugin's setting reached it: {out}");
+    if !host_copy {
+        assert!(out.contains("suggest=history "), "the managed copy loaded after its options were set: {out}");
+    }
+    assert!(out.contains("prompt=fallback"), "goatty's fallback prompt: {out}");
+    assert!(out.contains("starship\toff"), "{out}");
+    assert!(out.contains("syntax-highlighting\toff"), "{out}");
+    assert!(out.contains("fzf\tok\t") && out.contains("atuin\tok\t"), "{out}");
 }
 
 /// The user's aliases from host.json (#88): defined in a real shell,
@@ -565,8 +640,7 @@ fn user_aliases_in_a_real_shell() {
     let plan = p.plan(&c, &HostSettings::default()).unwrap();
     p.install(&c, &plan.digest, &HostSettings::default()).unwrap();
 
-    let mut settings = HostSettings::default();
-    settings.shell.zsh.syntax_highlighting = false;
+    let mut settings = no_highlighting();
     let alias = |command: &str, group: &str, enabled: bool| goatty_config::UserAlias {
         group: group.into(),
         enabled,
@@ -597,7 +671,7 @@ fn reloads_when_signaled_while_the_prompt_draws() {
     let sb = Sandbox::new(zsh);
     std::fs::create_dir_all(&sb.dirs.config).unwrap();
     std::fs::write(sb.dirs.user_zshrc(), "setopt prompt_subst\nPROMPT='$(/bin/sleep 0.6)'$PROMPT\n").unwrap();
-    let launch = sb.launch(ZshSettings { syntax_highlighting: false, ..Default::default() }, None);
+    let launch = sb.launch_with(no_highlighting(), None);
     let svc = goatty_shell::HostService::new(Launcher::new(Some(sb.dirs.clone()), None), None);
     let mut sh = PtyShell::start(&sb, &launch);
     let pid = sh.pty.pid().unwrap();

@@ -6,7 +6,7 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use goatty_plugin::api::{Changed, Plan};
+use goatty_plugin::api::{Changed, PackageState, Plan};
 use goatty_plugin::manifest::SettingKind;
 use goatty_plugin::{Permission, schema};
 
@@ -109,7 +109,12 @@ pub fn info(svc: &HostService, id: &str) -> Result<()> {
     if let Some(h) = &m.homepage {
         println!("  homepage   {h}");
     }
-    println!("  source     {}{}", c.source, if c.verified { " (signed registry)" } else { " (local, unverified)" });
+    let how = match (c.builtin, c.verified) {
+        (Some(_), _) => " (comes with goatty)",
+        (None, true) => " (signed registry)",
+        (None, false) => " (local, unverified)",
+    };
+    println!("  source     {}{how}", c.source);
     let stored = svc.settings().value.plugins.get(id).map(|p| p.settings.clone()).unwrap_or_default();
     let (values, _) = schema::resolve(m, &stored);
     if !m.settings.is_empty() {
@@ -152,6 +157,7 @@ fn local_installed(svc: &HostService, id: &str) -> Option<Candidate> {
         dir: super::lock::bundle_dir(dirs, id),
         source: e.source.clone(),
         verified: e.verified,
+        builtin: None,
     })
 }
 
@@ -162,7 +168,13 @@ pub fn print_plan(plan: &Plan) {
         Some(_) => format!("Reinstall {} {}", plan.name, plan.version),
         None => format!("Install {} {}", plan.name, plan.version),
     };
-    let from = if plan.verified { format!("registry {:?} (signature checked)", plan.source) } else { plan.source.clone() };
+    let from = if plan.builtin {
+        "goatty (built in)".to_string()
+    } else if plan.verified {
+        format!("registry {:?} (signature checked)", plan.source)
+    } else {
+        plan.source.clone()
+    };
     println!("{verb} from {from}");
     println!("  {}", plan.summary);
     let mut who = vec![format!("by {}", plan.publisher)];
@@ -175,6 +187,7 @@ pub fn print_plan(plan: &Plan) {
         for d in &plan.downloads {
             match &d.system {
                 Some(p) => println!("  {} {}: already installed at {p}; goatty uses that copy", d.package, d.version),
+                None if d.current => println!("  {} {}: goatty's copy is already installed", d.package, d.version),
                 None => {
                     println!("  {} {}  {}  {}", d.package, d.version, size(d.size), d.url);
                     println!("      sha256 {}", d.sha256);
@@ -182,7 +195,13 @@ pub fn print_plan(plan: &Plan) {
             }
         }
         let bins: Vec<&str> = plan.downloads.iter().flat_map(|d| d.bins.iter().map(String::as_str)).collect();
-        println!("  On PATH in goatty shells: {}", bins.join(", "));
+        if !bins.is_empty() {
+            println!("  On PATH in goatty shells: {}", bins.join(", "));
+        }
+        let scripts: Vec<&str> = plan.downloads.iter().filter_map(|d| d.script.as_deref()).collect();
+        if !scripts.is_empty() {
+            println!("  Sourced by goatty shells: {}", scripts.join(", "));
+        }
     }
     println!("\nPermissions:");
     for g in &plan.permissions {
@@ -284,15 +303,23 @@ pub fn uninstall(svc: &HostService, ids: &[String]) -> Result<()> {
 /// `goattyd plugin list`.
 pub fn list(svc: &HostService) -> Result<()> {
     let cat = svc.plugins(|p| Ok(p.catalog(false, &svc.settings().value)))?;
-    if cat.installed.is_empty() {
-        println!("No plugins installed. Browse them with `goattyd plugin search`.");
+    if cat.installed.iter().all(|i| i.builtin) {
+        println!("Only goatty's built-in plugins so far. Browse more with `goattyd plugin search`.");
     }
     for i in &cat.installed {
         let mut notes = Vec::new();
         if !i.enabled {
-            notes.push("disabled".to_string());
+            notes.push(if i.builtin { "off" } else { "disabled" }.to_string());
         }
-        if !i.verified {
+        if i.builtin {
+            notes.push("built in".into());
+            for p in i.packages.iter().filter(|p| p.needs_install()) {
+                notes.push(match &p.state {
+                    PackageState::Managed { version } => format!("{} {version} → {}: goattyd shell install {}", p.id, p.version, i.id),
+                    _ => format!("{} not installed: goattyd shell install {}", p.id, i.id),
+                });
+            }
+        } else if !i.verified {
             notes.push("local, unverified".into());
         }
         if let Some(why) = &i.incompatible {
@@ -302,7 +329,7 @@ pub fn list(svc: &HostService) -> Result<()> {
             notes.push(format!("{u} available"));
         }
         let notes = if notes.is_empty() { String::new() } else { format!("  ({})", notes.join("; ")) };
-        println!("{:<16} {:<8} {:<10} {}{notes}", i.id, i.version, i.source, i.manifest.summary);
+        println!("{:<20} {:<8} {:<10} {}{notes}", i.id, i.version, i.source, i.manifest.summary);
     }
     for issue in &cat.issues {
         println!("\u{26a0} {issue}");
@@ -311,6 +338,9 @@ pub fn list(svc: &HostService) -> Result<()> {
 }
 
 fn installed_manifest(svc: &HostService, id: &str) -> Result<goatty_plugin::Manifest> {
+    if let Some(b) = crate::builtins::get(id) {
+        return Ok(b.manifest().clone());
+    }
     let dirs = svc.launcher.dirs().context("$HOME is not set")?;
     let lock = super::lock::Lock::load(dirs)?;
     let e = lock.plugins.get(id).with_context(|| format!("{id} isn't installed"))?;
@@ -331,7 +361,7 @@ fn print_outcome(o: &crate::service::ApplyOutcome) {
 pub fn set_enabled(svc: &HostService, id: &str, enabled: bool) -> Result<()> {
     installed_manifest(svc, id)?;
     let id = id.to_owned();
-    print_outcome(&svc.edit(|h| h.plugins.entry(id).or_default().enabled = enabled)?);
+    print_outcome(&svc.edit(|h| h.edit_plugin(&id, |p| p.enabled = enabled))?);
     Ok(())
 }
 
@@ -346,11 +376,12 @@ pub fn set(svc: &HostService, id: &str, key: &str, value: Option<&str>) -> Resul
     let v = value.map(|t| schema::parse_input(s, t).map_err(anyhow::Error::msg)).transpose()?;
     let (id, key) = (id.to_owned(), key.to_owned());
     print_outcome(&svc.edit(|h| {
-        let entry = h.plugins.entry(id).or_default();
-        match v {
-            Some(v) => entry.settings.insert(key, v),
-            None => entry.settings.remove(&key),
-        };
+        h.edit_plugin(&id, |entry| {
+            match v {
+                Some(v) => entry.settings.insert(key, v),
+                None => entry.settings.remove(&key),
+            };
+        })
     })?);
     Ok(())
 }
