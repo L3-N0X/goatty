@@ -313,10 +313,11 @@ impl Session {
         }
     }
 
-    pub fn backend_name(&self) -> String {
+    /// The goattyd session id; `None` for local PTYs.
+    pub fn daemon_id(&self) -> Option<u64> {
         match &self.backend {
-            Backend::Local(_) => "local pty".into(),
-            Backend::Daemon { conn, .. } => format!("goattyd via {}", conn.endpoint().label()),
+            Backend::Local(_) => None,
+            Backend::Daemon { id, .. } => Some(id.load(Ordering::Relaxed)),
         }
     }
 

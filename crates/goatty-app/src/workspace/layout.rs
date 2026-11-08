@@ -5,6 +5,12 @@
 //! splits adds a sibling instead of nesting, so three panes side by side are
 //! one split with three parts. Geometry is normalized (the tab's area is
 //! 0..1 in both directions); the workspace scales it to pixels.
+//!
+//! The tree is plain data: saved window layouts (`super::saved`) store it
+//! with session ids as leaves, and [`Node::map_leaves`] turns those back
+//! into panes.
+
+use serde::{Deserialize, Serialize};
 
 /// Id of a pane within a workspace.
 pub type PaneId = u64;
@@ -13,7 +19,8 @@ pub type PaneId = u64;
 const MIN_SHARE: f32 = 0.06;
 const EPS: f32 = 1e-4;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Axis {
     /// Parts side by side (dividers are vertical lines).
     Horizontal,
@@ -104,7 +111,8 @@ pub struct Divider {
     pub at: f32,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Node {
     Leaf(PaneId),
     Split { axis: Axis, children: Vec<Node>, sizes: Vec<f32> },
@@ -202,6 +210,34 @@ impl Node {
         }
         if children.len() == 1 {
             *self = children.pop().expect("one child");
+        }
+    }
+
+    /// The same tree with every leaf renamed by `f`; leaves it returns
+    /// `None` for are left out (their space goes to their siblings). `None`
+    /// when no leaf is left. Also repairs what a hand-edited or damaged
+    /// saved layout may hold: missing, negative or surplus sizes become
+    /// equal shares, empty splits disappear.
+    pub fn map_leaves(&self, f: &mut impl FnMut(PaneId) -> Option<PaneId>) -> Option<Node> {
+        match self {
+            Node::Leaf(id) => f(*id).map(Node::Leaf),
+            Node::Split { axis, children, sizes } => {
+                let valid = sizes.len() == children.len() && sizes.iter().all(|s| s.is_finite() && *s > 0.0);
+                let (mut kept, mut shares) = (Vec::new(), Vec::new());
+                for (i, child) in children.iter().enumerate() {
+                    if let Some(c) = child.map_leaves(f) {
+                        kept.push(c);
+                        shares.push(if valid { sizes[i] } else { 1.0 });
+                    }
+                }
+                if kept.is_empty() {
+                    return None;
+                }
+                let total: f32 = shares.iter().sum();
+                let mut node = Node::Split { axis: *axis, children: kept, sizes: shares.into_iter().map(|s| s / total).collect() };
+                node.normalize();
+                Some(node)
+            }
         }
     }
 
@@ -455,6 +491,39 @@ mod tests {
         t.resize(1, Direction::Right, 5.0);
         let Node::Split { sizes, .. } = &t else { panic!() };
         assert!(close(sizes[1], MIN_SHARE));
+    }
+
+    #[test]
+    fn mapping_leaves_renames_drops_and_repairs() {
+        // 1 | (2 / 3)
+        let mut t = Node::Leaf(1);
+        t.split(1, 2, Direction::Right);
+        t.split(2, 3, Direction::Down);
+        assert_eq!(t.map_leaves(&mut |id| Some(id * 10)).unwrap().leaves(), [10, 20, 30]);
+        // Without 2, 3 takes the whole right half: 1 | 3.
+        let m = t.map_leaves(&mut |id| (id != 2).then_some(id)).unwrap();
+        assert_eq!(m, Node::Split { axis: Axis::Horizontal, children: vec![Node::Leaf(1), Node::Leaf(3)], sizes: vec![0.5, 0.5] });
+        // Without 1, the vertical split is all that's left.
+        let m = t.map_leaves(&mut |id| (id != 1).then_some(id)).unwrap();
+        assert!(matches!(&m, Node::Split { axis: Axis::Vertical, children, .. } if children.len() == 2));
+        assert_eq!(t.map_leaves(&mut |id| (id == 3).then_some(id)), Some(Node::Leaf(3)));
+        assert_eq!(t.map_leaves(&mut |_| None), None);
+        // Bad sizes become equal shares.
+        let bad = Node::Split { axis: Axis::Horizontal, children: vec![Node::Leaf(1), Node::Leaf(2)], sizes: vec![f32::NAN] };
+        let Some(Node::Split { sizes, .. }) = bad.map_leaves(&mut Some) else { panic!() };
+        assert_eq!(sizes, [0.5, 0.5]);
+        let empty = Node::Split { axis: Axis::Vertical, children: vec![], sizes: vec![] };
+        assert_eq!(empty.map_leaves(&mut Some), None);
+    }
+
+    #[test]
+    fn trees_round_trip_through_json() {
+        let mut t = Node::Leaf(1);
+        t.split(1, 2, Direction::Right);
+        t.split(2, 3, Direction::Down);
+        let json = serde_json::to_string(&t).unwrap();
+        assert_eq!(serde_json::from_str::<Node>(&json).unwrap(), t);
+        assert!(json.contains("\"horizontal\""), "{json}");
     }
 
     #[test]

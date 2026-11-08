@@ -8,12 +8,14 @@
 //! * [`server`]: socket setup, accept loop, session registry,
 //! * `client`: one connection's protocol loop,
 //! * `session`: PTY + terminal + subscribers with flow control,
+//! * `layouts`: each window's tabs and splits, restored by the next window,
 //! * `settings`: host settings, generations and rollback over the protocol,
 //! * [`proxy`]: stdio ⇄ socket relay for remote transports.
 //!
 //! The `goattyd` binary is a thin CLI over this crate.
 
 mod client;
+mod layouts;
 pub mod proxy;
 pub mod server;
 mod session;

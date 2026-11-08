@@ -1,26 +1,31 @@
 //! The root view of a window: tabs, each holding a split layout of
 //! terminal panes, plus everything window-level: the title (the focused
 //! pane's), closing when the last shell exits, the command palette overlay,
-//! paste confirmations (`crate::paste_confirm`) and the window's toasts
-//! (`crate::toast`).
+//! paste and close confirmations (`crate::paste_confirm`,
+//! `crate::close_confirm`) and the window's toasts (`crate::toast`).
 //!
 //! - `layout`: the split tree of a tab (pure, unit-tested).
 //! - `tab_bar`: the tab strip in its two styles (`tabs.style`).
 //! - `icons`: Nerd Font icons for the program running in a tab.
+//! - `saved`: the layout goattyd keeps for the window, so the next
+//!   `goatty` restores every tab and split (#118).
 //!
 //! New panes are new sessions from the window's [`Spawner`]: another
 //! `create` on the same goattyd connection (or another local PTY), started
-//! in the focused pane's directory. Closing a pane ends its shell; closing
-//! the window only detaches (the daemon keeps the sessions).
+//! in the focused pane's directory. Closing a pane ends its shell (after
+//! asking, when a program runs in it); closing the window only detaches
+//! (the daemon keeps the sessions).
 
 mod icons;
 mod layout;
+pub mod saved;
 mod tab_bar;
 
 use std::path::Path;
 use std::sync::Arc;
 
 use goatty_config::TabBarShow;
+use goatty_proto::LayoutId;
 use goatty_term::TermSize;
 use gpui::{
     AppContext, Context, DragMoveEvent, Entity, Focusable, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, Styled,
@@ -28,6 +33,7 @@ use gpui::{
 };
 
 use crate::actions::*;
+use crate::close_confirm::{CloseConfirm, CloseConfirmEvent, Closing};
 use crate::command_palette::{CommandPalette, PaletteEvent};
 use crate::paste_confirm::{PasteConfirm, PasteConfirmEvent};
 use crate::session::{Session, Spawner};
@@ -38,6 +44,7 @@ use crate::ui::style::Ui;
 use crate::ui::text_input::{TextInput, TextInputEvent};
 use icons::NerdFont;
 use layout::{Axis, Direction, Node, PaneId, Rect};
+use saved::{SavedTab, SavedWorkspace, Startup};
 
 /// Width of the line between panes.
 const DIVIDER: f32 = 1.0;
@@ -85,6 +92,14 @@ enum Placement {
     },
 }
 
+/// What a close confirmation is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloseTarget {
+    Pane(PaneId),
+    /// By tab id.
+    Tab(u64),
+}
+
 /// A tab being renamed in place.
 struct Rename {
     tab: u64,
@@ -118,12 +133,16 @@ pub struct Workspace {
     rename: Option<Rename>,
     palette: Option<(Entity<CommandPalette>, Subscription)>,
     paste: Option<(Entity<PasteConfirm>, PaneId, Subscription)>,
+    close: Option<(Entity<CloseConfirm>, CloseTarget, Subscription)>,
     toasts: Entity<ToastLayer>,
+    /// The layout goattyd keeps for this window, and what was last sent.
+    layout_id: LayoutId,
+    saved_json: String,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Workspace {
-    pub fn new(session: Arc<Session>, spawner: Spawner, window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
+    pub fn new(startup: Startup, spawner: Spawner, window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
         // The desktop's light/dark switch (themes can follow it).
         let appearance = cx.observe_window_appearance(window, |_, window, cx| {
             crate::settings::AppSettings::set_system_dark(cx, crate::settings::is_dark(window.appearance()));
@@ -143,12 +162,68 @@ impl Workspace {
             rename: None,
             palette: None,
             paste: None,
+            close: None,
             toasts,
+            layout_id: saved::new_id(),
+            saved_json: String::new(),
             _subscriptions: vec![appearance, settings],
         };
         this.refresh_icon_font(cx);
-        this.insert_pane(session, Placement::NewTab, window, cx);
+        match startup {
+            Startup::Session(session) => this.insert_pane(session, Placement::NewTab, window, cx),
+            Startup::Restore(r) => this.restore(r, window, cx),
+        }
         this
+    }
+
+    /// Rebuild the tabs of a saved layout from its attached sessions.
+    fn restore(&mut self, r: saved::Restored, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.layout_id = r.id;
+        let mut sessions = r.sessions;
+        for t in r.tabs {
+            let mut panes = Vec::new();
+            let mut pane_of = std::collections::HashMap::new();
+            let tree = t.tree.map_leaves(&mut |session_id| {
+                let session = sessions.remove(&session_id)?;
+                let pane = self.make_pane(session, window, cx);
+                pane_of.insert(session_id, pane.id);
+                let id = pane.id;
+                panes.push(pane);
+                Some(id)
+            });
+            let Some(tree) = tree else { continue };
+            let focused = pane_of.get(&t.focused).copied().unwrap_or(panes[0].id);
+            let id = self.next_id();
+            self.tabs.push(Tab { id, tree, panes, focused, zoomed: t.zoomed, name: t.name });
+        }
+        self.activate(r.active.min(self.tabs.len().saturating_sub(1)), window, cx);
+    }
+
+    /// Tell goattyd what the window looks like now (sent only when it
+    /// changed; local PTYs have nothing to save).
+    fn save_layout(&mut self, cx: &mut Context<'_, Self>) {
+        let Spawner::Daemon(conn) = &self.spawner else { return };
+        let mut sessions = Vec::new();
+        let tabs = self
+            .tabs
+            .iter()
+            .filter_map(|t| {
+                let session_of = |id: PaneId| t.pane(id).and_then(|p| p.view.read(cx).session().daemon_id());
+                let tree = t.tree.map_leaves(&mut |id| session_of(id))?;
+                sessions.extend(tree.leaves());
+                let focused = session_of(t.focused).unwrap_or_else(|| tree.leaves()[0]);
+                Some(SavedTab { name: t.name.clone(), tree, focused, zoomed: t.zoomed })
+            })
+            .collect();
+        let saved = SavedWorkspace { version: saved::VERSION, tabs, active: self.active };
+        let json = match serde_json::to_string(&saved) {
+            Ok(j) => j,
+            Err(e) => return log::warn!("saving the layout: {e}"),
+        };
+        if json != self.saved_json {
+            conn.save_layout(self.layout_id, sessions, json.clone());
+            self.saved_json = json;
+        }
     }
 
     fn refresh_icon_font(&mut self, cx: &mut Context<'_, Self>) {
@@ -220,6 +295,7 @@ impl Workspace {
         }
         self.active = index;
         self.update_window_title(window, cx);
+        self.save_layout(cx);
         cx.notify();
     }
 
@@ -231,6 +307,7 @@ impl Workspace {
         self.active = index;
         self.focus_active(window, cx);
         self.update_window_title(window, cx);
+        self.save_layout(cx);
         cx.notify();
     }
 
@@ -263,14 +340,19 @@ impl Workspace {
         .detach();
     }
 
-    fn insert_pane(&mut self, session: Arc<Session>, placement: Placement, window: &mut Window, cx: &mut Context<'_, Self>) {
+    fn make_pane(&mut self, session: Arc<Session>, window: &mut Window, cx: &mut Context<'_, Self>) -> Pane {
         let id = self.next_id();
         let view = cx.new(|cx| TerminalView::new(session, window, cx));
         let events =
             cx.subscribe_in(&view, window, move |this, _, ev: &TerminalEvent, window, cx| this.on_terminal_event(id, ev, window, cx));
         let focus = view.focus_handle(cx);
         let focused = cx.on_focus(&focus, window, move |this, window, cx| this.pane_focused(id, window, cx));
-        let pane = Pane { id, view, _subscriptions: [events, focused] };
+        Pane { id, view, _subscriptions: [events, focused] }
+    }
+
+    fn insert_pane(&mut self, session: Arc<Session>, placement: Placement, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let pane = self.make_pane(session, window, cx);
+        let id = pane.id;
 
         // A split whose pane went away while the shell started opens a tab.
         let target = match placement {
@@ -314,6 +396,9 @@ impl Workspace {
         if self.paste.as_ref().is_some_and(|(_, pane, _)| *pane == id) {
             self.paste = None;
         }
+        if self.close.as_ref().is_some_and(|(_, target, _)| *target == CloseTarget::Pane(id)) {
+            self.close = None;
+        }
         if tab.focused == id {
             let left = tab.tree.leaves();
             tab.focused = left[pos.saturating_sub(1).min(left.len() - 1)];
@@ -323,6 +408,7 @@ impl Workspace {
             self.focus_active(window, cx);
             self.update_window_title(window, cx);
         }
+        self.save_layout(cx);
         cx.notify();
     }
 
@@ -334,8 +420,17 @@ impl Workspace {
         if self.paste.as_ref().is_some_and(|(_, pane, _)| tab.pane(*pane).is_some()) {
             self.paste = None;
         }
+        if self.close.as_ref().is_some_and(|(_, target, _)| match *target {
+            CloseTarget::Tab(t) => t == tab.id,
+            CloseTarget::Pane(p) => tab.pane(p).is_some(),
+        }) {
+            self.close = None;
+        }
         if self.tabs.is_empty() {
             log::info!("last session ended");
+            if let Spawner::Daemon(conn) = &self.spawner {
+                conn.save_layout(self.layout_id, Vec::new(), String::new());
+            }
             // The last window closing quits the app (see `app::run`).
             window.remove_window();
             return;
@@ -347,28 +442,81 @@ impl Workspace {
     }
 
     /// End the shells of `panes` (off the UI thread: the daemon answers).
-    fn kill_sessions(&self, panes: Vec<Arc<Session>>, cx: &mut Context<'_, Self>) {
-        cx.background_executor()
-            .spawn(async move {
-                for s in panes {
-                    s.kill();
-                }
-            })
-            .detach();
+    fn kill_sessions(&self, panes: Vec<Arc<Session>>, cx: &mut Context<'_, Self>) -> gpui::Task<()> {
+        cx.background_executor().spawn(async move {
+            for s in panes {
+                s.kill();
+            }
+        })
     }
 
+    /// Close pane `id`, asking first when a program runs in it.
     fn close_pane_by_id(&mut self, id: PaneId, window: &mut Window, cx: &mut Context<'_, Self>) {
         let Some((_, pane)) = self.find_pane(id) else { return };
-        let session = pane.view.read(cx).session().clone();
-        self.kill_sessions(vec![session], cx);
-        self.remove_pane(id, window, cx);
+        let busy = busy_programs(std::iter::once(pane), cx);
+        if self.should_confirm(&busy, cx) {
+            self.confirm_close(CloseTarget::Pane(id), Closing::Pane, busy, window, cx);
+        } else {
+            self.force_close(CloseTarget::Pane(id), window, cx);
+        }
     }
 
+    /// Close the tab at `index`, asking first when a program runs in it.
     fn close_tab_at(&mut self, index: usize, window: &mut Window, cx: &mut Context<'_, Self>) {
         let Some(tab) = self.tabs.get(index) else { return };
-        let sessions = tab.panes.iter().map(|p| p.view.read(cx).session().clone()).collect();
-        self.kill_sessions(sessions, cx);
-        self.remove_tab(index, window, cx);
+        let (id, panes) = (tab.id, tab.panes.len());
+        let busy = busy_programs(tab.panes.iter(), cx);
+        if self.should_confirm(&busy, cx) {
+            self.confirm_close(CloseTarget::Tab(id), Closing::Tab { panes }, busy, window, cx);
+        } else {
+            self.force_close(CloseTarget::Tab(id), window, cx);
+        }
+    }
+
+    fn should_confirm(&self, busy: &[String], cx: &gpui::App) -> bool {
+        !busy.is_empty() && cx.global::<AppSettings>().client.panes.confirm_close
+    }
+
+    /// End the shells of `target` and take it out.
+    fn force_close(&mut self, target: CloseTarget, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let session_of = |p: &Pane| p.view.read(cx).session().clone();
+        let (sessions, last): (Vec<_>, bool) = match target {
+            CloseTarget::Pane(id) => {
+                let Some((index, pane)) = self.find_pane(id) else { return };
+                (vec![session_of(pane)], self.tabs.len() == 1 && self.tabs[index].panes.len() == 1)
+            }
+            CloseTarget::Tab(id) => {
+                let Some(index) = self.tab_index(id) else { return };
+                (self.tabs[index].panes.iter().map(session_of).collect(), self.tabs.len() == 1)
+            }
+        };
+        let kill = self.kill_sessions(sessions, cx);
+        if !last {
+            kill.detach();
+            self.remove_target(target, window, cx);
+            return;
+        }
+        // Closing the window quits the app: let goattyd hear about it first
+        // (the layout goes before the kills, whose replies prove both arrived).
+        if let Spawner::Daemon(conn) = &self.spawner {
+            conn.save_layout(self.layout_id, Vec::new(), String::new());
+        }
+        cx.spawn_in(window, async move |this, cx| {
+            kill.await;
+            let _ = this.update_in(cx, |this, window, cx| this.remove_target(target, window, cx));
+        })
+        .detach();
+    }
+
+    fn remove_target(&mut self, target: CloseTarget, window: &mut Window, cx: &mut Context<'_, Self>) {
+        match target {
+            CloseTarget::Pane(id) => self.remove_pane(id, window, cx),
+            CloseTarget::Tab(id) => {
+                if let Some(index) = self.tab_index(id) {
+                    self.remove_tab(index, window, cx);
+                }
+            }
+        }
     }
 
     fn on_terminal_event(&mut self, id: PaneId, ev: &TerminalEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -441,6 +589,7 @@ impl Workspace {
         }
         self.focus_active(window, cx);
         self.update_window_title(window, cx);
+        self.save_layout(cx);
         cx.notify();
     }
 
@@ -529,6 +678,7 @@ impl Workspace {
             cx.propagate();
             return;
         }
+        self.save_layout(cx);
         cx.notify();
     }
 
@@ -539,12 +689,14 @@ impl Workspace {
             return;
         }
         tab.zoomed = !tab.zoomed;
+        self.save_layout(cx);
         cx.notify();
     }
 
     fn equalize_panes(&mut self, _: &EqualizePanes, _window: &mut Window, cx: &mut Context<'_, Self>) {
         if let Some(tab) = self.active_tab_mut() {
             tab.tree.equalize();
+            self.save_layout(cx);
             cx.notify();
         }
     }
@@ -566,10 +718,27 @@ impl Workspace {
         }
         let fraction = (pos / total - start) / len;
         self.tabs[i].tree.set_divider(&d.path, d.index, fraction);
+        self.save_layout(cx);
         cx.notify();
     }
 
     // ---- overlays -----------------------------------------------------------------
+
+    fn confirm_close(&mut self, target: CloseTarget, closing: Closing, busy: Vec<String>, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.close_palette(window, cx);
+        let dialog = cx.new(|cx| CloseConfirm::new(closing, busy, window, cx));
+        let sub = cx.subscribe_in(&dialog, window, |this, _, ev: &CloseConfirmEvent, window, cx| {
+            let CloseConfirmEvent::Done(close) = *ev;
+            let Some((_, target, _)) = this.close.take() else { return };
+            if close {
+                this.force_close(target, window, cx);
+            }
+            this.focus_active(window, cx);
+            cx.notify();
+        });
+        self.close = Some((dialog, target, sub));
+        cx.notify();
+    }
 
     fn confirm_paste(&mut self, pane: PaneId, request: PasteRequest, window: &mut Window, cx: &mut Context<'_, Self>) {
         self.close_palette(window, cx);
@@ -685,6 +854,17 @@ impl Workspace {
     }
 }
 
+/// A dialog centered over the window, which it dims.
+fn modal(dialog: impl IntoElement) -> impl IntoElement {
+    div().absolute().inset_0().bg(gpui::black().opacity(0.35)).flex().items_center().justify_center().px_4().child(dialog)
+}
+
+/// The programs running in `panes`, other than shells (one entry per busy
+/// pane). Panes whose program isn't known yet count as idle.
+fn busy_programs<'a>(panes: impl Iterator<Item = &'a Pane>, cx: &gpui::App) -> Vec<String> {
+    panes.filter_map(|p| p.view.read(cx).process().filter(|name| !icons::is_shell(name)).map(str::to_string)).collect()
+}
+
 /// What a pane is called when its tab has no name: the application's
 /// title, else the running program, else the directory's name.
 fn pane_label(view: &TerminalView) -> String {
@@ -753,19 +933,8 @@ impl Render for Workspace {
             .when_some(self.palette.as_ref(), |d, (palette, _)| {
                 d.child(div().absolute().top(px(48.)).left_0().right_0().px_4().flex().justify_center().child(palette.clone()))
             })
-            .when_some(self.paste.as_ref(), |d, (dialog, _, _)| {
-                d.child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .bg(gpui::black().opacity(0.35))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .px_4()
-                        .child(dialog.clone()),
-                )
-            })
+            .when_some(self.paste.as_ref(), |d, (dialog, _, _)| d.child(modal(dialog.clone())))
+            .when_some(self.close.as_ref(), |d, (dialog, _, _)| d.child(modal(dialog.clone())))
     }
 }
 

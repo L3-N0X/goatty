@@ -116,7 +116,8 @@ impl Default for TerminalSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum OnLaunch {
-    /// Reattach the newest detached session, else start one.
+    /// Restore the last closed window's tabs and splits (else reattach the
+    /// newest detached session, else start one).
     #[default]
     Reattach,
     /// Always start a new session.
@@ -171,6 +172,9 @@ impl Default for TabSettings {
 pub struct PaneSettings {
     /// How much panes without focus fade (0 = not at all), when a tab is split.
     pub dim_inactive: f32,
+    /// Ask before closing a pane or tab whose shell is running a program
+    /// (a build, an editor, an SSH session).
+    pub confirm_close: bool,
 }
 
 impl PaneSettings {
@@ -179,7 +183,7 @@ impl PaneSettings {
 
 impl Default for PaneSettings {
     fn default() -> Self {
-        Self { dim_inactive: 0.2 }
+        Self { dim_inactive: 0.2, confirm_close: true }
     }
 }
 

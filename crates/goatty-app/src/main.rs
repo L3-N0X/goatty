@@ -7,6 +7,7 @@
 mod actions;
 mod app;
 mod cli;
+mod close_confirm;
 mod command_palette;
 mod commands;
 mod paste_confirm;
@@ -28,7 +29,8 @@ use goatty_shell::HostService;
 use goatty_term::TermSize;
 
 use crate::cli::Cli;
-use crate::session::Session;
+use crate::session::{AttachMode, Session};
+use crate::workspace::saved::{self, Startup};
 
 const CLIENT: &str = concat!("goatty ", env!("CARGO_PKG_VERSION"));
 
@@ -47,25 +49,39 @@ fn main() -> Result<()> {
 
     // Initial size is a guess; the terminal element resizes on first layout.
     let initial = TermSize::new(100, 30);
-    let (session, link) = match cli.endpoint()? {
+    let (startup, link) = match cli.endpoint()? {
         None => {
             // No daemon: this process owns the shell and the host settings.
             let daemon = std::env::current_exe().ok().map(|e| e.with_file_name("goattyd")).filter(|d| d.exists());
             let host = Arc::new(HostService::from_env(daemon));
-            (Session::local(initial, &host, None)?, settings_window::HostLink::Local(host))
+            log::info!("backend: local pty");
+            (Startup::Session(Session::local(initial, &host, None)?), settings_window::HostLink::Local(host))
         }
         Some(endpoint) => {
             let conn = Connection::open(endpoint, CLIENT)?;
-            let session = Session::daemon(conn.clone(), initial, cli.attach_mode(on_launch == OnLaunch::New), None)?;
-            (session, settings_window::HostLink::Daemon(conn))
+            log::info!("backend: goattyd via {}", conn.endpoint().label());
+            let mode = cli.attach_mode(on_launch == OnLaunch::New);
+            // Reattaching brings back the last window's tabs and splits;
+            // without a saved layout, the newest detached session.
+            let restored = match mode {
+                AttachMode::Auto => saved::restore(&conn, initial).unwrap_or_else(|e| {
+                    log::warn!("restoring the last window: {e:#}");
+                    None
+                }),
+                _ => None,
+            };
+            let startup = match restored {
+                Some(r) => Startup::Restore(r),
+                None => Startup::Session(Session::daemon(conn.clone(), initial, mode, None)?),
+            };
+            (startup, settings_window::HostLink::Daemon(conn))
         }
     };
-    log::info!("backend: {}", session.backend_name());
 
     let spawner = match &link {
         settings_window::HostLink::Local(host) => session::Spawner::Local(host.clone()),
         settings_window::HostLink::Daemon(conn) => session::Spawner::Daemon(conn.clone()),
     };
-    app::run(session, spawner, link, cli.settings.clone());
+    app::run(startup, spawner, link, cli.settings.clone());
     Ok(())
 }

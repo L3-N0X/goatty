@@ -2,11 +2,14 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 pub type SessionId = u64;
 /// Client-chosen correlation id for request/response pairs.
 pub type ReqId = u32;
+/// Client-chosen id of a window layout (random, so windows on different
+/// machines don't collide).
+pub type LayoutId = u64;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WinSize {
@@ -140,6 +143,31 @@ pub enum ClientMsg {
         req: ReqId,
         request: String,
     },
+    /// v7: remember a window's layout (tabs and splits) so a later window
+    /// can restore it. `json` is the client's own format, opaque to the
+    /// daemon; `sessions` are the sessions it shows. Saving also claims the
+    /// layout for this connection. No `sessions`: forget it. No reply.
+    SaveLayout {
+        id: LayoutId,
+        sessions: Vec<SessionId>,
+        json: String,
+    },
+    /// v7: take over the most recently saved layout that no connection
+    /// holds and that still shows a running session. One window gets it;
+    /// the next one gets the next layout or none. Reply: `Layout`.
+    ClaimLayout {
+        req: ReqId,
+    },
+}
+
+/// A saved window layout (see `ClientMsg::SaveLayout`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LayoutInfo {
+    pub id: LayoutId,
+    pub json: String,
+    /// The layout's sessions that are still running.
+    pub sessions: Vec<SessionId>,
+    pub saved_unix: u64,
 }
 
 /// One changed file of the generated shell configuration.
@@ -267,6 +295,11 @@ pub enum ServerMsg {
         req: ReqId,
         reply: String,
     },
+    /// v7: reply to `ClaimLayout`.
+    Layout {
+        req: ReqId,
+        layout: Option<LayoutInfo>,
+    },
 }
 
 impl ServerMsg {
@@ -280,7 +313,8 @@ impl ServerMsg {
             | ServerMsg::HostSettingsApplied { req, .. }
             | ServerMsg::Generations { req, .. }
             | ServerMsg::ShellsReloaded { req, .. }
-            | ServerMsg::Plugin { req, .. } => Some(*req),
+            | ServerMsg::Plugin { req, .. }
+            | ServerMsg::Layout { req, .. } => Some(*req),
             ServerMsg::Error { req, .. } => *req,
             _ => None,
         }

@@ -1,18 +1,17 @@
 //! GPUI bootstrap: settings, key bindings, the main window.
 
-use std::sync::Arc;
-
 use gpui::{App, AppContext, Bounds, WindowBounds, WindowOptions, px, size};
 
 use crate::actions::{OpenSettings, ReloadShells};
 use crate::command_palette;
-use crate::session::{Session, Spawner};
+use crate::session::Spawner;
 use crate::settings::AppSettings;
 use crate::settings_window::{self, HostLink};
 use crate::toast::{self, Toast};
 use crate::workspace::Workspace;
+use crate::workspace::saved::Startup;
 
-pub fn run(session: Arc<Session>, spawner: Spawner, link: HostLink, open_settings: Option<String>) {
+pub fn run(startup: Startup, spawner: Spawner, link: HostLink, open_settings: Option<String>) {
     gpui_platform::application().with_assets(crate::ui::icons::Assets).run(move |cx: &mut App| {
         AppSettings::init(cx);
         settings_window::set_host_link(cx, Some(link));
@@ -29,7 +28,7 @@ pub fn run(session: Arc<Session>, spawner: Spawner, link: HostLink, open_setting
             },
             |window, cx| {
                 window.set_window_title("goatty");
-                cx.new(|cx| Workspace::new(session, spawner, window, cx))
+                cx.new(|cx| Workspace::new(startup, spawner, window, cx))
             },
         )
         .expect("open window");

@@ -16,6 +16,7 @@ use goatty_term::pty::{Pty, ShellCommand};
 use goatty_term::{Palette, Terminal};
 use parking_lot::Mutex;
 
+use crate::layouts::Layouts;
 use crate::session::{Session, pump_output, to_size};
 
 /// The session registry shared by every connection.
@@ -27,6 +28,8 @@ pub(crate) struct Daemon {
     /// Removed on shutdown.
     pub(crate) socket: PathBuf,
     pub(crate) sessions: Mutex<HashMap<SessionId, Arc<Session>>>,
+    /// The windows' tabs and splits.
+    pub(crate) layouts: Mutex<Layouts>,
     next_session: AtomicU64,
     pub(crate) next_conn: AtomicU64,
 }
@@ -38,6 +41,7 @@ impl Daemon {
             host: HostService::from_env(std::env::current_exe().ok()),
             socket,
             sessions: Mutex::default(),
+            layouts: Mutex::default(),
             next_session: AtomicU64::new(0),
             next_conn: AtomicU64::new(0),
         }
@@ -115,6 +119,12 @@ impl Daemon {
         }
         self.sessions.lock().insert(id, session.clone());
         Ok(session)
+    }
+
+    /// Give connection `conn` the newest free window layout (see `Layouts`).
+    pub(crate) fn claim_layout(&self, conn: u64) -> Option<goatty_proto::LayoutInfo> {
+        let live: std::collections::HashSet<SessionId> = self.sessions.lock().keys().copied().collect();
+        self.layouts.lock().claim(conn, |s| live.contains(&s))
     }
 
     pub(crate) fn list(&self) -> Vec<SessionInfo> {

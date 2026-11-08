@@ -5,7 +5,8 @@
 //! * a client that doesn't keep up is skipped forward with a Resync instead
 //!   of buffering without bound,
 //! * the remote path (`goattyd proxy` over stdio, exactly what ssh runs)
-//!   works, including transparent reconnect + reattach.
+//!   works, including transparent reconnect + reattach,
+//! * a window's saved layout goes to exactly one later window.
 
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -363,4 +364,57 @@ fn client_over_proxy_reconnects_and_reattaches() {
     conn.input(id, b"echo still-$MARK\r");
     sink.wait_for("still-proxied2");
     assert_eq!(session_info(&d.sock, id).pid, pid, "same shell process");
+}
+
+/// Wait until `f` holds.
+fn eventually(what: &str, mut f: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !f() {
+        assert!(Instant::now() < deadline, "timed out: {what}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn window_layouts_go_to_one_later_window() {
+    let d = start_daemon();
+    let a = Connection::open(proxy_endpoint(&d), "window a").unwrap();
+    let sink = Arc::new(TestSink::default());
+    let (s1, s2, s3) = (
+        a.create(SIZE, None, sink.clone()).unwrap(),
+        a.create(SIZE, None, Arc::new(TestSink::default())).unwrap(),
+        a.create(SIZE, None, Arc::new(TestSink::default())).unwrap(),
+    );
+    a.save_layout(7, vec![s1, s2, s3], "{\"tabs\":3}".into());
+    // Window A still holds it, also across a reconnect (saved again).
+    let b = Connection::open(proxy_endpoint(&d), "window b").unwrap();
+    assert_eq!(b.claim_layout().unwrap(), None);
+    a.force_disconnect();
+    eventually("window a reconnects", || sink.events.lock().iter().any(|e| e == "Reconnected"));
+    // The layout is saved right after the reattach requests.
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(b.claim_layout().unwrap(), None, "the reconnected window saved its layout again");
+
+    // One session ends, then window A closes: the layout is free.
+    a.kill(s2).unwrap();
+    eventually("session ends", || !Control::connect(&d.sock, "t").unwrap().list_sessions().unwrap().iter().any(|s| s.id == s2));
+    drop(a);
+    let mut got = None;
+    eventually("window b gets the layout", || {
+        got = b.claim_layout().unwrap();
+        got.is_some()
+    });
+    let got = got.unwrap();
+    assert_eq!((got.id, got.json.as_str(), got.sessions), (7, "{\"tabs\":3}", vec![s1, s3]));
+    // A third window doesn't get it too.
+    let c = Connection::open(proxy_endpoint(&d), "window c").unwrap();
+    assert_eq!(c.claim_layout().unwrap(), None);
+
+    // Saving without sessions forgets it.
+    b.save_layout(7, Vec::new(), String::new());
+    // Requests are handled in order: once this is answered, the save was too.
+    assert_eq!(b.claim_layout().unwrap(), None);
+    drop(b);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(c.claim_layout().unwrap(), None);
 }

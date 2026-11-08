@@ -1001,10 +1001,10 @@ impl SettingsWindow {
             .child(row(
                 ui,
                 "New window",
-                Some("Sessions keep running when you close the window; goatty can pick up where you left off"),
+                Some("Sessions keep running when you close the window; goatty can bring back its tabs and splits"),
                 segmented(
                     "on-launch",
-                    &[(OnLaunch::Reattach, "Reattach the newest session"), (OnLaunch::New, "Start a new session")],
+                    &[(OnLaunch::Reattach, "Restore the last window"), (OnLaunch::New, "Start a new session")],
                     &s.workspace.on_launch,
                     ui,
                     |v, _, cx| AppSettings::update(cx, |s| s.workspace.on_launch = v),
@@ -1059,6 +1059,12 @@ impl SettingsWindow {
                     client(|s| s.panes.dim_inactive = ((s.panes.dim_inactive * 10.0).round() - 1.0).max(0.0) / 10.0),
                     client(|s| s.panes.dim_inactive = (((s.panes.dim_inactive * 10.0).round() + 1.0) / 10.0).min(PaneSettings::MAX_DIM)),
                 ),
+            ))
+            .child(row(
+                ui,
+                "Ask before closing a running program",
+                Some("When a pane or tab you close still runs something other than its shell (a build, an editor, ssh)"),
+                toggle("panes-confirm-close", s.panes.confirm_close, ui, client(|s| s.panes.confirm_close = !s.panes.confirm_close)),
             ))
             .child(note(
                 ui,
