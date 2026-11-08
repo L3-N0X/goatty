@@ -41,7 +41,7 @@ To try reattaching: run something in goatty, close the window, start `goatty` ag
 
 Environment variables: `GOATTY_FONT`, `GOATTY_FONT_SIZE`, `GOATTY_SHELL`, `GOATTY_SOCKET`, `GOATTY_STATS=1` (prints per-second frame stats to stderr), `GOATTY_RENDER=shaped` (ligature-capable line shaping instead of the glyph cache).
 
-Keys: `Ctrl+C` copies when text is selected and sends an interrupt otherwise. `Ctrl+V` / `Ctrl+Shift+V` paste, `Ctrl+Shift+C` copies, `Shift+PgUp/PgDn` scroll back, `Ctrl+Shift+=/-` change the font size.
+Keys: `Ctrl+C` copies when text is selected and sends an interrupt otherwise. `Ctrl+V` / `Ctrl+Shift+V` paste, `Ctrl+Shift+C` copies, `Shift+PgUp/PgDn` scroll back, `Ctrl` with `+`/`-` (with or without Shift, on US and German layouts) changes the font size, `Ctrl+0` resets it.
 
 ## Test & benchmark
 

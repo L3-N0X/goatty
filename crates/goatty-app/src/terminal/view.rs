@@ -52,7 +52,7 @@ pub struct TerminalView {
     font: Font,
     /// Settings size plus `zoom`.
     font_size: Pixels,
-    /// Ctrl+Shift+= / - on top of the settings size, until reset.
+    /// Ctrl with +/- on top of the settings size, until reset.
     zoom: f32,
     line_height: f32,
     padding: Pixels,

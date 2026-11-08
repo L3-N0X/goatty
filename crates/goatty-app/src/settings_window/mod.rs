@@ -175,6 +175,9 @@ pub struct SettingsWindow {
     theme_name: Entity<TextInput>,
     /// Shortcut being recorded: the next keystroke binds to this action.
     recording: Option<&'static str>,
+    /// What the last recorded shortcut replaced or takes from the shell:
+    /// (action it was recorded for, message).
+    shortcut_note: Option<(&'static str, String)>,
     _subs: Vec<Subscription>,
 }
 
@@ -240,6 +243,7 @@ impl SettingsWindow {
             color_save_gen: 0,
             theme_name,
             recording: None,
+            shortcut_note: None,
             _subs: subs,
         };
         this.load_host(cx);
