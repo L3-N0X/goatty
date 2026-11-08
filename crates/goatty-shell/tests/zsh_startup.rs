@@ -539,3 +539,34 @@ shell-code = "defines the greet function the plugin is about"
     assert!(matches!(state("plugin:meow"), Some(State::Ok(d)) if d.ends_with("/cat")), "{status:?}");
     assert_eq!(state("plugin:ghost"), Some(State::Missing));
 }
+
+/// A reload request that arrives while the prompt is being drawn (after
+/// precmd, before the line editor reads input) must still reload an idle
+/// shell right away, not wait for the next command. The user's additions
+/// slow the prompt down so the signal reliably lands in that window.
+#[test]
+fn reloads_when_signaled_while_the_prompt_draws() {
+    let Some(zsh) = zsh() else { return };
+    let sb = Sandbox::new(zsh);
+    std::fs::create_dir_all(&sb.dirs.config).unwrap();
+    std::fs::write(sb.dirs.user_zshrc(), "setopt prompt_subst\nPROMPT='$(/bin/sleep 0.6)'$PROMPT\n").unwrap();
+    let launch = sb.launch(ZshSettings { syntax_highlighting: false, ..Default::default() }, None);
+    let svc = goatty_shell::HostService::new(Launcher::new(Some(sb.dirs.clone()), None), None);
+    let mut sh = PtyShell::start(&sb, &launch);
+    let pid = sh.pty.pid().unwrap();
+    svc.track_shell(pid);
+
+    sh.run("x=1");
+    let n = sh.prompts();
+    sh.pty.write(b"print -r -- drawing-next\r").unwrap();
+    sh.wait_for(b"drawing-next\r\n");
+    // The next prompt is now being drawn (its $(sleep) runs for 0.6 s).
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(sh.prompts(), n, "the prompt is still being drawn");
+    assert_eq!(svc.reload_shells(), 1);
+    // That prompt, then the reloaded shell's.
+    sh.wait_for_prompts(n + 2);
+    sh.run("print -r -- X=${x:-unset} P=$$");
+    assert!(sh.text().contains(&format!("X=unset P={pid}")), "{}", sh.text());
+    sh.pty.write(b"exit\r").unwrap();
+}
