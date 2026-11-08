@@ -1,7 +1,6 @@
 //! A color picker: hue ring with a saturation/value square, sliders for
 //! RGB, HSL, HSV and OKLCH, a field that takes whatever you paste (hex,
-//! `rgb()`, `hsl()`, `hsv()`, `oklch()`, `oklab()`), every format ready to
-//! copy, the previous color to go back to, and a history of recent picks.
+//! `rgb()`, `hsl()`, `hsv()`, `oklch()`, `oklab()`), the previous color to go back to, and a history of recent picks.
 //!
 //! The picker keeps its own float state ([`Pick`]), so dragging never loses
 //! precision to 8-bit rounding and hue/saturation/chroma survive passing
@@ -610,14 +609,10 @@ impl ColorPicker {
         self.paste(cx);
     }
 
-    fn copy_format(&mut self, f: ColorFormat, cx: &mut Context<'_, Self>) {
-        let text = f.format(self.pick.color());
+    fn copy_action(&mut self, _: &CopyColor, _: &mut Window, cx: &mut Context<'_, Self>) {
+        let text = self.pick.color().to_string();
         cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
         self.say(true, format!("Copied {text}"), cx);
-    }
-
-    fn copy_action(&mut self, _: &CopyColor, _: &mut Window, cx: &mut Context<'_, Self>) {
-        self.copy_format(ColorFormat::Hex, cx);
     }
 
     fn clear_history(&mut self, cx: &mut Context<'_, Self>) {
@@ -855,22 +850,6 @@ impl Render for ColorPicker {
             .children(sliders)
             .child(before_after);
 
-        let formats = div().grid().grid_cols(2).gap_x_4().children(ColorFormat::ALL.iter().enumerate().map(|(i, &f)| {
-            div()
-                .id(("picker-format", i))
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_2()
-                .py_1()
-                .rounded_md()
-                .cursor_pointer()
-                .hover(|s| s.bg(ui.surface_hover))
-                .child(div().w(px(46.0)).flex_shrink_0().text_xs().text_color(ui.muted).child(f.label()))
-                .child(div().flex_1().min_w_0().text_sm().truncate().child(SharedString::from(f.format(cur))))
-                .on_click(cx.listener(move |p, _: &ClickEvent, _, cx| p.copy_format(f, cx)))
-        }));
-
         let history = if self.history.is_empty() {
             div().text_xs().text_color(ui.muted).child("Colors you settle on show up here.").into_any_element()
         } else {
@@ -916,13 +895,6 @@ impl Render for ColorPicker {
             .border_color(ui.border)
             .bg(ui.surface)
             .child(div().flex().gap_4().child(self.wheel(ui, &this)).child(controls))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(div().text_xs().text_color(ui.muted).px_2().pb_1().child("CLICK A FORMAT TO COPY"))
-                    .child(formats),
-            )
             .child(
                 div()
                     .flex()
