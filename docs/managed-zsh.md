@@ -24,7 +24,7 @@ zsh then reads the startup files from goatty's directory:
            ZDOTDIR = the user's again
            ~/.config/goatty/zshrc (the user's additions)
            syntax highlighting (last: it wraps every widget defined before it)
-           goatty-status / goatty-setup / goatty-reload, missing-tools hint
+           goatty-status / goatty-setup / goatty-reload, reload-on-request trap, missing-tools hint
 .zlogin    the user's own, because ZDOTDIR is already theirs again
 ```
 
@@ -36,7 +36,7 @@ Rules that came out of testing against real zsh (`crates/goatty-shell/tests/zsh_
 - `typeset name=(…)` must not be prefixed with `builtin`, because that disables typeset's array-assignment syntax.
 - If `settings.zsh` fails to load, `.zshenv` restores the user's `ZDOTDIR` and returns: the session degrades to plain zsh instead of breaking.
 - Non-interactive zsh started during startup (e.g. `zsh -c` from a user's `.zprofile`) gets the user's `ZDOTDIR` straight away and behaves like plain zsh.
-- After startup, `ZDOTDIR` is exactly what the user had (set or unset), so nested shells, `exec zsh` and `.zlogout` behave like plain zsh. `goatty-reload` restarts the current shell with goatty's config.
+- After startup, `ZDOTDIR` is exactly what the user had (set or unset), so nested shells, `exec zsh` and `.zlogout` behave like plain zsh. `goatty-reload` restarts the current shell with goatty's config. `SIGURG` (sent by `goattyd shell reload` or the settings window after an apply) makes the shell reload at its next idle prompt; see `docs/profiles.md`.
 - Debian/Ubuntu's `/etc/zsh/zshrc` runs `compinit` unless `skip_global_compinit` is set; `.zshenv` sets it so compinit runs once, with goatty's dump file in `~/.cache/goatty/`.
 - fzf's key bindings are only evaluated when zle has a terminal (`-o zle && -t 0`). Without one, fzf's option save/restore fails on `zle`.
 

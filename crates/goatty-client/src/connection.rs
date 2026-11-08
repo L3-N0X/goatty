@@ -303,6 +303,15 @@ impl Connection {
         }
     }
 
+    /// Ask the host's running managed shells to reload their configuration.
+    /// Returns how many were asked. Blocks: call off the UI thread.
+    pub fn reload_shells(&self) -> Result<u32> {
+        match self.request(Pending::Reply, |req| ClientMsg::ReloadShells { req })? {
+            ServerMsg::ShellsReloaded { count, .. } => Ok(count),
+            other => bail!("unexpected reply {other:?}"),
+        }
+    }
+
     /// Drop the current link as if the network failed (debugging/tests).
     pub fn force_disconnect(&self) {
         self.shared.close_transport();
@@ -491,7 +500,8 @@ fn dispatch(s: &Shared, msg: ServerMsg) {
         | ServerMsg::Ok { req }
         | ServerMsg::HostSettings { req, .. }
         | ServerMsg::HostSettingsApplied { req, .. }
-        | ServerMsg::Generations { req, .. } => {
+        | ServerMsg::Generations { req, .. }
+        | ServerMsg::ShellsReloaded { req, .. } => {
             if let Some(Pending::Reply(tx) | Pending::Attach { tx, .. }) = s.pending.lock().remove(&req) {
                 let _ = tx.send(msg);
             }

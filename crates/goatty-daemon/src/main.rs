@@ -80,6 +80,9 @@ enum ShellCmd {
     /// Activate an older generation (default: the previous one) and restore
     /// the settings it was built from.
     Rollback { generation: Option<u32> },
+    /// Ask the daemon's running managed shells to restart with the active
+    /// configuration (idle ones now, busy ones at their next prompt).
+    Reload,
 }
 
 const CLIENT: &str = concat!("goattyd-cli ", env!("CARGO_PKG_VERSION"));
@@ -143,6 +146,11 @@ fn main() -> Result<()> {
                 ShellCmd::Rollback { generation } => cmd::rollback(&launcher, &host_file()?, generation),
                 ShellCmd::Uninstall { tools, all } => cmd::uninstall(&launcher, &tools, all),
                 ShellCmd::Dismiss => cmd::dismiss(&launcher),
+                ShellCmd::Reload => {
+                    let n = Control::connect_local(CLIENT)?.reload_shells()?;
+                    println!("asked {n} running shell(s) to reload");
+                    Ok(())
+                }
             }
         }
     }

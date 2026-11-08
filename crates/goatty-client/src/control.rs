@@ -82,6 +82,14 @@ impl Control {
         }
     }
 
+    /// Ask the running managed shells to reload. Returns how many were asked.
+    pub fn reload_shells(&mut self) -> Result<u32> {
+        match self.request(|req| ClientMsg::ReloadShells { req })? {
+            ServerMsg::ShellsReloaded { count, .. } => Ok(count),
+            other => bail!("unexpected reply {other:?}"),
+        }
+    }
+
     /// Stop the daemon and every session it owns.
     pub fn shutdown(&mut self) -> Result<()> {
         self.request(|req| ClientMsg::Shutdown { req }).map(drop)

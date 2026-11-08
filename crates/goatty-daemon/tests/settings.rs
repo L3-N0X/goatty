@@ -1,7 +1,7 @@
-//! Host settings over the protocol (v3), against a real goattyd with a
+//! Host settings over the protocol (v4), against a real goattyd with a
 //! sandboxed `$HOME`: get, preview, apply (validate → generation → save),
-//! bad values, generations, rollback, and `SetPalette` changing the answers
-//! to color queries.
+//! bad values, generations, rollback, `SetPalette` changing the answers
+//! to color queries, and `ReloadShells` reaching only managed shells.
 
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -27,13 +27,17 @@ impl Drop for Daemon {
 }
 
 fn start_daemon() -> Daemon {
+    start_daemon_with("/bin/sh")
+}
+
+fn start_daemon_with(shell: &str) -> Daemon {
     let dir = tempfile::Builder::new().prefix("goatty-settings-").tempdir().unwrap();
     let sock = dir.path().join("d.sock");
     let home = dir.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_goattyd"))
         .env("GOATTY_SOCKET", &sock)
-        .env("GOATTY_SHELL", "/bin/sh")
+        .env("GOATTY_SHELL", shell)
         .env("RUST_LOG", "warn")
         .env("HOME", &home)
         .env_remove("XDG_CONFIG_HOME")
@@ -145,4 +149,72 @@ fn palette_answers_color_queries() {
             out.extend(data);
         }
     }
+}
+
+fn reload_until(d: &Daemon, want: u32, what: &str) -> u32 {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut n = reload(d);
+    while n != want && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+        n = reload(d);
+    }
+    assert_eq!(n, want, "{what}");
+    n
+}
+
+/// Start a session and leave it running detached.
+fn create_session(d: &Daemon) -> u64 {
+    let mut s = UnixStream::connect(&d.sock).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    s.write_all(&encode(&ClientMsg::Hello { version: PROTOCOL_VERSION, client: "test".into() }).unwrap()).unwrap();
+    assert!(matches!(read_msg::<_, ServerMsg>(&mut s).unwrap(), ServerMsg::Hello { .. }));
+    let size = WinSize { cols: 80, rows: 10, cell_width: 8, cell_height: 16 };
+    s.write_all(&encode(&ClientMsg::Create { req: 1, size, cwd: None, opts: StreamOpts::LOCAL }).unwrap()).unwrap();
+    match read_msg::<_, ServerMsg>(&mut s).unwrap() {
+        ServerMsg::Attached { session, .. } => session,
+        other => panic!("{other:?}"),
+    }
+}
+
+fn reload(d: &Daemon) -> u32 {
+    match request(&d.sock, |req| ClientMsg::ReloadShells { req }) {
+        ServerMsg::ShellsReloaded { count, .. } => count,
+        other => panic!("{other:?}"),
+    }
+}
+
+fn session_ids(d: &Daemon) -> Vec<u64> {
+    Control::connect(&d.sock, "test").unwrap().list_sessions().unwrap().into_iter().map(|s| s.id).collect()
+}
+
+#[test]
+fn reload_skips_unmanaged_shells() {
+    let d = start_daemon();
+    let id = create_session(&d);
+    assert_eq!(reload(&d), 0);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(session_ids(&d), [id], "/bin/sh is left alone");
+}
+
+#[test]
+fn reload_reaches_managed_zsh() {
+    let Some(zsh) = ["/usr/bin/zsh", "/bin/zsh"].into_iter().find(|p| Path::new(p).exists()) else {
+        eprintln!("zsh not installed; skipping");
+        return;
+    };
+    let d = start_daemon_with(zsh);
+    let id = create_session(&d);
+    // A just-spawned session is registered before the reply ships, but under
+    // load the daemon may still be between the fork and our Attached read;
+    // wait briefly instead of assuming the first request is already settled.
+    reload_until(&d, 1, "the managed zsh is counted");
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(session_ids(&d), [id], "the session survives the reload");
+    Control::connect(&d.sock, "test").unwrap().kill(id).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !session_ids(&d).is_empty() {
+        assert!(Instant::now() < deadline, "session did not exit");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    reload_until(&d, 0, "exited shells are forgotten");
 }

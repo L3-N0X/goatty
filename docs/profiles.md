@@ -39,7 +39,7 @@ Sessions get `ZDOTDIR=~/.local/share/goatty/current/zsh`. Paths written into the
 
 **Apply order** (`HostService::set`): parse leniently → compute the diff against the active generation → build + validate + activate → save `host.json`. A configuration that doesn't validate is rejected before the file is touched.
 
-## Protocol (v3)
+## Protocol (v4)
 
 | Request | Reply | Notes |
 |---|---|---|
@@ -48,6 +48,7 @@ Sessions get `ZDOTDIR=~/.local/share/goatty/current/zsh`. Paths written into the
 | `ListGenerations` | `Generations { list }` | |
 | `Rollback { generation }` | `HostSettings` | `None` = the previous one |
 | `SetPalette { session, colors }` | – | 21 `0xRRGGBB`: ANSI 16, fg, bg, cursor, selection fg/bg |
+| `ReloadShells` | `ShellsReloaded { count }` | v4: ask the running managed shells to restart with the active generation |
 
 Settings travel as JSON documents rather than typed structs, so a schema change doesn't need a protocol bump. The daemon's parser handles versions and unknown keys.
 
@@ -75,9 +76,19 @@ Settings travel as JSON documents rather than typed structs, so a schema change 
 | Workspace | reattach newest session vs. start new on launch | next launch |
 | Profile | file locations, problems, env overrides, export/import, reset, generations with rollback | – |
 
-Host edits collect in a draft. A bar at the bottom offers **Discard**, **Preview** (the host computes the diff of the generated files, shown colored) and **Apply** (a new generation, validated first). Calls to the daemon run off the UI thread. With `--local` there is no daemon, and the window uses `goatty_shell::HostService` in-process: same code path, same files.
+Host edits collect in a draft. A bar at the bottom offers **Discard**, **Preview** (the host computes the diff of the generated files, shown colored) and **Apply** (a new generation, validated first). When an apply or a rollback changed the shell configuration, the bar offers **Reload running shells** (or **Not now**); see below. Calls to the daemon run off the UI thread. With `--local` there is no daemon, and the window uses `goatty_shell::HostService` in-process: same code path, same files.
 
 **Export** writes `{ "goatty_profile": 1, "client": {...}, "host": {...} }` with non-default values only, minus machine-specific ones (`host.shell.program`, `client.debug`). **Import** applies the client part right away and stages the host part as a draft to preview and apply.
+
+### Reloading running shells (#56)
+
+New sessions start from the active generation. Shells that are already running keep the configuration they started with until they reload. After an apply or a rollback, the settings window offers **Reload running shells**. `goattyd shell reload` does the same from the command line, and `goatty-reload` reloads only the current shell.
+
+- The daemon (or `HostService` in-process with `--local`) remembers the pid of every session it started with goatty's managed zsh (`HostService::track_shell`), and forgets it when the session exits. Plain zsh, other shells and `GOATTY_SHELL_MANAGED=0` sessions aren't tracked.
+- `ReloadShells` sends each one `SIGURG`. The signal is ignored by default, so a process that isn't goatty's zsh (after `exec bash`, or a reused pid) is unaffected.
+- The managed `.zshrc` traps it (`TRAPURG`). At an idle, empty prompt the shell reloads right away: the trap runs `zle .send-break`, which returns to the top level at once. From a trap, `accept-line` would only take effect on the next keypress. The precmd hook then runs `goatty-reload` (`exec`, so the pid and the session stay). While a command runs, or with something typed on the line, the reload waits for the next prompt.
+- A shell with jobs doesn't reload, since `exec` would lose the jobs. It prints a reminder to run `goatty-reload` instead.
+- Reloading loses shell state that isn't in the startup files (variables, functions, `dirstack`). The working directory is kept.
 
 ## Themes
 
@@ -130,8 +141,9 @@ goattyd settings path | show [KEY] [--all] | validate [FILE] | set KEY VALUE | u
 - Manually, release build, sandboxed HOME: the window renders every page. Editing `settings.json` from outside switched the terminal and the window to Catppuccin Latte, 17 px, bar cursor within the poll interval, and reported the bad value and the unknown key on the Profile page. `goattyd shell diff/status/generations/rollback` behaved as described.
 - Themes and CLI (#50–#52): `theme_import` tests for every format; `ThemeLibrary` loading, shadowing, unique ids and resolution; dotted-key editing; `goatty-app/tests/cli.rs` and `goatty-daemon/tests/settings_cli.rs` run the real binaries in a sandboxed HOME (set/show/validate/unset, theme import/set/export/delete, profile export → import on a "second machine" including the host generation).
 - Manually (release build, sandboxed HOME): a Windows Terminal scheme imported with `goatty theme import` showed up as "Campbell Teal" (`mine`, `dark`). With "Follow the system" on a dark desktop, the terminal used it, and the CLI-set cursor override showed as ● in the editor. `goatty theme set gruvbox-dark` from a shell restyled the running app. The startup switch from the default light appearance to the portal's dark one was the same code path as a live desktop toggle. Not done: toggling the real desktop setting (it would change the user's whole session).
+- Reloading running shells (#56): `zsh_startup.rs::reloads_on_request` drives a managed zsh in a PTY (idle prompt reloads at once with the same pid; a running command reloads afterwards; typed text is left alone until Enter; a shell with jobs keeps its state and prints the reminder). `goatty-daemon/tests/settings.rs` checks that `ReloadShells` reaches a managed zsh session (which survives), skips `/bin/sh`, and forgets exited shells.
 - Not verified yet: clicking through the controls (needs interactive testing, #49).
 
 ## Not done yet
 
-Problems and env overrides shown on their row (#53), shortcut conflict warnings (#54), per-generation change summaries (#55), reloading running shells after apply (#56), proper monospace detection (#57), keyboard navigation in the settings window (#58), and the GUI first-run/diagnostics screen (#40).
+Problems and env overrides shown on their row (#53), shortcut conflict warnings (#54), per-generation change summaries (#55), proper monospace detection (#57), keyboard navigation in the settings window (#58), and the GUI first-run/diagnostics screen (#40).

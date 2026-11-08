@@ -133,6 +133,10 @@ impl Session {
     pub fn local(size: TermSize, host: &HostService) -> Result<Arc<Self>> {
         let launch = host.launcher.launch(&host.settings());
         let (pty, reader) = Pty::spawn(&ShellCommand::new(launch.program, launch.args, launch.env), size)?;
+        let managed_pid = pty.pid().filter(|_| launch.managed);
+        if let Some(pid) = managed_pid {
+            host.track_shell(pid);
+        }
         let (terminal, chans) = Terminal::new(size, true, Arc::new(Palette::default()));
         let s = Arc::new(Self::new(terminal, chans.ui, Backend::Local(Mutex::new(pty)), None));
         let weak = Arc::downgrade(&s);
@@ -143,6 +147,7 @@ impl Session {
             }
         })?;
         let s2 = s.clone();
+        let host = host.clone();
         std::thread::Builder::new().name("pty-reader".into()).spawn(move || {
             let mut reader = reader;
             let mut buf = vec![0u8; 64 * 1024];
@@ -151,6 +156,9 @@ impl Session {
                     Ok(0) | Err(_) => break,
                     Ok(n) => s2.ingest(&buf[..n]),
                 }
+            }
+            if let Some(pid) = managed_pid {
+                host.untrack_shell(pid);
             }
             s2.exited.store(true, Ordering::Release);
             s2.waker.wake();

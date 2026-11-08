@@ -321,3 +321,130 @@ fn dismissed_hint_stays_quiet() {
     let out = pty_session(&sb, &launch, &[]);
     assert!(!out.contains("goatty-setup"), "{out:?}");
 }
+
+/// An interactive managed shell in a PTY, driven prompt by prompt.
+struct PtyShell {
+    pty: Pty,
+    rx: std::sync::mpsc::Receiver<Vec<u8>>,
+    out: Vec<u8>,
+}
+
+impl PtyShell {
+    fn start(sb: &Sandbox, launch: &Launch) -> Self {
+        let mut env = sb.base_env();
+        env.extend(launch.env.iter().cloned());
+        let mut cmd = ShellCommand::new(launch.program.clone(), launch.args.clone(), env);
+        cmd.cwd = Some(sb.home.clone());
+        let (pty, mut reader) = Pty::spawn(&cmd, TermSize::new(120, 40)).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = reader.read(&mut buf) {
+                if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut sh = Self { pty, rx, out: Vec::new() };
+        sh.wait_for_prompts(1);
+        sh
+    }
+
+    fn prompts(&self) -> usize {
+        self.out.windows(7).filter(|w| w == b"\x1b]133;B").count()
+    }
+
+    /// Wait until `n` prompts have been shown in total.
+    fn wait_for_prompts(&mut self, n: usize) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.prompts() < n {
+            match self.rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(chunk) => self.out.extend(chunk),
+                Err(_) => panic!("waiting for prompt {n}:\n{}", String::from_utf8_lossy(&self.out)),
+            }
+        }
+    }
+
+    fn wait_for(&mut self, needle: &[u8]) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !self.out.windows(needle.len()).any(|w| w == needle) {
+            match self.rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(chunk) => self.out.extend(chunk),
+                Err(_) => panic!("waiting for {:?}:\n{}", String::from_utf8_lossy(needle), String::from_utf8_lossy(&self.out)),
+            }
+        }
+    }
+
+    /// Type `line` + Enter and wait for the next prompt.
+    fn run(&mut self, line: &str) {
+        let n = self.prompts() + 1;
+        self.pty.write(format!("{line}\r").as_bytes()).unwrap();
+        self.wait_for_prompts(n);
+    }
+
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.out).into_owned()
+    }
+}
+
+#[test]
+fn reloads_on_request() {
+    let Some(zsh) = zsh() else { return };
+    let sb = Sandbox::new(zsh);
+    let launch = sb.launch(ZshSettings::default(), None);
+    let svc = goatty_shell::HostService::new(Launcher::new(Some(sb.dirs.clone()), None), None);
+    let mut sh = PtyShell::start(&sb, &launch);
+    let pid = sh.pty.pid().unwrap();
+    svc.track_shell(pid);
+
+    // Idle at an empty prompt: reloads right away (same pid: exec).
+    sh.run("x=1");
+    let n = sh.prompts();
+    assert_eq!(svc.reload_shells(), 1);
+    sh.wait_for_prompts(n + 1);
+    sh.run("print -r -- X=${x:-unset} P=$$");
+    assert!(sh.text().contains(&format!("X=unset P={pid}")), "{}", sh.text());
+
+    // Busy: reloads once the command is done.
+    sh.run("y=1");
+    let n = sh.prompts();
+    sh.pty.write(b"/bin/sleep 0.5\r").unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    svc.reload_shells();
+    sh.wait_for_prompts(n + 1);
+    sh.run("print -r -- Y=${y:-unset}");
+    assert!(sh.text().contains("Y=unset"), "{}", sh.text());
+
+    // Something typed but not entered: left alone until Enter. The signal
+    // still arrives quickly; give slow runners a moment instead of a fixed
+    // sleep, and assert it stayed untouched after that.
+    sh.run("z=1");
+    let n = sh.prompts();
+    sh.pty.write(b"print -r -- typed").unwrap();
+    sh.wait_for(b"typed");
+    svc.reload_shells();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while sh.prompts() == n && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(sh.prompts(), n, "no reload while typing");
+    sh.run("");
+    sh.run("print -r -- Z=${z:-unset}");
+    assert!(sh.text().contains("Z=unset"), "{}", sh.text());
+
+    // Background jobs: only a reminder, the shell keeps its state.
+    sh.run("w=1; /bin/sleep 30 &");
+    let n = sh.prompts();
+    svc.reload_shells();
+    sh.wait_for_prompts(n + 1);
+    sh.run("print -r -- W=${w:-unset}; kill %1");
+    let text = sh.text();
+    assert!(text.contains("once your jobs are done") && text.contains("W=1"), "{text}");
+
+    // Gone: no longer signaled.
+    sh.pty.write(b"exit\r").unwrap();
+    while sh.rx.recv_timeout(Duration::from_secs(2)).is_ok() {}
+    let _ = sh.pty.try_wait();
+    svc.untrack_shell(pid);
+    assert_eq!(svc.reload_shells(), 0);
+}

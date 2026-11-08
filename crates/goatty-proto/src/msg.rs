@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 pub type SessionId = u64;
 /// Client-chosen correlation id for request/response pairs.
@@ -128,6 +128,11 @@ pub enum ClientMsg {
         session: SessionId,
         colors: Vec<u32>,
     },
+    /// Ask the running managed shells to restart with the active
+    /// generation (each at its next idle prompt). Reply: `ShellsReloaded`.
+    ReloadShells {
+        req: ReqId,
+    },
 }
 
 /// One changed file of the generated shell configuration.
@@ -236,6 +241,11 @@ pub enum ServerMsg {
         req: ReqId,
         list: Vec<GenerationInfo>,
     },
+    ShellsReloaded {
+        req: ReqId,
+        /// How many shells were asked.
+        count: u32,
+    },
 }
 
 impl ServerMsg {
@@ -247,7 +257,8 @@ impl ServerMsg {
             | ServerMsg::Ok { req }
             | ServerMsg::HostSettings { req, .. }
             | ServerMsg::HostSettingsApplied { req, .. }
-            | ServerMsg::Generations { req, .. } => Some(*req),
+            | ServerMsg::Generations { req, .. }
+            | ServerMsg::ShellsReloaded { req, .. } => Some(*req),
             ServerMsg::Error { req, .. } => *req,
             _ => None,
         }

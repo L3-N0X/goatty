@@ -71,12 +71,17 @@ impl Daemon {
             subs: Mutex::new(Vec::new()),
             created_unix: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
         });
+        let pid = session.pty.lock().pid();
         log::info!(
-            "session {id}: spawned {}{} (pid {:?})",
+            "session {id}: spawned {}{} (pid {pid:?})",
             cmd.program,
-            if launch.managed { " with goatty's managed config" } else { "" },
-            session.pty.lock().pid()
+            if launch.managed { " with goatty's managed config" } else { "" }
         );
+        // Only goatty's zsh handles the reload request.
+        let managed_pid = pid.filter(|_| launch.managed);
+        if let Some(pid) = managed_pid {
+            self.host.track_shell(pid);
+        }
 
         // Query replies → PTY.
         {
@@ -97,6 +102,9 @@ impl Daemon {
                 let code = s.pty.lock().try_wait();
                 log::info!("session {}: exited ({code:?})", s.id);
                 daemon.sessions.lock().remove(&s.id);
+                if let Some(pid) = managed_pid {
+                    daemon.host.untrack_shell(pid);
+                }
                 s.finish(code);
             })?;
         }
