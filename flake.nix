@@ -48,8 +48,12 @@
           # rust-analyzer needs the std sources.
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
 
-          # GPUI dlopens Wayland/X11/Vulkan/xkbcommon at runtime.
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath buildLibs;
+          # GPUI dlopens Wayland/X11/Vulkan/xkbcommon at runtime. Embed them as an rpath in the
+          # built binaries instead of exporting LD_LIBRARY_PATH, which would make every non-nix
+          # program started from this shell (curl, git, ssh, ...) load nix libraries and fail.
+          shellHook = ''
+            export RUSTFLAGS="''${RUSTFLAGS:-} -C link-arg=-Wl,-rpath,${pkgs.lib.makeLibraryPath buildLibs}"
+          '';
         };
 
         formatter = pkgs.nixfmt-rfc-style;
