@@ -31,6 +31,7 @@
 mod client;
 pub mod color_history;
 pub mod colorspace;
+pub mod command_history;
 mod host;
 pub mod keys;
 pub mod profile;
@@ -44,6 +45,7 @@ use std::path::PathBuf;
 pub use client::{ClientSettings, CursorShape, DebugSettings, FontSettings, OnLaunch, Renderer, TerminalSettings, WorkspaceSettings};
 pub use color_history::ColorHistory;
 pub use colorspace::ColorFormat;
+pub use command_history::CommandHistory;
 pub use host::{HistorySettings, HostSettings, PromptSettings, PromptStyle, ShellSettings, ZshSettings};
 pub use store::{Document, FileStamp, Issue, Loaded};
 pub use theme::{

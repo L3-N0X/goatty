@@ -7,6 +7,7 @@
 mod actions;
 mod app;
 mod cli;
+mod command_palette;
 mod commands;
 mod session;
 mod settings;

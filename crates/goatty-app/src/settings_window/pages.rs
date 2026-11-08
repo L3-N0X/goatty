@@ -9,7 +9,7 @@ use gpui::{
 
 use super::{Page, SettingsWindow, ThemeTarget};
 use crate::settings::AppSettings;
-use crate::ui::controls::{ButtonKind, button, note, notice, row, section, segmented, stepper, toggle};
+use crate::ui::controls::{ButtonKind, button, note, notice, pretty_keys, row, section, segmented, stepper, toggle};
 use crate::ui::style::Ui;
 
 /// Callback editing the client settings (applied and saved immediately).
@@ -49,35 +49,6 @@ fn looks_monospace(name: &str) -> bool {
     ]
     .iter()
     .any(|k| n.contains(k))
-}
-
-/// `ctrl-shift-c` → `Ctrl+Shift+C`.
-fn pretty_keys(k: &str) -> String {
-    let parts: Vec<&str> = match k.strip_suffix("--") {
-        Some(rest) => {
-            let mut p: Vec<&str> = rest.split('-').collect();
-            p.push("-");
-            p
-        }
-        None => k.split('-').collect(),
-    };
-    parts
-        .iter()
-        .map(|p| match *p {
-            "ctrl" => "Ctrl".to_string(),
-            "shift" => "Shift".to_string(),
-            "alt" => "Alt".to_string(),
-            "super" | "cmd" | "platform" => "Super".to_string(),
-            "pageup" => "PageUp".to_string(),
-            "pagedown" => "PageDown".to_string(),
-            other if other.len() == 1 => other.to_uppercase(),
-            other => {
-                let mut c = other.chars();
-                c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("+")
 }
 
 fn ago(created_unix: u64) -> String {
@@ -1171,16 +1142,6 @@ impl Render for SettingsWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn key_names() {
-        assert_eq!(pretty_keys("ctrl-shift-c"), "Ctrl+Shift+C");
-        assert_eq!(pretty_keys("ctrl-shift--"), "Ctrl+Shift+-");
-        assert_eq!(pretty_keys("ctrl--"), "Ctrl+-");
-        assert_eq!(pretty_keys("ctrl-*"), "Ctrl+*");
-        assert_eq!(pretty_keys("shift-pageup"), "Shift+PageUp");
-        assert_eq!(pretty_keys("ctrl-,"), "Ctrl+,");
-    }
 
     #[test]
     fn monospace_guess() {
