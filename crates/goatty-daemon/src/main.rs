@@ -32,6 +32,74 @@ enum Cmd {
     /// This host's settings (host.json: shell, prompt, history).
     #[command(subcommand)]
     Settings(SettingsCmd),
+    /// Plugins on this host: search, install (with a review of what they do), configure, remove.
+    #[command(subcommand)]
+    Plugin(PluginCmd),
+}
+
+#[derive(Subcommand)]
+enum PluginCmd {
+    /// What the registries offer (QUERY matches names, summaries, keywords).
+    Search {
+        query: Option<String>,
+        /// Fetch the registries first.
+        #[arg(long)]
+        refresh: bool,
+    },
+    /// Details, settings and permissions of a plugin.
+    Info { id: String },
+    /// Review and install plugins (ID or ID@VERSION), or one from a directory.
+    Install {
+        plugins: Vec<String>,
+        /// Install the plugin in DIR (development; not verified by any registry).
+        #[arg(long, value_name = "DIR")]
+        path: Option<std::path::PathBuf>,
+        /// Approve the plan without asking (it's still printed).
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Install newer versions from the registries (default: all plugins).
+    Update {
+        plugins: Vec<String>,
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Remove plugins, their programs and their settings.
+    Uninstall { plugins: Vec<String> },
+    /// Installed plugins and their state.
+    List,
+    /// Load an installed plugin in new shells again.
+    Enable { id: String },
+    /// Keep a plugin installed but out of the shell.
+    Disable { id: String },
+    /// Change a plugin setting (checked against the plugin's settings).
+    Set { id: String, key: String, value: String },
+    /// Reset a plugin setting to its default.
+    Unset { id: String, key: String },
+    /// Plugin registries.
+    #[command(subcommand)]
+    Registry(RegistryCmd),
+}
+
+#[derive(Subcommand)]
+enum RegistryCmd {
+    /// The registries and their state.
+    List {
+        #[arg(long)]
+        refresh: bool,
+    },
+    /// Fetch every registry now.
+    Refresh,
+    /// Trust another registry: URL of its .tar.gz (or an absolute directory) and its signing key.
+    Add {
+        name: String,
+        url: String,
+        /// Public key (hex) that signs its index (repeatable).
+        #[arg(long = "key", required = true)]
+        keys: Vec<String>,
+    },
+    /// Stop using an added registry (installed plugins stay).
+    Remove { name: String },
 }
 
 #[derive(Subcommand)]
@@ -91,7 +159,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let cmd = cli.cmd.unwrap_or(Cmd::Serve);
     // The proxy's stderr goes back over ssh into the GUI's log: keep it quiet.
-    let default_level = if matches!(cmd, Cmd::Proxy | Cmd::Shell(_) | Cmd::Settings(_)) { "warn" } else { "info" };
+    let default_level = if matches!(cmd, Cmd::Proxy | Cmd::Shell(_) | Cmd::Settings(_) | Cmd::Plugin(_)) { "warn" } else { "info" };
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_level)).init();
 
     match cmd {
@@ -131,6 +199,28 @@ fn main() -> Result<()> {
                 SettingsCmd::Validate { file } => cmd::settings_validate(&svc, file.as_deref()),
                 SettingsCmd::Set { key, value } => cmd::settings_set(&svc, &key, &value),
                 SettingsCmd::Unset { key } => cmd::settings_unset(&svc, &key),
+            }
+        }
+        Cmd::Plugin(cmd) => {
+            use goatty_shell::plugins::cmd;
+            let svc = goatty_shell::HostService::from_env(std::env::current_exe().ok());
+            match cmd {
+                PluginCmd::Search { query, refresh } => cmd::search(&svc, query.as_deref(), refresh),
+                PluginCmd::Info { id } => cmd::info(&svc, &id),
+                PluginCmd::Install { plugins, path, yes } => cmd::install(&svc, &plugins, path.as_deref(), yes),
+                PluginCmd::Update { plugins, yes } => cmd::update(&svc, &plugins, yes),
+                PluginCmd::Uninstall { plugins } => cmd::uninstall(&svc, &plugins),
+                PluginCmd::List => cmd::list(&svc),
+                PluginCmd::Enable { id } => cmd::set_enabled(&svc, &id, true),
+                PluginCmd::Disable { id } => cmd::set_enabled(&svc, &id, false),
+                PluginCmd::Set { id, key, value } => cmd::set(&svc, &id, &key, Some(&value)),
+                PluginCmd::Unset { id, key } => cmd::set(&svc, &id, &key, None),
+                PluginCmd::Registry(r) => match r {
+                    RegistryCmd::List { refresh } => cmd::registries(&svc, refresh),
+                    RegistryCmd::Refresh => cmd::registries(&svc, true),
+                    RegistryCmd::Add { name, url, keys } => cmd::registry_add(&svc, &name, &url, &keys),
+                    RegistryCmd::Remove { name } => cmd::registry_remove(&svc, &name),
+                },
             }
         }
         Cmd::Shell(cmd) => {

@@ -176,6 +176,12 @@ pub fn builtins() -> Vec<Command> {
         page("settings.shell", "Shell", Page::Shell, &["zsh", "plugins", "autosuggestions"]),
         page("settings.prompt", "Prompt", Page::Prompt, &["starship"]),
         page("settings.history", "History", Page::History, &["atuin"]),
+        page(
+            "plugins.open",
+            "Plugins: browse, install and configure",
+            Page::Plugins,
+            &["extensions", "install", "tools", "eza", "zoxide", "bat"],
+        ),
         page("settings.workspace", "Workspace", Page::Workspace, &["sessions", "launch"]),
         page("settings.profile", "Profile: export and import", Page::Profile, &["backup", "sync"]),
         Command::handler("settings.open_file", "Settings", "Open settings.json in an editor", |_, cx| {

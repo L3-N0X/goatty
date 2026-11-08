@@ -218,3 +218,76 @@ fn reload_reaches_managed_zsh() {
     }
     reload_until(&d, 0, "exited shells are forgotten");
 }
+
+/// Plugins over the protocol (v5): catalog, plan, install as approved,
+/// the shell configuration, uninstall. The registry is a signed local
+/// directory added in the sandbox's `registries.json` (built-in registries
+/// off, so nothing goes to the network).
+#[test]
+fn plugins_over_the_protocol() {
+    let d = start_daemon();
+    let reg = d.home.join("registry");
+    let key_file = d.home.join("signing.key");
+    let public = goatty_plugin::sign::keygen_file(&key_file).unwrap();
+    std::fs::create_dir_all(reg.join("plugins/greet/0.1.0/zsh")).unwrap();
+    std::fs::write(reg.join("registry.toml"), format!("name = \"local\"\nkeys = [\"{public}\"]\n")).unwrap();
+    std::fs::write(
+        reg.join("plugins/greet/0.1.0/plugin.toml"),
+        "schema = 1\nid = \"greet\"\nname = \"Greet\"\nversion = \"0.1.0\"\nsummary = \"Says hello\"\npublisher = \"tests\"\n\
+         [[env]]\nname = \"GREETING\"\nvalue = \"hi\"\n[zsh]\ninit = \"zsh/init.zsh\"\n\
+         [permissions]\nshell-code = \"defines the greet function\"\n",
+    )
+    .unwrap();
+    std::fs::write(reg.join("plugins/greet/0.1.0/zsh/init.zsh"), "greet() { print -r -- $GREETING }\n").unwrap();
+    let idx = goatty_plugin::index::build(&reg).unwrap();
+    std::fs::write(reg.join("index.json"), idx.to_bytes()).unwrap();
+    goatty_plugin::index::sign_dir(&reg, &goatty_plugin::sign::load_secret(&key_file).unwrap()).unwrap();
+    let config = d.home.join(".config/goatty");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("registries.json"),
+        format!(r#"{{"builtin": false, "registries": [{{"name": "local", "url": "{}", "keys": ["{public}"]}}]}}"#, reg.display()),
+    )
+    .unwrap();
+
+    let call = |r: goatty_plugin::api::Request| -> goatty_plugin::api::Reply {
+        let request = serde_json::to_string(&r).unwrap();
+        match request_msg(&d.sock, |req| ClientMsg::Plugin { req, request }) {
+            ServerMsg::Plugin { reply, .. } => serde_json::from_str(&reply).unwrap(),
+            other => panic!("{other:?}"),
+        }
+    };
+    use goatty_plugin::api::{Reply, Request};
+    let Reply::Catalog(cat) = call(Request::Catalog { refresh: true }) else { panic!() };
+    assert_eq!(cat.registries.len(), 1, "{:?}", cat.registries);
+    assert_eq!(cat.available[0].id, "greet");
+
+    let Reply::Plan(plan) = call(Request::Plan { id: "greet".into(), version: None }) else { panic!() };
+    assert!(plan.verified);
+    assert!(plan.shell_code.as_ref().unwrap().1.contains("greet()"));
+
+    // A digest that doesn't match is an error reply, not an install.
+    let bad = serde_json::to_string(&Request::Install { id: "greet".into(), version: None, approved: "x".into() }).unwrap();
+    assert!(
+        matches!(request_msg(&d.sock, |req| ClientMsg::Plugin { req, request: bad }), ServerMsg::Error { message, .. } if message.contains("review"))
+    );
+
+    let Reply::Changed(c) = call(Request::Install { id: "greet".into(), version: None, approved: plan.digest.clone() }) else { panic!() };
+    assert!(c.reload && c.lines[0].starts_with("Installed Greet 0.1.0"), "{c:?}");
+    assert!(host_json(&d).contains("\"greet\""));
+    let zdir = d.home.join(".local/share/goatty/current/zsh");
+    assert!(std::fs::read_to_string(zdir.join("plugins-early.zsh")).unwrap().contains("GREETING='hi'"));
+    assert!(zdir.join("plugins/greet/zsh/init.zsh").is_file());
+
+    let Reply::Changed(_) = call(Request::Uninstall { id: "greet".into() }) else { panic!() };
+    assert!(!host_json(&d).contains("greet"));
+    assert!(!zdir.join("plugins/greet").exists());
+}
+
+fn request_msg(sock: &Path, msg: impl FnOnce(u32) -> ClientMsg) -> ServerMsg {
+    let mut c = Control::connect(sock, "test").unwrap();
+    match c.request(msg) {
+        Ok(m) => m,
+        Err(e) => ServerMsg::Error { req: None, message: format!("{e:#}") },
+    }
+}

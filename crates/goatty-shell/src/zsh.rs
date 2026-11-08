@@ -13,6 +13,7 @@ use std::path::Path;
 use goatty_config::{HostSettings, PromptStyle};
 
 use crate::dirs::Dirs;
+use crate::plugins::{Active, lock};
 use crate::tools::{self, Kind};
 
 pub const ZSHENV: &str = include_str!("../zsh/zshenv.zsh");
@@ -26,26 +27,86 @@ pub struct ZshConfig<'a> {
     pub dirs: &'a Dirs,
     /// The goattyd binary `goatty-setup` runs. `None`: `goattyd` from PATH.
     pub daemon_exe: Option<&'a Path>,
+    /// Installed, enabled plugins ([`crate::plugins::active`]).
+    pub plugins: &'a [Active],
 }
 
 /// A file of the managed ZDOTDIR.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratedFile {
-    pub name: &'static str,
+    /// Path relative to the ZDOTDIR (`plugins/<id>/…` for plugin files).
+    pub name: String,
     pub contents: String,
+}
+
+impl GeneratedFile {
+    pub fn new(name: impl Into<String>, contents: impl Into<String>) -> Self {
+        Self { name: name.into(), contents: contents.into() }
+    }
 }
 
 /// Every file of the managed ZDOTDIR.
 pub fn render(cfg: &ZshConfig<'_>) -> Vec<GeneratedFile> {
-    let file = |name, contents: &str| GeneratedFile { name, contents: contents.to_owned() };
-    vec![
-        GeneratedFile { name: "settings.zsh", contents: render_settings(cfg) },
-        file(".zshenv", ZSHENV),
-        file(".zprofile", ZPROFILE),
-        file(".zshrc", ZSHRC),
-        file("integration.zsh", INTEGRATION),
-        GeneratedFile { name: "starship.toml", contents: render_starship(cfg.settings) },
-    ]
+    let mut files = vec![
+        GeneratedFile::new("settings.zsh", render_settings(cfg)),
+        GeneratedFile::new(".zshenv", ZSHENV),
+        GeneratedFile::new(".zprofile", ZPROFILE),
+        GeneratedFile::new(".zshrc", ZSHRC),
+        GeneratedFile::new("integration.zsh", INTEGRATION),
+        GeneratedFile::new("starship.toml", render_starship(cfg.settings)),
+    ];
+    files.extend(render_plugins(cfg));
+    files
+}
+
+/// `plugins-early.zsh` and `plugins.zsh` (always written, so the `.zshrc`
+/// can source them unconditionally), plus each plugin's generated config
+/// files and the shell files it ships (checked against the lock again).
+fn render_plugins(cfg: &ZshConfig<'_>) -> Vec<GeneratedFile> {
+    let mut early = String::from(
+        "# goatty plugins, part 1: completion paths and environment (read before compinit).\n\
+         # Generated from the installed plugins and their settings in host.json: change them in goatty's settings window.\n",
+    );
+    let mut main = String::from(
+        "# goatty plugins, part 2: aliases and the plugins' shell code (read after goatty's own features).\n\
+         # Generated from the installed plugins and their settings in host.json: change them in goatty's settings window.\n",
+    );
+    let mut files = Vec::new();
+    let home = std::env::var("HOME").ok();
+    for a in cfg.plugins {
+        let id = &a.manifest.id;
+        // Shipped files first: a plugin whose files don't check out is left out entirely.
+        let mut shipped = Vec::new();
+        let wanted = a
+            .manifest
+            .zsh
+            .init
+            .iter()
+            .chain(a.entry.files.keys().filter(|f| a.manifest.zsh.fpath.iter().any(|d| f.starts_with(&format!("{d}/")))));
+        let checked: Result<(), String> = wanted.into_iter().try_for_each(|rel| {
+            let bytes = lock::read_checked(cfg.dirs, id, &a.entry, rel).map_err(|e| format!("{e:#}"))?;
+            let text = String::from_utf8(bytes).map_err(|_| format!("{id}: {rel} isn't text"))?;
+            shipped.push(GeneratedFile::new(format!("plugins/{id}/{rel}"), text));
+            Ok(())
+        });
+        if let Err(e) = checked {
+            log::warn!("leaving plugin {id} out of the shell configuration: {e}");
+            continue;
+        }
+        let ctx = goatty_plugin::zsh::Ctx { dir: format!("$_goatty_dir/plugins/{id}"), home: home.as_deref(), label: a.label.clone() };
+        let r = goatty_plugin::zsh::render(&a.manifest, &a.values, &ctx);
+        if !r.early.is_empty() {
+            early.push('\n');
+            early.push_str(&r.early);
+        }
+        main.push('\n');
+        main.push_str(&r.main);
+        files.extend(shipped);
+        files.extend(r.files.into_iter().map(|(name, contents)| GeneratedFile::new(format!("plugins/{id}/{name}"), contents)));
+    }
+    let mut out = vec![GeneratedFile::new("plugins-early.zsh", early), GeneratedFile::new("plugins.zsh", main)];
+    out.extend(files);
+    out
 }
 
 /// Feature names as the `.zshrc` knows them, for the enabled ones.
@@ -166,7 +227,7 @@ mod tests {
         s.history.size = 5000;
         s.history.share_between_sessions = true;
         s.history.atuin_up_arrow = true;
-        let out = render_settings(&ZshConfig { settings: &s, dirs: &dirs, daemon_exe: Some(Path::new("/usr/bin/goattyd")) });
+        let out = render_settings(&ZshConfig { settings: &s, dirs: &dirs, daemon_exe: Some(Path::new("/usr/bin/goattyd")), plugins: &[] });
         assert!(out.contains(r"_goatty_dir='/r o/ot'\''s/data/current/zsh'"), "{out}");
         assert!(out.contains("_goatty_user_rc='1'"));
         assert!(out.contains("_goatty_hist_size='5000'"));

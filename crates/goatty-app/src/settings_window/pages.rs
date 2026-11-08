@@ -71,7 +71,7 @@ impl SettingsWindow {
     }
 
     /// Callback acting on the window itself.
-    fn act(
+    pub(super) fn act(
         &self,
         cx: &Context<'_, Self>,
         f: impl Fn(&mut Self, &mut Context<'_, Self>) + 'static,
@@ -1101,6 +1101,7 @@ impl Render for SettingsWindow {
             Page::Shell => self.shell(ui, cx),
             Page::Prompt => self.prompt(ui, cx),
             Page::History => self.history(ui, cx),
+            Page::Plugins => self.plugins_page(ui, cx),
             Page::Shortcuts => self.shortcuts(ui, cx),
             Page::Workspace => self.workspace(ui, cx),
             Page::Profile => self.profile(ui, cx),

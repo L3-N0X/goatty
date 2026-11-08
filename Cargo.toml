@@ -38,6 +38,10 @@ similar = "3"
 sha2 = "0.11"
 flate2 = "1"
 tar = "0.4"
+# Plugins (goatty-plugin): TOML manifests, version requirements, signed registry indexes.
+toml = "1.1"
+semver = "1"
+ed25519-dalek = "3"
 
 goatty-term = { path = "crates/goatty-term" }
 goatty-proto = { path = "crates/goatty-proto" }
@@ -45,6 +49,7 @@ goatty-client = { path = "crates/goatty-client" }
 goatty-config = { path = "crates/goatty-config" }
 goatty-daemon = { path = "crates/goatty-daemon" }
 goatty-shell = { path = "crates/goatty-shell" }
+goatty-plugin = { path = "crates/goatty-plugin" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

@@ -80,7 +80,7 @@ pub fn list(dirs: &Dirs) -> Vec<Generation> {
 }
 
 fn read_files(dir: &Path, like: &[GeneratedFile]) -> Option<Vec<String>> {
-    like.iter().map(|f| std::fs::read_to_string(dir.join(f.name)).ok()).collect()
+    like.iter().map(|f| std::fs::read_to_string(dir.join(&f.name)).ok()).collect()
 }
 
 /// What [`activate`] did.
@@ -116,7 +116,11 @@ pub fn activate(dirs: &Dirs, files: &[GeneratedFile], settings_json: &str) -> Re
         let zdir = staging.join("zsh");
         std::fs::create_dir_all(&zdir)?;
         for f in files {
-            std::fs::write(zdir.join(f.name), &f.contents)?;
+            let path = zdir.join(&f.name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(path, &f.contents)?;
         }
         std::fs::write(staging.join("host.json"), settings_json)?;
         let created = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
@@ -139,7 +143,7 @@ pub fn activate(dirs: &Dirs, files: &[GeneratedFile], settings_json: &str) -> Re
 fn validate(zdir: &Path, files: &[GeneratedFile]) -> Result<()> {
     let Some(zsh) = crate::launch::which("zsh") else { return Ok(()) };
     for f in files.iter().filter(|f| f.name.ends_with(".zsh") || f.name.starts_with(".z")) {
-        let out = Command::new(&zsh).arg("-n").arg(zdir.join(f.name)).stdin(Stdio::null()).output().context("run zsh -n")?;
+        let out = Command::new(&zsh).arg("-n").arg(zdir.join(&f.name)).stdin(Stdio::null()).output().context("run zsh -n")?;
         if !out.status.success() {
             bail!("{} doesn't parse: {}", f.name, String::from_utf8_lossy(&out.stderr).trim());
         }
@@ -201,9 +205,9 @@ pub fn diff(dirs: &Dirs, files: &[GeneratedFile]) -> Vec<FileDiff> {
     files
         .iter()
         .filter_map(|f| {
-            let old = std::fs::read_to_string(dir.join(f.name)).unwrap_or_default();
+            let old = std::fs::read_to_string(dir.join(&f.name)).unwrap_or_default();
             (old != f.contents).then(|| FileDiff {
-                name: f.name.to_owned(),
+                name: f.name.clone(),
                 unified: similar::TextDiff::from_lines(&old, &f.contents)
                     .unified_diff()
                     .context_radius(2)
@@ -219,7 +223,7 @@ mod tests {
     use super::*;
 
     fn files(rc: &str) -> Vec<GeneratedFile> {
-        vec![GeneratedFile { name: ".zshrc", contents: rc.into() }, GeneratedFile { name: "starship.toml", contents: "x = 1\n".into() }]
+        vec![GeneratedFile::new(".zshrc", rc), GeneratedFile::new("starship.toml", "x = 1\n")]
     }
 
     #[test]

@@ -462,6 +462,8 @@ Make the profile the source of truth. Add configuration compilation, validation,
 
 ### Stage 5 — Plugin system
 
+> **Update (8 Nov 2026):** the foundations are in: manifest format, settings schema, derived permissions, signed Git-backed registry, install plans with approval, the Plugins settings page and `goattyd plugin`. See [`plugins.md`](plugins.md).
+
 Define and document the plugin manifest, settings schema, package model, shell adapter interface and permission model. Publish a small built-in registry: Git, fzf, Atuin, zoxide, Docker CLI integration, Python and Node.js. Add community registry support only after the first-party flow is reliable.
 
 ### Stage 6 — Shell and platform expansion

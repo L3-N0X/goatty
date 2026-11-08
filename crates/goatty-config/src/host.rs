@@ -2,7 +2,10 @@
 //! sessions on that host get. Edited through the daemon, so a remote host
 //! keeps its own.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::store::{Document, Issue, Migration};
 
@@ -12,6 +15,28 @@ pub struct HostSettings {
     pub shell: ShellSettings,
     pub prompt: PromptSettings,
     pub history: HistorySettings,
+    /// Installed plugins' configuration, by plugin id (Stage 5). Which
+    /// plugins are installed is host state, not a setting (goatty-shell's
+    /// lock file); an entry for a plugin that isn't installed is ignored.
+    pub plugins: BTreeMap<String, PluginConfig>,
+}
+
+/// One plugin's configuration in `host.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PluginConfig {
+    /// Load it in new shells. Off keeps it installed but out of the shell.
+    pub enabled: bool,
+    /// Setting id → value, checked against the plugin's own schema when
+    /// the shell configuration is built (bad values fall back to the
+    /// plugin's default and are reported there).
+    pub settings: BTreeMap<String, Value>,
+}
+
+impl Default for PluginConfig {
+    fn default() -> Self {
+        Self { enabled: true, settings: BTreeMap::new() }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,7 +159,7 @@ impl Default for HistorySettings {
 impl Document for HostSettings {
     const NAME: &'static str = "host";
     const VERSION: u32 = 1;
-    const OPEN_MAPS: &'static [&'static str] = &[];
+    const OPEN_MAPS: &'static [&'static str] = &["plugins"];
 
     fn migrations() -> &'static [Migration] {
         &[]
@@ -154,6 +179,11 @@ impl Document for HostSettings {
         if self.prompt.duration_threshold_ms > 3_600_000 {
             issues.push(Issue::new("prompt.duration_threshold_ms", "more than an hour; using one hour"));
             self.prompt.duration_threshold_ms = 3_600_000;
+        }
+        let bad: Vec<String> = self.plugins.keys().filter(|id| !is_plugin_id(id)).cloned().collect();
+        for id in bad {
+            issues.push(Issue::new(format!("plugins.{id}"), "not a plugin id; ignored"));
+            self.plugins.remove(&id);
         }
         if let Some(p) = &self.shell.program
             && p.trim().is_empty()
@@ -182,6 +212,15 @@ impl HostSettings {
     pub fn env_overrides(var: impl Fn(&str) -> Option<String>) -> Vec<&'static str> {
         ["GOATTY_SHELL", "GOATTY_SHELL_MANAGED", "GOATTY_ZSH_USER_RC"].into_iter().filter(|k| var(k).is_some()).collect()
     }
+}
+
+/// Same rule as `goatty_plugin::manifest::is_id` (goatty-config doesn't
+/// depend on the plugin crate).
+fn is_plugin_id(s: &str) -> bool {
+    (2..=40).contains(&s.len())
+        && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && s.as_bytes()[0].is_ascii_lowercase()
+        && !s.ends_with('-')
 }
 
 pub(crate) fn parse_bool(s: &str) -> Option<bool> {
@@ -221,5 +260,23 @@ mod tests {
         assert_eq!(s.shell.program, None);
         assert_eq!(issues.len(), 2);
         assert!(HostSettings::default().validate().is_empty());
+    }
+
+    #[test]
+    fn plugin_entries_are_an_open_map() {
+        let loaded = crate::store::parse::<HostSettings>(
+            r#"{"plugins": {"eza": {"settings": {"icons": "always"}}, "zoxide": {"enabled": false}, "Bad Id": {}}}"#,
+        );
+        let p = &loaded.value.plugins;
+        assert!(p["eza"].enabled, "enabled by default");
+        assert_eq!(p["eza"].settings["icons"], "always");
+        assert!(!p["zoxide"].enabled);
+        assert!(!p.contains_key("Bad Id"));
+        assert_eq!(loaded.issues.len(), 1, "{:?}", loaded.issues);
+        assert!(loaded.unknown.is_empty(), "plugin ids aren't unknown settings");
+        // Sparse save keeps the entries; `set` accepts plugin keys.
+        let json = crate::store::to_json(&loaded.value, &loaded.unknown);
+        assert!(json.contains("\"icons\": \"always\"") && json.contains("\"zoxide\""), "{json}");
+        assert!(crate::store::is_known_key::<HostSettings>("plugins.eza.settings.icons"));
     }
 }

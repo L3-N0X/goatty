@@ -24,6 +24,7 @@ pub mod doctor;
 pub mod generation;
 pub mod install;
 pub mod launch;
+pub mod plugins;
 pub mod service;
 pub mod tools;
 pub mod zsh;

@@ -112,6 +112,14 @@ impl HostLink {
         })
     }
 
+    /// A plugin operation on the host (downloads for installs: can take a while).
+    pub fn plugin(&self, req: goatty_plugin::api::Request) -> Result<goatty_plugin::api::Reply> {
+        match self {
+            HostLink::Daemon(c) => Ok(serde_json::from_str(&c.plugin(serde_json::to_string(&req)?)?)?),
+            HostLink::Local(s) => s.plugin_request(req),
+        }
+    }
+
     /// Ask the host's running managed shells to reload. Returns how many were asked.
     pub fn reload_shells(&self) -> Result<u32> {
         Ok(match self {

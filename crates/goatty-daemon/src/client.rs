@@ -126,6 +126,20 @@ pub(crate) fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                 ClientMsg::ReloadShells { req } => {
                     reply(ServerMsg::ShellsReloaded { req, count: u32::try_from(daemon.host.reload_shells()).unwrap_or(u32::MAX) })
                 }
+                ClientMsg::Plugin { req, request } => {
+                    // Installs download and build a generation: don't hold
+                    // up this connection's input (keystrokes) meanwhile.
+                    let (daemon, tx) = (daemon.clone(), tx.clone());
+                    let spawned = std::thread::Builder::new().name(format!("c{conn}-plugin")).spawn(move || {
+                        let msg = crate::settings::plugin(&daemon, req, &request);
+                        if let Ok(f) = encode(&msg) {
+                            let _ = tx.send(f);
+                        }
+                    });
+                    if let Err(e) = spawned {
+                        reply(ServerMsg::Error { req: Some(req), message: format!("couldn't start the plugin operation: {e}") });
+                    }
+                }
                 ClientMsg::SetPalette { session, colors } => {
                     // Any client of the session may set it (last one wins);
                     // it only affects answers to color queries.

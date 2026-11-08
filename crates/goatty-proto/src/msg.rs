@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 pub type SessionId = u64;
 /// Client-chosen correlation id for request/response pairs.
@@ -133,6 +133,13 @@ pub enum ClientMsg {
     ReloadShells {
         req: ReqId,
     },
+    /// v5: a plugin operation (`goatty_plugin::api::Request` as JSON:
+    /// catalog, plan, install, uninstall). Answered off the connection's
+    /// reader thread, since installs download. Reply: `Plugin`.
+    Plugin {
+        req: ReqId,
+        request: String,
+    },
 }
 
 /// One changed file of the generated shell configuration.
@@ -246,6 +253,11 @@ pub enum ServerMsg {
         /// How many shells were asked.
         count: u32,
     },
+    /// v5: `goatty_plugin::api::Reply` as JSON.
+    Plugin {
+        req: ReqId,
+        reply: String,
+    },
 }
 
 impl ServerMsg {
@@ -258,7 +270,8 @@ impl ServerMsg {
             | ServerMsg::HostSettings { req, .. }
             | ServerMsg::HostSettingsApplied { req, .. }
             | ServerMsg::Generations { req, .. }
-            | ServerMsg::ShellsReloaded { req, .. } => Some(*req),
+            | ServerMsg::ShellsReloaded { req, .. }
+            | ServerMsg::Plugin { req, .. } => Some(*req),
             ServerMsg::Error { req, .. } => *req,
             _ => None,
         }
