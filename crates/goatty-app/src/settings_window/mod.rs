@@ -92,6 +92,7 @@ pub fn open_at(cx: &mut App, page: Option<Page>) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Appearance,
+    Terminal,
     Shell,
     Prompt,
     History,
@@ -103,8 +104,9 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 9] = [
+    pub const ALL: [Page; 10] = [
         Page::Appearance,
+        Page::Terminal,
         Page::Shell,
         Page::Prompt,
         Page::History,
@@ -118,6 +120,7 @@ impl Page {
     pub fn title(self) -> &'static str {
         match self {
             Page::Appearance => "Appearance",
+            Page::Terminal => "Terminal",
             Page::Shell => "Shell",
             Page::Prompt => "Prompt",
             Page::History => "History",
@@ -183,6 +186,7 @@ pub struct SettingsWindow {
     generations: Vec<GenRow>,
     font_filter: Entity<TextInput>,
     shell_path: Entity<TextInput>,
+    file_opener: Entity<TextInput>,
     show_all_fonts: bool,
     /// Theme gallery target when following the system.
     pub theme_target: ThemeTarget,
@@ -217,6 +221,8 @@ impl SettingsWindow {
         let shell_path = cx.new(|cx| TextInput::new("/path/to/shell, then Enter", "", cx));
         let picker = cx.new(|cx| ColorPicker::new(cx.global::<AppSettings>().colors.get(ColorSlot::Background), cx));
         let theme_name = cx.new(|cx| TextInput::new("Name for a new theme", "", cx));
+        let opener = cx.global::<AppSettings>().file.value.links.file_opener.clone().unwrap_or_default();
+        let file_opener = cx.new(|cx| TextInput::new("code --goto {path}:{line}:{column}, then Enter", opener, cx));
         let subs = vec![
             // The colors can change underneath the editor (theme switch,
             // desktop light/dark, outside edits): keep the picker current.
@@ -231,6 +237,12 @@ impl SettingsWindow {
             cx.subscribe(&theme_name, |this, _, ev: &TextInputEvent, cx| {
                 if let TextInputEvent::Submitted(_) = ev {
                     this.save_theme_as(cx);
+                }
+            }),
+            cx.subscribe(&file_opener, |_, _, ev: &TextInputEvent, cx| {
+                if let TextInputEvent::Submitted(text) = ev {
+                    let text = text.trim().to_string();
+                    AppSettings::update(cx, |s| s.links.file_opener = (!text.is_empty()).then_some(text));
                 }
             }),
             cx.subscribe(&shell_path, |this, _, ev: &TextInputEvent, cx| {
@@ -253,6 +265,7 @@ impl SettingsWindow {
             generations: Vec::new(),
             font_filter,
             shell_path,
+            file_opener,
             show_all_fonts: false,
             theme_target: if cx.global::<AppSettings>().file.value.theme.follow_system {
                 if cx.global::<AppSettings>().system_dark { ThemeTarget::Dark } else { ThemeTarget::Light }

@@ -13,13 +13,16 @@
 pub mod colors;
 mod frame;
 pub mod input;
+mod links;
 mod listener;
+pub mod paste;
 pub mod pty;
 pub mod snapshot;
 mod terminal;
 
 pub use colors::{Palette, Rgb};
 pub use frame::{Cell, CellFlags, Cursor, CursorKind, Frame};
+pub use links::{Found, Link, LinkKind, LinkSpan, find_links};
 pub use listener::UiEvent;
 /// Terminal mode bits (DECCKM, mouse reporting, alt screen, ...).
 pub use rio_vt::crosswords::Mode as TermMode;

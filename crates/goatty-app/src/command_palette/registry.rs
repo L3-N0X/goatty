@@ -188,6 +188,12 @@ pub fn builtins() -> Vec<Command> {
             Page::Plugins,
             &["extensions", "install", "tools", "eza", "zoxide", "bat"],
         ),
+        page(
+            "settings.terminal",
+            "Links and pasting",
+            Page::Terminal,
+            &["terminal", "urls", "hyperlinks", "paste", "confirm", "open files"],
+        ),
         page("settings.workspace", "Workspace", Page::Workspace, &["sessions", "launch"]),
         page("settings.profile", "Profile: export and import", Page::Profile, &["backup", "sync"]),
         Command::handler("settings.open_file", "Settings", "Open settings.json in an editor", |_, cx| {

@@ -9,6 +9,7 @@ mod app;
 mod cli;
 mod command_palette;
 mod commands;
+mod paste_confirm;
 mod session;
 mod settings;
 mod settings_window;

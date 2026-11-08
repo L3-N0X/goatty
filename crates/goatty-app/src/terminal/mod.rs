@@ -4,7 +4,8 @@
 mod element;
 mod glyphs;
 mod keys;
+mod links;
 mod stats;
 mod view;
 
-pub use view::{TerminalEvent, TerminalView};
+pub use view::{PasteRequest, TerminalEvent, TerminalView};
