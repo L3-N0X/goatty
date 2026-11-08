@@ -1,7 +1,10 @@
 //! Rendering of the settings window: sidebar, pages, the host-changes bar.
 
 use goatty_config::keys::{self, ACTIONS};
-use goatty_config::{ClientSettings, ColorSlot, CursorShape, HostSettings, OnLaunch, PromptStyle, Renderer, ThemeEntry, ThemeSettings};
+use goatty_config::{
+    ClientSettings, ColorSlot, CursorShape, HostSettings, LinkClick, OnLaunch, PasteConfirm, PromptStyle, Renderer, ThemeEntry,
+    ThemeSettings,
+};
 use gpui::{
     AnyElement, App, Context, FontWeight, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled, Window, div, prelude::*,
     px, rgb,
@@ -922,6 +925,71 @@ impl SettingsWindow {
         page.into_any_element()
     }
 
+    // ---- Terminal -------------------------------------------------------------
+
+    fn terminal(&self, ui: Ui, cx: &Context<'_, Self>) -> AnyElement {
+        let s = &cx.global::<AppSettings>().file.value;
+        let ctrl = if cfg!(target_os = "macos") { "Cmd+click" } else { "Ctrl+click" };
+        div()
+            .flex()
+            .flex_col()
+            .child(section(ui, "Links"))
+            .child(row(
+                ui,
+                "Open links with",
+                Some("URLs, file paths and links that programs mark up (OSC 8). Hover with Ctrl held to see where one goes"),
+                segmented(
+                    "links-open-on",
+                    &[(LinkClick::CtrlClick, ctrl), (LinkClick::Click, "Click"), (LinkClick::Off, "Off")],
+                    &s.links.open_on,
+                    ui,
+                    |v, _, cx| AppSettings::update(cx, |s| s.links.open_on = v),
+                ),
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(ui.border.opacity(0.5))
+                    .child(div().text_color(ui.text).child("Open files with"))
+                    .child(div().text_xs().text_color(ui.muted).child(
+                        "A command, run without a shell: {path}, {line} and {column} are filled in (the path goes last if \
+                         {path} isn't there). Empty: the desktop's default app. Press Enter to save.",
+                    ))
+                    .child(div().pt_1().child(self.file_opener.clone())),
+            )
+            .child(note(
+                ui,
+                "Paths count when the file exists, relative to the shell's directory. On a remote host, clicking copies the path.",
+            ))
+            .child(section(ui, "Pasting"))
+            .child(row(
+                ui,
+                "Ask before pasting",
+                Some("Shows what the paste contains and lets you clean it up or turn it into one line first"),
+                segmented(
+                    "paste-confirm",
+                    &[
+                        (PasteConfirm::Suspicious, "When it looks risky"),
+                        (PasteConfirm::Multiline, "Also for several lines"),
+                        (PasteConfirm::Never, "Never"),
+                    ],
+                    &s.paste.confirm,
+                    ui,
+                    |v, _, cx| AppSettings::update(cx, |s| s.paste.confirm = v),
+                ),
+            ))
+            .child(note(
+                ui,
+                "Risky: it would run commands right away (the program didn't turn on bracketed paste), contains control or invisible \
+                 characters, pipes a download into a shell, or is over 256 KiB.",
+            ))
+            .into_any_element()
+    }
+
     // ---- Workspace ------------------------------------------------------------
 
     fn workspace(&self, ui: Ui, cx: &Context<'_, Self>) -> AnyElement {
@@ -1121,6 +1189,7 @@ impl Render for SettingsWindow {
         let ui = Ui::get(cx);
         let page = match self.page {
             Page::Appearance => self.appearance(ui, cx),
+            Page::Terminal => self.terminal(ui, cx),
             Page::Shell => self.shell(ui, cx),
             Page::Prompt => self.prompt(ui, cx),
             Page::History => self.history(ui, cx),

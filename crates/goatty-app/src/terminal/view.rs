@@ -1,25 +1,34 @@
 //! TerminalView: one pane. Owns a [`Session`], maps GPUI input to terminal
 //! input, hosts the grid element, and tells its parent (the workspace) about
 //! title changes and the shell exiting via [`TerminalEvent`].
+//!
+//! Links (#27): with Ctrl held (or always, per `links.open_on`) the link
+//! under the mouse is underlined, its target shown at the bottom of the
+//! pane, and a click opens it (see `links`). Pastes go through
+//! `goatty_term::paste::check` first (#29); a paste that needs a second
+//! look becomes [`TerminalEvent::ConfirmPaste`] and the workspace asks.
 
 use std::cell::{Cell as StdCell, RefCell};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use goatty_config::{ClientSettings, CursorShape, FontSettings, Renderer};
+use goatty_config::{ClientSettings, CursorShape, FontSettings, LinkClick, PasteConfirm, Renderer};
 use goatty_term::input::{Key, Mods, MouseAction, MouseButton, encode_key, encode_mouse, encode_paste};
-use goatty_term::{CursorKind, Frame, SelectKind, TermMode, UiEvent};
+use goatty_term::paste::{self, PasteRisk};
+use goatty_term::{CursorKind, Frame, Link, SelectKind, TermMode, UiEvent};
 use gpui::{
-    App, ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, Font, InteractiveElement, IntoElement, KeyDownEvent,
-    MouseButton as GMouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollDelta, ScrollEvent,
-    Styled, Window, div, px,
+    App, ClipboardItem, Context, CursorStyle, EventEmitter, FocusHandle, Focusable, Font, InteractiveElement, IntoElement, KeyDownEvent,
+    Modifiers, ModifiersChangedEvent, MouseButton as GMouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
+    Render, ScrollDelta, ScrollEvent, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
 };
 
 use super::element::{Geom, TerminalElement, hsla};
 use super::glyphs::GlyphCache;
 use super::keys::{mods, terminal_key};
+use super::links::{self, Place, Target};
 use super::stats::Stats;
 use crate::actions::{
     Copy, CopyOrInterrupt, DecreaseFontSize, IncreaseFontSize, Paste, ResetFontSize, ScrollPageDown, ScrollPageUp, TERMINAL_CONTEXT,
@@ -27,6 +36,7 @@ use crate::actions::{
 use crate::session::Session;
 use crate::settings::{AppSettings, palette};
 use crate::toast::{self, Toast};
+use crate::ui::style::Ui;
 
 /// Cursor blink half-period (xterm/GTK default is ~530 ms).
 const BLINK: Duration = Duration::from_millis(530);
@@ -41,6 +51,33 @@ pub enum TerminalEvent {
     TitleChanged,
     /// The shell exited; the pane should close.
     Exited,
+    /// A paste needs confirming first; send the user's choice back with
+    /// [`TerminalView::paste_text`].
+    ConfirmPaste(PasteRequest),
+}
+
+/// A paste waiting for the user: the text and why it was stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasteRequest {
+    pub text: String,
+    pub risks: Vec<PasteRisk>,
+}
+
+/// Does a paste with these risks need confirming under `confirm`?
+pub fn needs_confirmation(confirm: PasteConfirm, risks: &[PasteRisk]) -> bool {
+    match confirm {
+        PasteConfirm::Never => false,
+        PasteConfirm::Suspicious => risks.iter().any(PasteRisk::is_suspicious),
+        PasteConfirm::Multiline => !risks.is_empty(),
+    }
+}
+
+/// The link under the mouse and what it resolved to (`None`: looks like a
+/// link but isn't one here, e.g. a path that doesn't exist). Kept so moving
+/// over the same link doesn't check the file system again.
+struct HoveredLink {
+    link: Link,
+    target: Option<Target>,
 }
 
 pub struct TerminalView {
@@ -72,6 +109,16 @@ pub struct TerminalView {
     /// Last decorated title reported via [`TerminalEvent::TitleChanged`].
     title: String,
     exited: bool,
+    // Links.
+    link_click: LinkClick,
+    /// The cell under the mouse, while it's over the pane.
+    mouse_cell: Option<(usize, usize)>,
+    modifiers: Modifiers,
+    hover: Option<HoveredLink>,
+    /// `open_on: click`: the link a plain press landed on; opened on release
+    /// unless the press turned into a selection.
+    pressed_link: Option<Target>,
+    hostname: Option<String>,
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
@@ -165,6 +212,12 @@ impl TerminalView {
             app_title: DEFAULT_TITLE.into(),
             title: String::new(),
             exited: false,
+            link_click: settings.links.open_on,
+            mouse_cell: None,
+            modifiers: Modifiers::default(),
+            hover: None,
+            pressed_link: None,
+            hostname: links::hostname(),
         };
         view.apply_settings(&app);
         view
@@ -192,6 +245,10 @@ impl TerminalView {
             CursorShape::Underline => CursorKind::Underline,
         });
         self.session.set_palette(palette(&app.colors, s.theme.bold_is_bright));
+        if self.link_click != s.links.open_on {
+            self.link_click = s.links.open_on;
+            self.hover = None;
+        }
     }
 
     /// Title for a window or tab: the application's title plus host and
@@ -221,6 +278,10 @@ impl TerminalView {
         if !self.exited && self.session.exited.load(Ordering::Acquire) {
             self.exited = true;
             cx.emit(TerminalEvent::Exited);
+        }
+        // Output can move or overwrite the hovered link.
+        if self.hover.is_some() {
+            self.refresh_hover(cx);
         }
         cx.notify();
     }
@@ -278,13 +339,131 @@ impl TerminalView {
         }
     }
 
-    /// Returns false if the clipboard had no text.
+    /// Returns false if the clipboard had no text. Pastes that need a
+    /// second look go to the workspace as [`TerminalEvent::ConfirmPaste`].
     fn paste_clipboard(&mut self, cx: &mut Context<'_, Self>) -> bool {
         let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else { return false };
-        // Multiline/suspicious paste confirmation: #29.
-        let bytes = encode_paste(&text, self.session.terminal.mode());
-        self.send(&bytes);
+        if text.is_empty() {
+            return false;
+        }
+        let risks = paste::check(&text, self.session.terminal.mode());
+        if needs_confirmation(cx.global::<AppSettings>().client.paste.confirm, &risks) {
+            cx.emit(TerminalEvent::ConfirmPaste(PasteRequest { text, risks }));
+        } else {
+            self.paste_text(&text, cx);
+        }
         true
+    }
+
+    /// Send `text` to the shell as a paste, no questions asked.
+    pub fn paste_text(&mut self, text: &str, cx: &mut Context<'_, Self>) {
+        let bytes = encode_paste(text, self.session.terminal.mode());
+        self.session.terminal.selection_clear();
+        self.poke_cursor();
+        self.send(&bytes);
+        cx.notify();
+    }
+
+    // ---- links --------------------------------------------------------------
+
+    /// Re-detect the link under the mouse. Returns whether what's shown
+    /// (underline, hint) changed.
+    fn refresh_hover(&mut self, cx: &App) -> bool {
+        let wanted = match self.link_click {
+            LinkClick::Off => false,
+            LinkClick::Click => true,
+            LinkClick::CtrlClick => self.modifiers.secondary(cx),
+        };
+        // In programs with mouse reporting, Shift hands the mouse back to us.
+        let active = wanted && !self.selecting && !self.mouse_mode_active(self.modifiers.shift);
+        let link = if active { self.mouse_cell.and_then(|(c, r)| self.session.terminal.link_at(c, r)) } else { None };
+        let before = self.hover_shown();
+        self.hover = match (link, self.hover.take()) {
+            (None, _) => None,
+            (Some(link), Some(h)) if h.link == link => Some(h),
+            (Some(link), _) => {
+                let target = self.resolve_link(&link);
+                Some(HoveredLink { link, target })
+            }
+        };
+        self.hover_shown() != before
+    }
+
+    /// What the hover shows: the underlined spans and the target.
+    fn hover_shown(&self) -> Option<(Vec<goatty_term::LinkSpan>, Target)> {
+        let h = self.hover.as_ref()?;
+        Some((h.link.spans.clone(), h.target.clone()?))
+    }
+
+    fn hovered_target(&self) -> Option<&Target> {
+        self.hover.as_ref()?.target.as_ref()
+    }
+
+    fn resolve_link(&self, link: &Link) -> Option<Target> {
+        let cwd = self.session.terminal.current_directory();
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let exists = |p: &Path| p.exists();
+        let place = Place {
+            cwd: cwd.as_deref(),
+            home: home.as_deref(),
+            remote_host: self.session.host_label.as_deref(),
+            hostname: self.hostname.as_deref(),
+            exists: &exists,
+        };
+        links::resolve(link, &place)
+    }
+
+    fn open_link(&mut self, target: Target, window: &mut Window, cx: &mut Context<'_, Self>) {
+        match target {
+            Target::Url(url) => cx.open_url(&url),
+            Target::Other(url) => {
+                let scheme = url.split(':').next().unwrap_or_default().to_string();
+                let (open, copy) = (url.clone(), url.clone());
+                let toast = Toast::warning(format!("Open this {scheme}: link?"))
+                    .body(format!("{url}\nLinks like this start another application."))
+                    .action("Open", move |_, cx| cx.open_url(&open))
+                    .action("Copy", move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())))
+                    .key("terminal.link");
+                toast::show_in(window, cx, toast);
+            }
+            Target::File { path, line, column } => {
+                let command = cx.global::<AppSettings>().client.links.file_command(&path.to_string_lossy(), line, column);
+                match command {
+                    Some(argv) => {
+                        if let Err(e) = links::spawn_opener(&argv) {
+                            let toast = Toast::error(format!("Couldn't run {}", argv[0]))
+                                .body(format!("{e}. Change the command under Settings → Terminal → Open files with."))
+                                .key("terminal.link");
+                            toast::show_in(window, cx, toast);
+                        }
+                    }
+                    None => cx.open_with_system(&path),
+                }
+            }
+            Target::Remote { path, host } => {
+                cx.write_to_clipboard(ClipboardItem::new_string(path.clone()));
+                let toast = Toast::info(format!("Copied {path}"))
+                    .body(format!("The file is on {host}; goatty opens files on this computer only."))
+                    .key("terminal.link");
+                toast::show_in(window, cx, toast);
+            }
+        }
+    }
+
+    fn on_modifiers_changed(&mut self, ev: &ModifiersChangedEvent, _window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.modifiers = ev.modifiers;
+        if self.refresh_hover(cx) {
+            cx.notify();
+        }
+    }
+
+    fn on_hover(&mut self, hovered: &bool, _window: &mut Window, cx: &mut Context<'_, Self>) {
+        if !*hovered {
+            self.mouse_cell = None;
+            if self.refresh_hover(cx) {
+                cx.notify();
+            }
+        }
     }
 
     fn scroll_page_up(&mut self, _: &ScrollPageUp, _window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -356,6 +535,20 @@ impl TerminalView {
     fn on_mouse_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
         window.focus(&self.focus, cx);
         let (col, row, right) = self.geom.get().cell_at(ev.position);
+        self.pressed_link = None;
+        if ev.button == GMouseButton::Left && ev.click_count == 1 {
+            self.modifiers = ev.modifiers;
+            self.mouse_cell = Some((col, row));
+            self.refresh_hover(cx);
+            if let Some(target) = self.hovered_target().cloned() {
+                if self.link_click == LinkClick::CtrlClick {
+                    self.open_link(target, window, cx);
+                    return;
+                }
+                // Plain click: open on release, unless it becomes a selection.
+                self.pressed_link = Some(target);
+            }
+        }
         if self.mouse_mode_active(ev.modifiers.shift) {
             if let Some(btn) = mouse_button(Some(ev.button)) {
                 self.report_mouse(btn, MouseAction::Press, col, row, &ev.modifiers);
@@ -383,7 +576,7 @@ impl TerminalView {
         }
     }
 
-    fn on_mouse_up(&mut self, ev: &MouseUpEvent, _window: &mut Window, cx: &mut Context<'_, Self>) {
+    fn on_mouse_up(&mut self, ev: &MouseUpEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
         let (col, row, _) = self.geom.get().cell_at(ev.position);
         if self.mouse_mode_active(ev.modifiers.shift)
             && let Some(btn) = mouse_button(Some(ev.button))
@@ -397,14 +590,32 @@ impl TerminalView {
             }
             cx.notify();
         }
+        if let Some(target) = self.pressed_link.take()
+            && ev.button == GMouseButton::Left
+            && !self.session.terminal.has_selection()
+        {
+            self.mouse_cell = Some((col, row));
+            self.refresh_hover(cx);
+            if self.hovered_target() == Some(&target) {
+                self.open_link(target, window, cx);
+            }
+        }
     }
 
     fn on_mouse_move(&mut self, ev: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<'_, Self>) {
         let (col, row, right) = self.geom.get().cell_at(ev.position);
+        self.mouse_cell = Some((col, row));
+        self.modifiers = ev.modifiers;
         if self.selecting && ev.pressed_button == Some(GMouseButton::Left) {
             self.session.terminal.selection_update(col, row, right);
+            // A press that turns into a selection doesn't open its link
+            // (checked on release), and no link shows while selecting.
+            self.hover = None;
             cx.notify();
             return;
+        }
+        if self.refresh_hover(cx) {
+            cx.notify();
         }
         if self.mouse_mode_active(ev.modifiers.shift) {
             let btn = mouse_button(ev.pressed_button).unwrap_or(MouseButton::None);
@@ -441,6 +652,7 @@ impl TerminalView {
             }
         } else {
             self.session.terminal.scroll(whole);
+            self.refresh_hover(cx);
             cx.notify();
         }
     }
@@ -459,9 +671,23 @@ impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let bg = hsla(self.session.terminal.palette().background);
         let focused = self.focus.is_focused(window);
+        let hint = self.hovered_target().map(|t| {
+            let how = match self.link_click {
+                LinkClick::Click => "Click",
+                _ if cfg!(target_os = "macos") => "Cmd+click",
+                _ => "Ctrl+click",
+            };
+            let what = if matches!(t, Target::Remote { .. }) { "copy" } else { "open" };
+            (t.describe(), format!("{how} to {what}"))
+        });
+        let link_spans = self.hover_shown().map(|(spans, _)| spans).unwrap_or_default();
+        let ui = Ui::get(cx);
         div()
+            .id("terminal-pane")
             .size_full()
+            .relative()
             .bg(bg)
+            .cursor(if link_spans.is_empty() { CursorStyle::IBeam } else { CursorStyle::PointingHand })
             .key_context(TERMINAL_CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::copy))
@@ -479,6 +705,8 @@ impl Render for TerminalView {
             .on_mouse_up(GMouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(GMouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .on_modifiers_changed(cx.listener(Self::on_modifiers_changed))
+            .on_hover(cx.listener(Self::on_hover))
             .on_scroll(cx.listener(Self::on_scroll))
             .child(TerminalElement {
                 session: self.session.clone(),
@@ -493,6 +721,45 @@ impl Render for TerminalView {
                 glyph_mode: self.glyph_mode,
                 glyphs: self.glyphs.clone(),
                 cursor_visible: self.cursor_visible,
+                link_spans,
             })
+            .when_some(hint, |d, (target, action)| {
+                // The target, since an OSC 8 link's text can say anything.
+                d.child(
+                    div()
+                        .absolute()
+                        .bottom(px(4.))
+                        .left(px(4.))
+                        .max_w(gpui::relative(0.9))
+                        .flex()
+                        .gap_2()
+                        .px_2()
+                        .py(px(2.))
+                        .rounded_md()
+                        .bg(ui.surface)
+                        .border_1()
+                        .border_color(ui.border)
+                        .text_xs()
+                        .font_family(cx.global::<AppSettings>().ui_font.clone())
+                        .child(div().text_color(ui.text).truncate().child(target))
+                        .child(div().flex_shrink_0().text_color(ui.muted).child(action)),
+                )
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn confirmation_follows_the_setting() {
+        let multiline = [PasteRisk::Multiline { lines: 3 }];
+        let runs = [PasteRisk::RunsCommands { commands: 1 }];
+        assert!(!needs_confirmation(PasteConfirm::Suspicious, &[]));
+        assert!(!needs_confirmation(PasteConfirm::Suspicious, &multiline));
+        assert!(needs_confirmation(PasteConfirm::Suspicious, &runs));
+        assert!(needs_confirmation(PasteConfirm::Multiline, &multiline));
+        assert!(!needs_confirmation(PasteConfirm::Never, &runs));
     }
 }

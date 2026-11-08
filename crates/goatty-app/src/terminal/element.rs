@@ -16,7 +16,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
-use goatty_term::{CellFlags, CursorKind, Frame, Rgb, TermSize};
+use goatty_term::{CellFlags, CursorKind, Frame, LinkSpan, Rgb, TermSize};
 use gpui::{
     App, Bounds, Element, ElementId, Font, FontStyle, FontWeight, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels,
     Point, ShapedLine, SharedString, Size, StrikethroughStyle, Style, TextRun, UnderlineStyle, Window, fill, point, px, relative, size,
@@ -66,6 +66,8 @@ pub struct TerminalElement {
     pub glyphs: Rc<RefCell<GlyphCache>>,
     /// Blink phase; when false the focused cursor is not drawn.
     pub cursor_visible: bool,
+    /// The hovered link, underlined.
+    pub link_spans: Vec<LinkSpan>,
 }
 
 struct GlyphDraw {
@@ -357,6 +359,22 @@ impl Element for TerminalElement {
                 run_len += cell.ch.len_utf8();
             }
             flush(&mut seg_text, &mut runs, &mut cur, &mut run_len, seg_start, &mut lines);
+        }
+
+        // Hovered link: underline in each stretch's text color.
+        for span in &self.link_spans {
+            if span.row >= frame.rows || span.cols.start >= frame.cols {
+                continue;
+            }
+            let end = span.cols.end.min(frame.cols);
+            let y = origin.y + line_height * span.row as f32;
+            let baseline = y + (line_height - cache.ascent - cache.descent) / 2.0 + cache.ascent;
+            let color = Some(hsla(frame.row(span.row)[span.cols.start].fg));
+            decos.push(Deco::Underline(
+                point(origin.x + cell_w * span.cols.start as f32, baseline + cache.descent * 0.618),
+                cell_w * (end - span.cols.start) as f32,
+                UnderlineStyle { thickness: px(1.0), color, wavy: false },
+            ));
         }
 
         // Cursor.

@@ -19,6 +19,8 @@ pub struct ClientSettings {
     /// (see [`keys::effective_bindings`]).
     pub keybindings: BTreeMap<String, Option<String>>,
     pub workspace: WorkspaceSettings,
+    pub links: LinkSettings,
+    pub paste: PasteSettings,
     pub debug: DebugSettings,
 }
 
@@ -125,6 +127,121 @@ pub struct WorkspaceSettings {
     pub on_launch: OnLaunch,
 }
 
+/// How links in the terminal (URLs, file paths, OSC 8 hyperlinks) open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkClick {
+    /// Ctrl+click (Cmd+click on macOS); a plain click still selects.
+    #[default]
+    CtrlClick,
+    /// A click without dragging opens it.
+    Click,
+    /// Links aren't detected.
+    Off,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct LinkSettings {
+    pub open_on: LinkClick,
+    /// Command that opens files, e.g. `code --goto {path}:{line}:{column}`.
+    /// `{path}`, `{line}` and `{column}` are filled in per argument (no
+    /// shell involved); without `{path}` the path is appended. `None`:
+    /// the desktop's default application.
+    pub file_opener: Option<String>,
+}
+
+impl LinkSettings {
+    /// The opener's argv for a file, or `None` to use the desktop default.
+    pub fn file_command(&self, path: &str, line: Option<u32>, column: Option<u32>) -> Option<Vec<String>> {
+        let template = self.file_opener.as_deref().map(str::trim).filter(|t| !t.is_empty())?;
+        let words = split_words(template)?;
+        let (line, column) = (line.unwrap_or(1).to_string(), column.unwrap_or(1).to_string());
+        let mut has_path = false;
+        let mut argv: Vec<String> = words
+            .iter()
+            .map(|w| {
+                has_path |= w.contains("{path}");
+                w.replace("{path}", path).replace("{line}", &line).replace("{column}", &column)
+            })
+            .collect();
+        if !has_path {
+            argv.push(path.to_string());
+        }
+        Some(argv)
+    }
+}
+
+/// Split a command line into words: whitespace separates, '…' and "…"
+/// quote, backslash escapes. `None` for an unterminated quote.
+fn split_words(s: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut cur = String::new();
+    let mut in_word = false;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                in_word = true;
+                loop {
+                    match chars.next()? {
+                        '\'' => break,
+                        c => cur.push(c),
+                    }
+                }
+            }
+            '"' => {
+                in_word = true;
+                loop {
+                    match chars.next()? {
+                        '"' => break,
+                        '\\' => cur.push(chars.next()?),
+                        c => cur.push(c),
+                    }
+                }
+            }
+            '\\' => {
+                in_word = true;
+                cur.push(chars.next()?);
+            }
+            c if c.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut cur));
+                    in_word = false;
+                }
+            }
+            c => {
+                in_word = true;
+                cur.push(c);
+            }
+        }
+    }
+    if in_word {
+        words.push(cur);
+    }
+    Some(words)
+}
+
+/// When pasting asks first (see `goatty_term::paste::check`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PasteConfirm {
+    /// Never ask.
+    Never,
+    /// When the paste would run commands right away, hides control or
+    /// invisible characters, pipes a download into a shell, or is huge.
+    #[default]
+    Suspicious,
+    /// Also for every paste of more than one line.
+    Multiline,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PasteSettings {
+    pub confirm: PasteConfirm,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct DebugSettings {
@@ -154,6 +271,14 @@ impl Document for ClientSettings {
             self.theme.overrides.ansi.truncate(16);
         }
         // Old spellings (`ctrl-shift-+`) become the ones GPUI reports (`ctrl-+`).
+        if let Some(opener) = &self.links.file_opener {
+            if opener.trim().is_empty() {
+                self.links.file_opener = None;
+            } else if split_words(opener).is_none() {
+                issues.push(Issue::new("links.file_opener", "unterminated quote; opening files with the desktop default"));
+                self.links.file_opener = None;
+            }
+        }
         for (key, problem) in keys::canonicalize_overrides(&mut self.keybindings) {
             issues.push(Issue::new(format!("keybindings.{key}"), problem));
         }
@@ -245,6 +370,23 @@ mod tests {
         assert_eq!(f.resolve_family(&[]), "monospace");
         let explicit = FontSettings { family: Some("Iosevka".into()), ..f };
         assert_eq!(explicit.resolve_family(&[]), "Iosevka");
+    }
+
+    #[test]
+    fn file_opener_commands() {
+        let with = |t: &str| LinkSettings { file_opener: Some(t.into()), ..Default::default() };
+        assert_eq!(LinkSettings::default().file_command("/a b", None, None), None);
+        assert_eq!(with("code --goto {path}:{line}:{column}").file_command("/a b", Some(3), None).unwrap(), ["code", "--goto", "/a b:3:1"]);
+        assert_eq!(with("'my editor' -n").file_command("/x;rm", None, None).unwrap(), ["my editor", "-n", "/x;rm"]);
+        assert_eq!(with(r#"sh -c "e \"$1\"" _ {path}"#).file_command("/f", None, None).unwrap(), ["sh", "-c", "e \"$1\"", "_", "/f"]);
+        assert_eq!(with("  ").file_command("/f", None, None), None);
+        assert_eq!(split_words("a 'b"), None);
+
+        let mut s = ClientSettings::default();
+        s.links.file_opener = Some("vim 'oops".into());
+        let issues = s.validate();
+        assert_eq!(issues[0].path, "links.file_opener");
+        assert_eq!(s.links.file_opener, None);
     }
 
     #[test]

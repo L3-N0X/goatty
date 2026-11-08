@@ -90,17 +90,23 @@ ui/
   controls.rs  toggle, segmented, stepper, button, rows
   text_input.rs single-line text field (IME-aware; adapted from GPUI's example)
   color_picker.rs color picker widget: `Entity<ColorPicker>` emitting `Changed`/`Committed`; `Pick` (float state), `Wheel` geometry, painting, drag handling
-workspace.rs   root view per window: owns panes, window title, closes on exit, shows the command palette and the toast layer
+workspace.rs   root view per window: owns panes, window title, closes on exit, shows the command palette, paste confirmations and the toast layer
+paste_confirm.rs  "Paste this?" dialog: risks, preview with control/invisible chars marked, paste as is / cleaned / as one line
 session.rs     a pane's data: local PTY or goattyd session → mirror Terminal; coalescing waker
 terminal/
   view.rs      TerminalView: input → terminal, actions, emits TerminalEvent
   element.rs   custom grid Element (prepaint/paint)
   glyphs.rs    per-cell glyph cache
   keys.rs      GPUI keystroke → terminal Key (pure, unit-tested)
+  links.rs     what a detected link means here (URL, other scheme → ask, local file if it exists, remote path → copy), file openers
   stats.rs     GOATTY_STATS frame statistics
 ```
 
-View tree: `Workspace` → `TerminalView` (one today). A `TerminalView` never touches the window directly. It emits `TerminalEvent::{TitleChanged, Exited}` and the workspace decides what that means (window title, close the pane or the window).
+View tree: `Workspace` → `TerminalView` (one today). A `TerminalView` never touches the window directly. It emits `TerminalEvent::{TitleChanged, Exited, ConfirmPaste}` and the workspace decides what that means (window title, close the pane or the window, show the paste dialog and hand the chosen text back via `TerminalView::paste_text`).
+
+Links (#27): `goatty_term::Terminal::link_at(col, row)` finds the OSC 8 hyperlink, URL or path candidate under a cell, on the whole wrapped line, only when asked (mouse move / modifier change / new output while hovering), so idle and flood frames pay nothing. `terminal/links.rs` resolves it (relative paths against the OSC 7 directory, which rio-vt only accepts from this host) and the view underlines it, shows the target at the bottom of the pane, and opens it on Ctrl+click (`links.open_on`).
+
+Paste (#29): every paste goes through `goatty_term::paste::check` (runs commands without bracketed paste, control or invisible characters, `curl … | sh`, > 256 KiB, multiline); `paste.confirm` decides which of those ask first.
 
 Feedback: anything that finishes without a visible result (a palette command, a background request, later plugins) reports through `crate::toast`: `toast::show(cx, Toast::success(…))`, or `Toast::loading` first and `toast::update` with the result. Give repeated feedback a `key` so it replaces itself. Toasts never take focus.
 
@@ -114,7 +120,6 @@ Input: GPUI dispatches a bound action before the view's raw `on_key_down`. Short
 | IME / compose (#21)                    | `terminal/view.rs`: implement `EntityInputHandler`, register it in the element's paint |
 | Box drawing (#24)                      | `terminal/element.rs` (+ a new `terminal/boxdraw.rs`)                 |
 | Kitty keyboard (#22)                   | `goatty-term/src/input.rs`, fed from `terminal/keys.rs`               |
-| URL detection (#27)                    | `goatty-term` (detect on `Frame` rows) + view (hover/click)           |
 | Shell integration, terminal side (#28) | `goatty-term` listener (OSC 133/7 → `UiEvent`) + daemon `SessionInfo`; the zsh side is in `goatty-shell/zsh/integration.zsh` |
 | Managed zsh features, tool versions    | `goatty-shell/zsh/zshrc.zsh` (load order matters, see `managed-zsh.md`); the tools are built-in plugins: `goatty-shell/plugins/<id>/plugin.toml` (+ `builtins.rs` to list a new one) |
 | GUI first-run / shell diagnostics      | daemon API for `goatty_shell::cmd`-style status/install (new wire messages), then a GPUI view |

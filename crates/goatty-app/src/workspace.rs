@@ -1,6 +1,7 @@
 //! The root view of a window. Owns the terminal panes and everything
 //! window-level: the title, closing when the shell exits, the command
-//! palette overlay, and the window's toasts (`crate::toast`).
+//! palette overlay, paste confirmations (`crate::paste_confirm`), and the
+//! window's toasts (`crate::toast`).
 //!
 //! Today it holds exactly one pane. Tabs and splits (#30) grow here: a tab
 //! strip plus a split tree whose leaves are `TerminalView`s, with the window
@@ -12,13 +13,15 @@ use gpui::{AppContext, Context, Entity, Focusable, IntoElement, ParentElement, R
 
 use crate::actions::ToggleCommandPalette;
 use crate::command_palette::{CommandPalette, PaletteEvent};
+use crate::paste_confirm::{PasteConfirm, PasteConfirmEvent};
 use crate::session::Session;
-use crate::terminal::{TerminalEvent, TerminalView};
+use crate::terminal::{PasteRequest, TerminalEvent, TerminalView};
 use crate::toast::ToastLayer;
 
 pub struct Workspace {
     pane: Entity<TerminalView>,
     palette: Option<(Entity<CommandPalette>, Subscription)>,
+    paste: Option<(Entity<PasteConfirm>, Subscription)>,
     toasts: Entity<ToastLayer>,
     _subscriptions: Vec<Subscription>,
 }
@@ -32,7 +35,7 @@ impl Workspace {
             crate::settings::AppSettings::set_system_dark(cx, crate::settings::is_dark(window.appearance()));
         });
         let toasts = cx.new(|cx| ToastLayer::new(window, cx));
-        Self { pane, palette: None, toasts, _subscriptions: vec![sub, appearance] }
+        Self { pane, palette: None, paste: None, toasts, _subscriptions: vec![sub, appearance] }
     }
 
     fn on_terminal_event(&mut self, pane: &Entity<TerminalView>, ev: &TerminalEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -43,7 +46,25 @@ impl Workspace {
                 // The last window closing quits the app (see `app::run`).
                 window.remove_window();
             }
+            TerminalEvent::ConfirmPaste(request) => self.confirm_paste(request.clone(), window, cx),
         }
+    }
+
+    fn confirm_paste(&mut self, request: PasteRequest, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.close_palette(window, cx);
+        let dialog = cx.new(|cx| PasteConfirm::new(request, window, cx));
+        let sub = cx.subscribe_in(&dialog, window, |this, _, ev: &PasteConfirmEvent, window, cx| {
+            let PasteConfirmEvent::Done(text) = ev;
+            this.paste = None;
+            this.pane.focus_handle(cx).focus(window, cx);
+            if let Some(text) = text {
+                this.pane.update(cx, |pane, cx| pane.paste_text(text, cx));
+            }
+            cx.notify();
+        });
+        // A newer paste replaces one still waiting.
+        self.paste = Some((dialog, sub));
+        cx.notify();
     }
 
     fn toggle_palette(&mut self, _: &ToggleCommandPalette, window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -83,6 +104,19 @@ impl Render for Workspace {
             .child(self.toasts.clone())
             .when_some(self.palette.as_ref(), |d, (palette, _)| {
                 d.child(div().absolute().top(px(48.)).left_0().right_0().px_4().flex().justify_center().child(palette.clone()))
+            })
+            .when_some(self.paste.as_ref(), |d, (dialog, _)| {
+                d.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(gpui::black().opacity(0.35))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .px_4()
+                        .child(dialog.clone()),
+                )
             })
     }
 }
