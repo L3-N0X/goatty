@@ -17,6 +17,7 @@ use gpui::{Action, App, Global, SharedString, Window};
 
 use crate::actions;
 use crate::settings_window::{self, Page};
+use crate::toast::{self, Toast};
 
 /// Who registered a command.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -178,21 +179,33 @@ pub fn builtins() -> Vec<Command> {
         page("settings.workspace", "Workspace", Page::Workspace, &["sessions", "launch"]),
         page("settings.profile", "Profile: export and import", Page::Profile, &["backup", "sync"]),
         Command::handler("settings.open_file", "Settings", "Open settings.json in an editor", |_, cx| {
-            if let Some(path) = goatty_config::client_file() {
-                if !path.exists() {
-                    // Opening a missing file does nothing visible; start an empty document.
-                    let _ = path.parent().map(std::fs::create_dir_all);
-                    let _ = std::fs::write(&path, "{}\n");
+            let Some(path) = goatty_config::client_file() else {
+                toast::show(cx, Toast::error("Can't find settings.json").body("Neither $XDG_CONFIG_HOME nor $HOME is set."));
+                return;
+            };
+            if !path.exists() {
+                // Opening a missing file does nothing visible; start an empty document.
+                let created = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&path, "{}\n"));
+                if let Err(e) = created {
+                    toast::show(cx, Toast::error(format!("Couldn't create {}", path.display())).body(e.to_string()));
+                    return;
                 }
-                cx.open_with_system(&path);
             }
+            cx.open_with_system(&path);
+            toast::show(cx, Toast::info("Opening settings.json").body(path.display().to_string()).key("settings.open_file"));
         })
         .keywords(&["json", "edit", "config"]),
         Command::handler("themes.open_folder", "Themes", "Open the themes folder", |_, cx| {
-            if let Some(dir) = goatty_config::themes::themes_dir() {
-                let _ = std::fs::create_dir_all(&dir);
-                cx.open_with_system(&dir);
+            let Some(dir) = goatty_config::themes::themes_dir() else {
+                toast::show(cx, Toast::error("Can't find the themes folder").body("Neither $XDG_CONFIG_HOME nor $HOME is set."));
+                return;
+            };
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                toast::show(cx, Toast::error(format!("Couldn't create {}", dir.display())).body(e.to_string()));
+                return;
             }
+            cx.open_with_system(&dir);
+            toast::show(cx, Toast::info("Opening the themes folder").body(dir.display().to_string()).key("themes.open_folder"));
         })
         .keywords(&["directory", "files"]),
         Command::action("shell.reload", "Shell", "Reload running shells", "reload_shells")
@@ -204,6 +217,8 @@ pub fn builtins() -> Vec<Command> {
         Command::action("view.zoom_in", "View", "Bigger text", "increase_font_size").keywords(&["zoom in", "font size", "larger"]),
         Command::action("view.zoom_out", "View", "Smaller text", "decrease_font_size").keywords(&["zoom out", "font size"]),
         Command::action("view.zoom_reset", "View", "Reset text size", "reset_font_size").keywords(&["zoom", "font size", "default"]),
+        Command::handler("notifications.dismiss_all", "Notifications", "Dismiss all", |_, cx| toast::dismiss_all(cx))
+            .keywords(&["toasts", "clear", "close", "hide"]),
         Command::handler("app.quit", "goatty", "Quit", |_, cx| cx.quit()).keywords(&["exit", "close"]),
     ]
 }
