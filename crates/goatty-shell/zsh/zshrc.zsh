@@ -230,10 +230,15 @@ _goatty_reload_requested() {
 # Abandon the empty line, so the precmd hook runs and reloads. (From a trap,
 # accept-line would only take effect on the next keypress; send-break
 # returns to the top level at once.)
+# Only touch zle from inside the trap when the builtin is really there. The
+# signal can arrive before zle is loaded (non-interactive, or a build where
+# the zle module isn't available); then the flag stays set and the reload
+# happens at the next prompt instead.
 _goatty_reload_idle() {
+  (( $+builtins[zle] )) || return 0
   [[ $CONTEXT == start && -z $BUFFER ]] && zle .send-break
 }
-zle -N _goatty_reload_idle
+(( $+builtins[zle] )) && zle -N _goatty_reload_idle
 
 TRAPURG() {
   _goatty_reload_pending=1

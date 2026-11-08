@@ -415,13 +415,18 @@ fn reloads_on_request() {
     sh.run("print -r -- Y=${y:-unset}");
     assert!(sh.text().contains("Y=unset"), "{}", sh.text());
 
-    // Something typed but not entered: left alone until Enter.
+    // Something typed but not entered: left alone until Enter. The signal
+    // still arrives quickly; give slow runners a moment instead of a fixed
+    // sleep, and assert it stayed untouched after that.
     sh.run("z=1");
     let n = sh.prompts();
     sh.pty.write(b"print -r -- typed").unwrap();
     sh.wait_for(b"typed");
     svc.reload_shells();
-    std::thread::sleep(Duration::from_millis(300));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while sh.prompts() == n && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert_eq!(sh.prompts(), n, "no reload while typing");
     sh.run("");
     sh.run("print -r -- Z=${z:-unset}");
