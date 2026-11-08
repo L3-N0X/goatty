@@ -253,7 +253,7 @@ pub enum Location {
 }
 
 /// First executable `exe` in `path_var`, skipping goatty's own `bin/`.
-fn which(exe: &str, path_var: Option<&str>, managed_bin: &Path) -> Option<PathBuf> {
+pub(crate) fn which(exe: &str, path_var: Option<&str>, managed_bin: &Path) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     std::env::split_paths(path_var?)
         .filter(|d| d != managed_bin)

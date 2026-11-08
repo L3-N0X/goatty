@@ -7,7 +7,9 @@ How the code is laid out, and where each upcoming stage's work goes. For the pro
 ```
                  goatty-config      (profile model: client/host JSON documents, store, themes, keys, profiles)
                    ▲        ▲   ▲
-                   │        │   goatty-shell    (managed zsh: generated ZDOTDIR, tool installs, diagnostics)
+                   │        │   │   goatty-plugin  (plugin format, permissions, signed registry index; bin goatty-plugin)
+                   │        │   │      ▲
+                   │        │   goatty-shell    (managed zsh: generated ZDOTDIR, tool installs, plugins on a host, diagnostics)
                    │        │      ▲      ▲
 goatty-term ◄──────┼────────┼──────┼──────┼─┐   (the only crate that touches rio-vt)
    ▲               │        │      │      │ │
@@ -27,6 +29,7 @@ Rules:
 - **`goatty-client` has no UI dependencies.** The app, the daemon's CLI, tests and benchmarks all use it.
 - **Which shell a session runs is `goatty-shell`'s decision** (`Launcher::launch`). goattyd and `goatty --local` both use it; `goatty-term` only spawns what it's given. `goatty-shell` has no rio-vt or UI dependency.
 - **Client vs host settings** (#14): `ClientSettings` (`settings.json`) is read by the app; `HostSettings` (`host.json`) by goattyd/`HostService` on its own host. The GUI edits host settings through the protocol (`GetHostSettings`, `SetHostSettings`, …), never by writing a remote file. See [`profiles.md`](profiles.md).
+- **`goatty-plugin` knows the format, not the host.** Manifests, settings schema, templates, permissions, zsh rendering, the signed index and the JSON API live there with no knowledge of `Dirs`; `goatty-shell::plugins` decides where things go. The authoring/registry CLI (`goatty-plugin`) depends on nothing else in the workspace, so registry CI builds it quickly. See [`plugins.md`](plugins.md).
 - **Settings come from `goatty-config`.** Don't read `GOATTY_*` variables elsewhere (the exception is `GOATTY_SOCKET`, which is a location, not a setting, and lives in `goatty_proto::socket_path`).
 
 ## Daemon (`crates/goatty-daemon`)
@@ -53,6 +56,7 @@ Threads per session: `s{id}-reader` (PTY → terminal → subscribers) and `s{id
 | `generation` | build → validate (`zsh -n`) → activate generations; list, rollback, diff |
 | `service` | `HostService`: host settings get/set(preview, apply)/generations/rollback, for the daemon API and `goatty --local` |
 | `cmd`     | `goattyd shell status|install|uninstall|dismiss|generations|diff|rollback` |
+| `plugins` | plugins on this host: `registry` (trusted sources, fetch → verify → snapshot), `lock` (installed files + approvals), `Plugins` (find, plan, install, uninstall, catalog), `active` (what a generation renders), `cmd` (`goattyd plugin …`) |
 | `dirs`    | XDG locations under `goatty/`                                           |
 
 Design and startup sequence: [`managed-zsh.md`](managed-zsh.md). The zsh behaviour is tested against real zsh in `tests/zsh_startup.rs` (sandboxed `$HOME`, PTY for OSC 133/7).
@@ -74,6 +78,7 @@ settings_window/
   mod.rs       the settings window: pages, host draft → preview → apply, export/import
   host.rs      HostLink: the daemon connection or the local HostService
   pages.rs     rendering of every page
+settings_window/plugins.rs  the Plugins page: catalog, install review (plan), schema-driven setting controls
 toast/
   mod.rs       Toast (level, title, body, buttons, key, lifetime) and the API: show/show_in/update/dismiss/dismiss_all, routed to a window's layer
   stack.rs     one window's toasts without UI: replace by key, eviction, pausable timers (unit-tested with explicit clocks)
@@ -119,4 +124,6 @@ Input: GPUI dispatches a bound action before the view's raw `on_key_down`. Short
 | New theme import format                | `goatty-config/src/theme_import.rs` (detect + parse to `ThemeColors`) |
 | Settings migration                     | bump `Document::VERSION`, add `(from, fn(&mut Value))` to `migrations()` |
 | systemd user service (#7)              | `goatty-daemon` (`server::serve` already takes the socket path)       |
+| A plugin feature (new manifest field)  | `goatty-plugin/src/manifest.rs` (+ validation, permissions if it can run code), rendering in `goatty-plugin/src/zsh.rs`, document it in `docs/plugins.md` and the template |
+| A plugin operation (GUI/CLI)           | `goatty_plugin::api::Request`/`Reply` (no protocol bump), `HostService::plugin_request`, `settings_window/plugins.rs`, `plugins/cmd.rs` |
 | New wire messages                      | `goatty-proto/src/msg.rs` (bump `PROTOCOL_VERSION`), handle in `goatty-daemon/src/client.rs` and `goatty-client/src/connection.rs` |

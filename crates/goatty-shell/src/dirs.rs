@@ -8,7 +8,11 @@
 //!   tools/<tool>/<version>/       unpacked managed installs
 //!   bin/<exe>                     symlinks to the active managed binaries
 //!   plugins/<tool>                symlinks to the active managed zsh plugins
+//!   installed/<plugin>/           installed goatty plugins (verified copies of their files)
+//!   installed/lock.json           which plugins are installed, from where, what was approved
+//!   registries/<name>/            verified snapshots of plugin registries
 //! $XDG_CONFIG_HOME/goatty/zshrc   the user's own additions (goatty never writes it)
+//! $XDG_CONFIG_HOME/goatty/registries.json   plugin registries added besides the official one
 //! $XDG_CACHE_HOME/goatty/         completion dump, downloads
 //! $XDG_STATE_HOME/goatty/         small flags (e.g. the dismissed setup hint)
 //! ```
@@ -69,6 +73,18 @@ impl Dirs {
     }
     pub fn plugins_dir(&self) -> PathBuf {
         self.data.join("plugins")
+    }
+    /// Installed goatty plugins (Stage 5): `installed/<id>/` + `lock.json`.
+    pub fn installed_dir(&self) -> PathBuf {
+        self.data.join("installed")
+    }
+    /// Verified registry snapshots: `registries/<name>/`.
+    pub fn registries_dir(&self) -> PathBuf {
+        self.data.join("registries")
+    }
+    /// Registries the user added (the official one is built in).
+    pub fn registries_file(&self) -> PathBuf {
+        self.config.join("registries.json")
     }
     /// The user's own zsh additions, sourced late by the managed `.zshrc`.
     pub fn user_zshrc(&self) -> PathBuf {

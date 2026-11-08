@@ -18,9 +18,9 @@ zsh then reads the startup files from goatty's directory:
            restore the user's ZDOTDIR, source the user's .zshenv
            interactive? → ZDOTDIR = goatty's dir again   (else: done, plain zsh)
 .zprofile  (login) source the user's .zprofile with their ZDOTDIR, re-pin goatty's
-.zshrc     options, history, keys, compinit
+.zshrc     options, history, PATH, plugins-early.zsh (plugin fpath + env), keys, compinit
            [user's .zshrc, if shell.zsh.user_rc]
-           fzf → atuin → autosuggestions → starship (or fallback prompt) → integration
+           fzf → atuin → autosuggestions → starship (or fallback prompt) → plugins.zsh (plugin aliases + code) → integration
            ZDOTDIR = the user's again
            ~/.config/goatty/zshrc (the user's additions)
            syntax highlighting (last: it wraps every widget defined before it)
@@ -125,6 +125,10 @@ Measured 2026-11-07 on the dev machine (CachyOS, zsh 5.9.2), `zsh -l -i -c exit`
 | + Atuin init (everything on)                         | 60–67 |
 
 goatty's part is about 30 ms, half of it `starship init` (two process spawns). Caching the init scripts is #41. The first start after a zsh upgrade or on a fresh machine builds the completion dump (178 ms once in the real home dir; 47 ms after that, measured with `goattyd shell status`).
+
+## Plugins
+
+Installed plugins (Stage 5, [`plugins.md`](plugins.md)) render into `plugins-early.zsh`, `plugins.zsh` and `plugins/<id>/` of each generation, so previews, `zsh -n` validation and rollback cover them like everything else. `goatty-status` lists them as `plugin:<id>`.
 
 ## Not done yet
 

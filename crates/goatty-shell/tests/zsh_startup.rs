@@ -448,3 +448,94 @@ fn reloads_on_request() {
     svc.untrack_shell(pid);
     assert_eq!(svc.reload_shells(), 0);
 }
+
+/// Installed plugins load in a real managed shell: aliases with setting
+/// arguments, variables, a generated config file, the plugin's own code
+/// (seeing its settings), and `goatty-status` reporting them, including a
+/// plugin whose required command is missing.
+#[test]
+fn plugins_load_in_a_real_shell() {
+    let Some(zsh) = zsh() else { return };
+    let sb = Sandbox::new(zsh);
+    let plugin = |id: &str, toml: &str, files: &[(&str, &str)]| {
+        let dir = sb.home.join("plugins-src").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("plugin.toml"), toml).unwrap();
+        for (rel, text) in files {
+            std::fs::create_dir_all(dir.join(rel).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(rel), text).unwrap();
+        }
+        dir
+    };
+    let meow = plugin(
+        "meow",
+        r#"
+schema = 1
+id = "meow"
+name = "Meow"
+version = "1.0.0"
+summary = "cat, with options"
+publisher = "tests"
+[requires]
+commands = ["cat"]
+[[setting]]
+id = "numbers"
+label = "Number lines"
+type = "bool"
+default = true
+arg = "-n"
+[[setting]]
+id = "mode"
+label = "Mode"
+type = "choice"
+default = "purr"
+choices = [{ value = "purr", label = "Purr" }, { value = "hiss", label = "Hiss" }]
+[[alias]]
+name = "meow"
+command = "cat"
+args = ["{args}"]
+[[env]]
+name = "MEOW_MODE"
+value = "it's {mode}"
+[[file]]
+name = "meowrc"
+env = "MEOW_CONFIG"
+lines = ["mode={mode}", "{numbers.arg}"]
+[zsh]
+init = "zsh/init.zsh"
+[permissions]
+shell-code = "defines the greet function the plugin is about"
+"#,
+        &[("zsh/init.zsh", "typeset -g _meow=\"${goatty_settings[mode]}:$+goatty_settings\"\ngreet() { print -r -- \"greet:$_meow\" }\n")],
+    );
+    let ghost = plugin(
+        "ghost",
+        "schema = 1\nid = \"ghost\"\nname = \"Ghost\"\nversion = \"1.0.0\"\nsummary = \"needs a missing command\"\npublisher = \"tests\"\n[requires]\ncommands = [\"ghost-cmd\"]\n[[alias]]\nname = \"boo\"\ncommand = \"ghost-cmd\"\n",
+        &[],
+    );
+    let none = goatty_plugin::fetch::Fixed::default();
+    let p = goatty_shell::plugins::Plugins { dirs: &sb.dirs, fetch: &none, builtin: &[] };
+    for dir in [&meow, &ghost] {
+        let c = goatty_shell::plugins::Candidate::local(dir).unwrap();
+        let plan = p.plan(&c, &HostSettings::default()).unwrap();
+        p.install(&c, &plan.digest, &HostSettings::default()).unwrap();
+    }
+
+    let launch = sb.launch(ZshSettings { syntax_highlighting: false, ..Default::default() }, None);
+    let out = sb.run(
+        &launch,
+        "print -r -- \"alias=$aliases[meow] mode=$MEOW_MODE boo=${+aliases[boo]}\"; command cat -- \"$MEOW_CONFIG\"; greet; print -r -- after=${+goatty_settings}; goatty-status",
+    );
+    let text = stdout(&out);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.trim().is_empty(), "startup printed errors:\n{stderr}");
+    assert!(text.contains("alias=cat -n mode=it's purr boo=0"), "{text}");
+    assert!(text.contains("mode=purr\n-n\n"), "generated config file: {text}");
+    assert!(text.contains("greet:purr:1"), "init code saw its settings: {text}");
+    assert!(text.contains("after=0"), "settings are unset after the init code: {text}");
+    let status = goatty_shell::doctor::parse_status(&text);
+    let state = |n: &str| status.iter().find(|f| f.name == n).map(|f| f.state.clone());
+    use goatty_shell::doctor::State;
+    assert!(matches!(state("plugin:meow"), Some(State::Ok(d)) if d.ends_with("/cat")), "{status:?}");
+    assert_eq!(state("plugin:ghost"), Some(State::Missing));
+}

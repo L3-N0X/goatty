@@ -43,7 +43,8 @@ impl Launcher {
     }
 
     fn render(&self, dirs: &Dirs, settings: &HostSettings) -> Vec<GeneratedFile> {
-        zsh::render(&ZshConfig { settings, dirs, daemon_exe: self.daemon_exe.as_deref() })
+        let (plugins, _) = crate::plugins::active(dirs, settings);
+        zsh::render(&ZshConfig { settings, dirs, daemon_exe: self.daemon_exe.as_deref(), plugins: &plugins })
     }
 
     /// Build and activate the generation for `host` (a no-op when the

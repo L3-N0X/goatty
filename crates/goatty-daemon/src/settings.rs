@@ -48,3 +48,16 @@ pub(crate) fn rollback(daemon: &Daemon, req: ReqId, to: Option<u32>) -> ServerMs
         Err(e) => error(req, e),
     }
 }
+
+/// A plugin operation: JSON in, JSON out (`goatty_plugin::api`).
+pub(crate) fn plugin(daemon: &Daemon, req: ReqId, request: &str) -> ServerMsg {
+    let parsed: Result<goatty_plugin::api::Request, _> = serde_json::from_str(request);
+    let result = match parsed {
+        Ok(r) => daemon.host.plugin_request(r),
+        Err(e) => Err(anyhow::anyhow!("unknown plugin request ({e}); is goattyd older than this goatty?")),
+    };
+    match result.and_then(|r| serde_json::to_string(&r).map_err(Into::into)) {
+        Ok(reply) => ServerMsg::Plugin { req, reply },
+        Err(e) => error(req, e),
+    }
+}

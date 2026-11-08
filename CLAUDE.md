@@ -11,9 +11,9 @@
 - **Plugins for special tools:** declarative manifests (tools, shell integrations, prompt modules, schema-driven settings UI) for things like Docker, Git, Python, Node, fzf, zoxide. goatty installs them in user space and never takes over the host (no silent dotfile/PATH/login-shell changes, no sudo without asking).
 - **Remote-capable from the start:** the GUI is always a client of a `goattyd`, local or on another host over SSH/Tailscale. Rendering stays local.
 
-Full plan: `docs/goatty-project-plan.md`. Code structure and where new work goes: `docs/architecture.md`. Remote design: `docs/remote-architecture.md`. Managed zsh: `docs/managed-zsh.md`. Profiles/settings: `docs/profiles.md`. Spike results: `docs/stage0-findings.md`. Original remote idea: `docs/archive/remote-goattyd-plan.md`.
+Full plan: `docs/goatty-project-plan.md`. Plugins: `docs/plugins.md`. Code structure and where new work goes: `docs/architecture.md`. Remote design: `docs/remote-architecture.md`. Managed zsh: `docs/managed-zsh.md`. Profiles/settings: `docs/profiles.md`. Spike results: `docs/stage0-findings.md`. Original remote idea: `docs/archive/remote-goattyd-plan.md`.
 
-## Current status (2026-11-07)
+## Current status (2026-11-08)
 
 - **Stage 0 done:** GPUI + rio-vt terminal, glyph-cache renderer, daemon-owned sessions with reattach.
 - **Remote R0 done:** protocol v2 (multiplexed, ack/window flow control with skip-and-resync), `goatty-client`, `--ssh`/`--via` transports via `goattyd proxy`, auto-reconnect.
@@ -24,6 +24,7 @@ Full plan: `docs/goatty-project-plan.md`. Code structure and where new work goes
 - **Color picker:** `ui/color_picker.rs` (hue ring + SV square, RGB/HSL/HSV/OKLCH sliders, paste-anything field, history in `$XDG_STATE_HOME/goatty/color-history.json`), used by the theme editor. Color math and parsing: `goatty_config::colorspace`.
 - **Command palette:** `Ctrl+Shift+P` (`command_palette/`): fuzzy search over the `CommandRegistry` global (built-ins now, plugin commands later, #77), recently used first (`$XDG_STATE_HOME/goatty/command-history.json`). New user-facing actions should get a palette command (`registry::builtins`).
 - **Toasts:** `toast/` (#78): `toast::show(cx, Toast::success("…"))` from anywhere with `&mut App`; loading → `toast::update` for background work, `key` for feedback that replaces itself, buttons via `.action(…)`. Bottom-right of the window, never focused, paused on hover. Commands that work in the background report their result this way. Icons: `ui/icons.rs` (embedded SVGs in `assets/icons/`).
+- **Stage 5 foundations:** `goatty-plugin` crate (TOML manifest, settings schema, templates, derived permissions, zsh rendering, Ed25519-signed registry index, JSON API; bin `goatty-plugin` for authors/maintainers), `goatty-shell::plugins` (registries → verified snapshots, plan with digest → approved install, lock with file checksums, rendering into generations), protocol v5 (`Plugin` JSON request/reply), `goattyd plugin …`, Settings → Plugins page. Sibling repos: `../goatty-registry` (official registry: eza, zoxide, bat, docker; signed with the key in `~/.local/share/goatty-registry-keys/`, never committed) and `../goatty-plugin-template` (fd example + Claude skill).
 - **Next:** Stage 1 (tabs/splits, IME, box drawing, …) in parallel with remote R1, plus the rest of Stages 3/4 (GUI first-run/diagnostics, OSC 133 in the UI, settings polish). See the GitHub issues and milestones.
 
 Roadmap: Stage 1 terminal → Stage 2 daemon/sessions (partly done) → Stage 3 managed Zsh environment → Stage 4 profile engine + settings GUI → Stage 5 plugin system → Stage 6 more shells/OSes → Stage 7 remote/web ecosystem. Remote track R1–R3 runs alongside.
@@ -35,7 +36,7 @@ Roadmap: Stage 1 terminal → Stage 2 daemon/sessions (partly done) → Stage 3 
 - **Every open item becomes a GitHub issue** in [L3-N0X/goatty](https://github.com/L3-N0X/goatty/issues). That covers every TODO, known bug, untested path, deferred decision or follow-up you notice, even if it's out of scope for the current task. Don't leave open items only in chat, code comments, or doc prose.
   - Create them with `gh issue create --title … --body-file … --label … --milestone …`. Reference other issues as `#N`.
   - Labels: `app client config daemon input packaging performance platform polish protocol remote rendering security shell term testing ux`, plus `bug` (create new labels only when none fit).
-  - Milestones: `Stage 1`, `Stage 3`, `Stage 4`, `R1`, `R2 (later)`, `R3 (later)`, `later` (add `Stage N` milestones as stages begin).
+  - Milestones: `Stage 1`, `Stage 3`, `Stage 4`, `Stage 5`, `R1`, `R2 (later)`, `R3 (later)`, `later` (add `Stage N` milestones as stages begin).
   - Close issues via the commit/PR (`Fixes #N`) or `gh issue close N --comment "…"` saying what resolved it.
 - At the end of a task, list in your reply which issues you created or closed.
 - Keep this file current when the setup, goals, or conventions change.
@@ -49,7 +50,8 @@ crates/
   goatty-proto/   wire protocol v2: msg.rs (types), codec.rs (framing), paths.rs (socket path)
   goatty-client/  Connection (reconnecting, multiplexed; reader/writer/heartbeat threads), Control (blocking CLI client), transports. No UI deps
   goatty-config/  profile model: ClientSettings/HostSettings, store (lenient load, migrations, sparse save, backups), themes, keys, profile export/import, GOATTY_* overrides, colorspace (HSV/HSL/Oklch + lenient color parser), color picker history
-  goatty-shell/   managed zsh: Launcher, rendering (zsh/*.zsh + settings.zsh/starship.toml), generations, HostService, pinned tools + installer, doctor, `shell` commands
+  goatty-shell/   managed zsh: Launcher, rendering (zsh/*.zsh + settings.zsh/starship.toml), generations, HostService, pinned tools + installer, doctor, `shell` commands, plugins/ (registry, lock, plans, installs, `plugin` commands)
+  goatty-plugin/  plugin format + trust: manifest, schema, template, permissions, zsh, bundle, index + sign, fetch, api; bin goatty-plugin
   goatty-daemon/  lib (server, client, session, proxy) + bin goattyd: `serve`, `proxy`, `list`, `kill`, `send`, `stop`, `shell …`
   goatty-app/     GPUI client (bin `goatty`): cli, app, settings (AppSettings global), actions, workspace, session, command_palette/ (registry, fuzzy), toast/ (stack, layer), terminal/{view,element,glyphs,keys,stats}, settings_window/, ui/ (controls, text_input, color_picker, icons)
 docs/             plan, architecture, findings, remote architecture, archive/
@@ -74,6 +76,8 @@ cargo build --release --workspace
 ./target/release/goatty settings show|set|unset|validate|export|import   # no window needed
 ./target/release/goatty theme list|import|export|set [--for light|dark]|delete
 ./target/release/goattyd settings show|set|unset|validate               # host.json on this host
+./target/release/goattyd plugin search|info|install [--path DIR]|update|uninstall|list|set|registry …
+./target/debug/goatty-plugin validate|render|hash|check-downloads|index build|sign|verify   # plugin authors / registry
 
 cargo test --workspace                  # unit + daemon e2e (reconnect, multiplex, flow control, proxy reconnect)
 cargo fmt --all                          # rustfmt.toml: max_width 140; CI checks it
@@ -106,4 +110,5 @@ Settings live in `~/.config/goatty/settings.json` (client) and `host.json` (host
 - Workspace lints live in the root `Cargo.toml` (`[workspace.lints]`); every crate has `[lints] workspace = true`. Every `unsafe` block needs a `// SAFETY:` comment.
 - Dependencies: rio-vt pinned exactly; gpui from Zed git at a pinned rev (bump deliberately: change `rev`, then `cargo update -p gpui`). Edition 2024, `opt-level = 1` in dev with deps at 3.
 - **Managed zsh** (`goatty-shell/zsh/`): user files are sourced at top level (never inside a function), with the user's own `ZDOTDIR`; syntax highlighting loads last; `typeset name=(…)` without `builtin`. Change startup files only with `tests/zsh_startup.rs` green. Tool pins need a sha256 from the real download, checked against upstream's checksum file.
+- **Plugins are data, checked twice.** Permissions are derived from the manifest, never self-declared; installs carry the plan digest the user approved; everything sourced is re-checked against the lock. goatty quotes all generated shell (`goatty_plugin::zsh::quote`); a plugin's only code is its reviewed `zsh.init`. Registry indexes are signed offline; never put a signing key in a repo or CI. New pins: release ≥ 2 weeks old, sha256 matched against upstream's digest.
 - Safety first: no silent edits to dotfiles, global PATH or the login shell (goatty only writes under its own XDG dirs); OSC 52 clipboard reads are denied; the daemon socket is 0600 in a 0700 dir and never exposed on the network.

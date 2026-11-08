@@ -16,6 +16,8 @@ use crate::transport::{Closer, Endpoint, Transport};
 use crate::{PaneEvent, PaneSink, handshake};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// Plugin operations download releases and registries.
+pub const PLUGIN_TIMEOUT: Duration = Duration::from_secs(600);
 const HEARTBEAT: Duration = Duration::from_secs(5);
 const DEAD_AFTER: Duration = Duration::from_secs(20);
 
@@ -189,6 +191,15 @@ impl Connection {
         pending: impl FnOnce(flume::Sender<ServerMsg>) -> Pending,
         msg: impl FnOnce(ReqId) -> ClientMsg,
     ) -> Result<ServerMsg> {
+        self.request_within(REQUEST_TIMEOUT, pending, msg)
+    }
+
+    fn request_within(
+        &self,
+        timeout: Duration,
+        pending: impl FnOnce(flume::Sender<ServerMsg>) -> Pending,
+        msg: impl FnOnce(ReqId) -> ClientMsg,
+    ) -> Result<ServerMsg> {
         if !self.is_connected() {
             bail!("not connected to goattyd");
         }
@@ -196,7 +207,7 @@ impl Connection {
         let (tx, rx) = flume::bounded(1);
         self.shared.pending.lock().insert(req, pending(tx));
         self.shared.send(&msg(req));
-        let reply = rx.recv_timeout(REQUEST_TIMEOUT);
+        let reply = rx.recv_timeout(timeout);
         self.shared.pending.lock().remove(&req);
         match reply {
             Ok(ServerMsg::Error { message, .. }) => Err(anyhow!("goattyd: {message}")),
@@ -308,6 +319,16 @@ impl Connection {
     pub fn reload_shells(&self) -> Result<u32> {
         match self.request(Pending::Reply, |req| ClientMsg::ReloadShells { req })? {
             ServerMsg::ShellsReloaded { count, .. } => Ok(count),
+            other => bail!("unexpected reply {other:?}"),
+        }
+    }
+
+    /// A plugin operation (`goatty_plugin::api::Request` as JSON); returns
+    /// the reply JSON. Installs download, so this waits up to
+    /// [`PLUGIN_TIMEOUT`]. Blocks: call off the UI thread.
+    pub fn plugin(&self, request: String) -> Result<String> {
+        match self.request_within(PLUGIN_TIMEOUT, Pending::Reply, |req| ClientMsg::Plugin { req, request })? {
+            ServerMsg::Plugin { reply, .. } => Ok(reply),
             other => bail!("unexpected reply {other:?}"),
         }
     }
@@ -501,7 +522,8 @@ fn dispatch(s: &Shared, msg: ServerMsg) {
         | ServerMsg::HostSettings { req, .. }
         | ServerMsg::HostSettingsApplied { req, .. }
         | ServerMsg::Generations { req, .. }
-        | ServerMsg::ShellsReloaded { req, .. } => {
+        | ServerMsg::ShellsReloaded { req, .. }
+        | ServerMsg::Plugin { req, .. } => {
             if let Some(Pending::Reply(tx) | Pending::Attach { tx, .. }) = s.pending.lock().remove(&req) {
                 let _ = tx.send(msg);
             }

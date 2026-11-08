@@ -9,9 +9,11 @@ description = "goatty's managed shell environment: generated zsh startup files, 
 
 [dependencies]
 goatty-config.workspace = true
+goatty-plugin.workspace = true
+serde.workspace = true
+semver.workspace = true
 anyhow.workspace = true
 log.workspace = true
-sha2.workspace = true
 flate2.workspace = true
 tar.workspace = true
 similar.workspace = true
@@ -20,6 +22,7 @@ libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+ed25519-dalek.workspace = true
 goatty-term.workspace = true
 
 [lints]

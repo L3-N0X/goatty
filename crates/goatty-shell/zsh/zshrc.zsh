@@ -42,6 +42,11 @@ setopt $_goatty_hist_opts
 typeset -gU path fpath
 path+=("$_goatty_bin")
 
+# --- Plugins, part 1: completion paths and environment ----------------------
+# Before compinit, so plugin completions are found. `goattyd plugin list`
+# shows what's installed.
+builtin source -- "$_goatty_dir/plugins-early.zsh"
+
 # --- Keys -------------------------------------------------------------------
 bindkey -e
 autoload -Uz up-line-or-beginning-search down-line-or-beginning-search
@@ -148,6 +153,11 @@ else
   fi
 fi
 
+# --- Plugins, part 2: aliases and the plugins' own shell code ----------------
+# After goatty's features and prompt; before your additions (so you can
+# override a plugin's alias) and syntax highlighting.
+builtin source -- "$_goatty_dir/plugins.zsh"
+
 # --- Shell integration: OSC 133 prompt marks, OSC 7 working directory -------
 if _goatty_on integration && builtin source -- "$_goatty_dir/integration.zsh"; then
   _goatty_ok integration "$_goatty_dir/integration.zsh"
@@ -191,6 +201,8 @@ goatty-setup() {
   fi
   if (( $# == 0 )); then
     local -a missing=(${(ko)_goatty_state[(R)missing]})
+    # Plugins' commands come with the plugin (goattyd plugin install).
+    missing=(${missing:#plugin:*})
     set -- ${missing:#fzf}
     if (( $# == 0 )); then
       builtin print -r -- "goatty: nothing to install (see goatty-status)"
@@ -252,7 +264,7 @@ add-zsh-hook precmd _goatty_reload_requested
 # --- Missing-tools hint -----------------------------------------------------
 () {
   local -a missing=(${(ko)_goatty_state[(R)missing]})
-  missing=(${missing:#fzf})
+  missing=(${${missing:#fzf}:#plugin:*})
   (( $#missing )) && [[ -t 1 && ! -e $_goatty_hint_marker ]] || return 0
   builtin print -r -- $'\e[33mgoatty:\e[0m not installed: '"${(j:, :)missing}"$'. Run \e[1mgoatty-setup\e[0m to install (user space, no sudo), \e[1mgoatty-setup --dismiss\e[0m to hide this.'
 }

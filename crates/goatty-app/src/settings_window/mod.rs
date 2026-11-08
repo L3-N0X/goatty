@@ -8,6 +8,7 @@
 
 mod host;
 mod pages;
+mod plugins;
 
 use std::time::Duration;
 
@@ -55,6 +56,9 @@ pub fn open_at(cx: &mut App, page: Option<Page>) {
                     view.page = p;
                     cx.notify();
                 }
+                if page == Some(Page::Plugins) {
+                    view.load_plugins(false, cx);
+                }
             })
             .is_ok()
     {
@@ -91,13 +95,14 @@ pub enum Page {
     Prompt,
     History,
     Shortcuts,
+    Plugins,
     Workspace,
     Profile,
 }
 
 impl Page {
-    pub const ALL: [Page; 7] =
-        [Page::Appearance, Page::Shell, Page::Prompt, Page::History, Page::Shortcuts, Page::Workspace, Page::Profile];
+    pub const ALL: [Page; 8] =
+        [Page::Appearance, Page::Shell, Page::Prompt, Page::History, Page::Plugins, Page::Shortcuts, Page::Workspace, Page::Profile];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -105,6 +110,7 @@ impl Page {
             Page::Shell => "Shell",
             Page::Prompt => "Prompt",
             Page::History => "History",
+            Page::Plugins => "Plugins",
             Page::Shortcuts => "Shortcuts",
             Page::Workspace => "Workspace",
             Page::Profile => "Profile",
@@ -117,7 +123,7 @@ impl Page {
 
     /// Edits the connected host's settings (staged, then applied).
     pub fn is_host(self) -> bool {
-        matches!(self, Page::Shell | Page::Prompt | Page::History)
+        matches!(self, Page::Shell | Page::Prompt | Page::History | Page::Plugins)
     }
 }
 
@@ -180,6 +186,7 @@ pub struct SettingsWindow {
     /// What the last recorded shortcut replaced or takes from the shell:
     /// (action it was recorded for, message).
     shortcut_note: Option<(&'static str, String)>,
+    plugins: plugins::PluginsPage,
     _subs: Vec<Subscription>,
 }
 
@@ -246,9 +253,11 @@ impl SettingsWindow {
             theme_name,
             recording: None,
             shortcut_note: None,
+            plugins: plugins::PluginsPage::default(),
             _subs: subs,
         };
         this.load_host(cx);
+        this.load_plugins(false, cx);
         this.select_slot(ColorSlot::Background, cx);
         this
     }
