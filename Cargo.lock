@@ -1978,6 +1978,7 @@ dependencies = [
  "flate2",
  "goatty-config",
  "goatty-term",
+ "libc",
  "log",
  "serde_json",
  "sha2",

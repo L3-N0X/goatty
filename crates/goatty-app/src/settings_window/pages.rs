@@ -1040,16 +1040,34 @@ impl SettingsWindow {
                     .child(button("apply", "Apply", ButtonKind::Primary, ui, self.act(cx, |v, cx| v.apply(cx)))),
             );
         } else {
-            bar = bar.child(div().flex().justify_end().child(button(
-                "dismiss",
-                "OK",
-                ButtonKind::Normal,
-                ui,
-                self.act(cx, |v, cx| {
-                    v.outcome = None;
-                    cx.notify();
-                }),
-            )));
+            let offer_reload = self.outcome.as_ref().is_some_and(|o| o.reload);
+            bar = bar.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap_2()
+                    .when(self.busy, |d| d.child(div().text_color(ui.muted).child("Working…")))
+                    .when(offer_reload, |d| {
+                        d.child(button(
+                            "reload-shells",
+                            "Reload running shells",
+                            ButtonKind::Primary,
+                            ui,
+                            self.act(cx, |v, cx| v.reload_shells(cx)),
+                        ))
+                    })
+                    .child(button(
+                        "dismiss",
+                        if offer_reload { "Not now" } else { "OK" },
+                        ButtonKind::Normal,
+                        ui,
+                        self.act(cx, |v, cx| {
+                            v.outcome = None;
+                            cx.notify();
+                        }),
+                    )),
+            );
         }
         Some(bar.into_any_element())
     }

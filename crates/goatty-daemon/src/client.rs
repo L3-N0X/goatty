@@ -123,6 +123,9 @@ pub(crate) fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                 ClientMsg::SetHostSettings { req, json, apply } => reply(crate::settings::set(&daemon, req, &json, apply)),
                 ClientMsg::ListGenerations { req } => reply(crate::settings::generations(&daemon, req)),
                 ClientMsg::Rollback { req, generation } => reply(crate::settings::rollback(&daemon, req, generation)),
+                ClientMsg::ReloadShells { req } => {
+                    reply(ServerMsg::ShellsReloaded { req, count: u32::try_from(daemon.host.reload_shells()).unwrap_or(u32::MAX) })
+                }
                 ClientMsg::SetPalette { session, colors } => {
                     // Any client of the session may set it (last one wins);
                     // it only affects answers to color queries.

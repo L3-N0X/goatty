@@ -20,7 +20,7 @@ Full plan: `docs/goatty-project-plan.md`. Code structure and where new work goes
 - **Restructured for Stage 1:** daemon split into a library, `goatty-config` crate, app built around a `Workspace` root view with GPUI actions/keybindings, clap CLIs.
 - **Stage 3 core done:** `goatty-shell` crate: sessions run zsh with a generated ZDOTDIR (autosuggestions, syntax highlighting, completion, Starship, Atuin, fzf, OSC 133/7), user dotfiles untouched; pinned sha256-verified user-space tool installs; `goattyd shell status|install|uninstall|dismiss`, `goatty-setup` inside the shell.
 - **Themes and settings CLI:** user themes (`~/.config/goatty/themes/`, importers for base16/iTerm2/Windows Terminal), theme editor, follow the desktop's light/dark, `goatty settings|theme` and `goattyd settings` commands.
-- **Stage 4 core done:** client/host settings documents (`settings.json` / `host.json`, lenient versioned store, sparse saves with backups), themes, configurable keybindings, host config built as validated generations with rollback, protocol v3 (host settings + `SetPalette`), live-applying settings window (`Ctrl+,`) with preview/apply for host settings, profile export/import.
+- **Stage 4 core done:** client/host settings documents (`settings.json` / `host.json`, lenient versioned store, sparse saves with backups), themes, configurable keybindings, host config built as validated generations with rollback, protocol v4 (host settings, `SetPalette`, `ReloadShells`), live-applying settings window (`Ctrl+,`) with preview/apply for host settings, profile export/import, reloading running shells after an apply (`goattyd shell reload`, SIGURG → reload at the next idle prompt).
 - **Color picker:** `ui/color_picker.rs` (hue ring + SV square, RGB/HSL/HSV/OKLCH sliders, paste-anything field, history in `$XDG_STATE_HOME/goatty/color-history.json`), used by the theme editor. Color math and parsing: `goatty_config::colorspace`.
 - **Next:** Stage 1 (tabs/splits, IME, box drawing, …) in parallel with remote R1, plus the rest of Stages 3/4 (GUI first-run/diagnostics, OSC 133 in the UI, settings polish). See the GitHub issues and milestones.
 
@@ -67,6 +67,7 @@ cargo build --release --workspace
 ./target/release/goattyd shell status          # what the managed zsh loads, what's missing, startup ms
 ./target/release/goattyd shell install [-y] [TOOL…]   # pinned, sha256-checked, into ~/.local/share/goatty
 ./target/release/goattyd shell generations | diff | rollback [N]
+./target/release/goattyd shell reload            # running managed shells pick up the active generation
 ./target/release/goatty --settings[=shell]       # also open the settings window (Ctrl+, in the app)
 ./target/release/goatty settings show|set|unset|validate|export|import   # no window needed
 ./target/release/goatty theme list|import|export|set [--for light|dark]|delete

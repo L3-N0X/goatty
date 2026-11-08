@@ -147,6 +147,8 @@ pub struct Outcome {
     pub lines: Vec<String>,
     /// (file name, unified diff)
     pub diff: Vec<(String, String)>,
+    /// The shell configuration changed: offer to reload running shells.
+    pub reload: bool,
 }
 
 pub struct SettingsWindow {
@@ -274,7 +276,6 @@ impl SettingsWindow {
     fn sync_picker(&mut self, cx: &mut Context<'_, Self>) {
         let color = cx.global::<AppSettings>().colors.get(self.edit_slot);
         self.picker.update(cx, |p, cx| p.sync(color, cx));
-        cx.notify();
     }
 
     /// The picker moved to `color`: show it live, and save it once the changes stop.
@@ -317,7 +318,7 @@ impl SettingsWindow {
     }
 
     fn message(&mut self, ok: bool, line: String, cx: &mut Context<'_, Self>) {
-        self.outcome = Some(Outcome { ok, lines: vec![line], diff: Vec::new() });
+        self.outcome = Some(Outcome { ok, lines: vec![line], diff: Vec::new(), reload: false });
         cx.notify();
     }
 
@@ -422,7 +423,7 @@ impl SettingsWindow {
                 if let Some(id) = first {
                     view.choose_theme(id, cx);
                 }
-                view.outcome = Some(Outcome { ok, lines, diff: Vec::new() });
+                view.outcome = Some(Outcome { ok, lines, diff: Vec::new(), reload: false });
                 cx.notify();
             });
         })
@@ -522,9 +523,13 @@ impl SettingsWindow {
                 match result {
                     Ok(a) => {
                         let mut lines = Vec::new();
+                        let changed = a.applied && !a.diff.is_empty();
                         if a.applied {
                             lines.push(match a.generation {
-                                Some(g) => format!("Applied as generation {g}. New sessions use it; running shells: goatty-reload."),
+                                Some(g) if changed => {
+                                    format!("Applied as generation {g}. New sessions use it; reload running shells to use it there too.")
+                                }
+                                Some(g) => format!("Applied. The shell configuration didn't change (generation {g})."),
                                 None => "Applied.".into(),
                             });
                         } else if a.diff.is_empty() {
@@ -534,13 +539,13 @@ impl SettingsWindow {
                         }
                         lines.extend(a.issues.iter().map(|i| format!("⚠ {i}")));
                         view.show_diff = !apply;
-                        view.outcome = Some(Outcome { ok: true, lines, diff: a.diff });
+                        view.outcome = Some(Outcome { ok: true, lines, diff: a.diff, reload: changed });
                         if a.applied {
                             view.draft = None;
                             view.load_host(cx);
                         }
                     }
-                    Err(e) => view.outcome = Some(Outcome { ok: false, lines: vec![format!("{e:#}")], diff: Vec::new() }),
+                    Err(e) => view.outcome = Some(Outcome { ok: false, lines: vec![format!("{e:#}")], diff: Vec::new(), reload: false }),
                 }
                 cx.notify();
             });
@@ -559,6 +564,35 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// Ask the host's running managed shells to restart with the active
+    /// generation.
+    pub fn reload_shells(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(link) = self.link.clone() else { return };
+        self.busy = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { link.reload_shells() }).await;
+            let _ = this.update(cx, |view, cx| {
+                view.busy = false;
+                let (ok, lines) = match result {
+                    Ok(0) => (true, vec!["No running goatty shells to reload.".to_string()]),
+                    Ok(n) => (
+                        true,
+                        vec![
+                            format!("Asked {n} running shell(s) to reload."),
+                            "Idle prompts restart now, busy shells after their current command. Shells with background jobs only show a reminder."
+                                .into(),
+                        ],
+                    ),
+                    Err(e) => (false, vec![format!("Couldn't reload shells: {e:#}")]),
+                };
+                view.outcome = Some(Outcome { ok, lines, diff: Vec::new(), reload: false });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub fn rollback(&mut self, generation: u32, cx: &mut Context<'_, Self>) {
         let Some(link) = self.link.clone() else { return };
         self.busy = true;
@@ -570,10 +604,13 @@ impl SettingsWindow {
                 view.outcome = Some(match result {
                     Ok(_) => Outcome {
                         ok: true,
-                        lines: vec![format!("Generation {generation} is active again, with its settings.")],
+                        lines: vec![format!(
+                            "Generation {generation} is active again, with its settings. New sessions use it; reload running shells to use it there too."
+                        )],
                         diff: Vec::new(),
+                        reload: true,
                     },
-                    Err(e) => Outcome { ok: false, lines: vec![format!("{e:#}")], diff: Vec::new() },
+                    Err(e) => Outcome { ok: false, lines: vec![format!("{e:#}")], diff: Vec::new(), reload: false },
                 });
                 view.draft = None;
                 view.load_host(cx);
@@ -594,8 +631,13 @@ impl SettingsWindow {
             let result = std::fs::write(&path, text);
             let _ = this.update(cx, |view, cx| {
                 view.outcome = Some(match result {
-                    Ok(()) => Outcome { ok: true, lines: vec![format!("Exported to {}", path.display())], diff: Vec::new() },
-                    Err(e) => Outcome { ok: false, lines: vec![format!("Couldn't write {}: {e}", path.display())], diff: Vec::new() },
+                    Ok(()) => Outcome { ok: true, lines: vec![format!("Exported to {}", path.display())], diff: Vec::new(), reload: false },
+                    Err(e) => Outcome {
+                        ok: false,
+                        lines: vec![format!("Couldn't write {}: {e}", path.display())],
+                        diff: Vec::new(),
+                        reload: false,
+                    },
                 });
                 cx.notify();
             });
@@ -630,9 +672,12 @@ impl SettingsWindow {
                             view.edit_host(cx, |d| *d = h.value);
                             lines.push("Shell, prompt and history settings are staged: preview and apply them below.".into());
                         }
-                        view.outcome = Some(Outcome { ok: true, lines, diff: Vec::new() });
+                        view.outcome = Some(Outcome { ok: true, lines, diff: Vec::new(), reload: false });
                     }
-                    Err(e) => view.outcome = Some(Outcome { ok: false, lines: vec![format!("Not imported: {e}")], diff: Vec::new() }),
+                    Err(e) => {
+                        view.outcome =
+                            Some(Outcome { ok: false, lines: vec![format!("Not imported: {e}")], diff: Vec::new(), reload: false })
+                    }
                 }
                 cx.notify();
             });

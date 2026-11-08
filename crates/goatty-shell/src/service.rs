@@ -2,7 +2,9 @@
 //! activate → save), generations, rollback. goattyd serves these over the
 //! protocol; `goatty --local` (no daemon) calls them directly.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use goatty_config::{Effective, HostSettings, store};
@@ -35,11 +37,14 @@ pub struct HostService {
     pub launcher: Launcher,
     /// `None` without `$HOME`.
     pub host_file: Option<PathBuf>,
+    /// Running managed shells (pids), for [`HostService::reload_shells`].
+    /// Shared between clones.
+    shells: Arc<Mutex<BTreeSet<u32>>>,
 }
 
 impl HostService {
     pub fn new(launcher: Launcher, host_file: Option<PathBuf>) -> Self {
-        Self { launcher, host_file }
+        Self { launcher, host_file, shells: Arc::default() }
     }
 
     /// This process's host: XDG dirs, `goatty_config::host_file()`.
@@ -88,6 +93,36 @@ impl HostService {
 
     pub fn generations(&self) -> Vec<Generation> {
         self.launcher.dirs().map(generation::list).unwrap_or_default()
+    }
+
+    /// Remember a managed shell this process started, so
+    /// [`reload_shells`](Self::reload_shells) can reach it.
+    pub fn track_shell(&self, pid: u32) {
+        self.shells.lock().unwrap_or_else(|e| e.into_inner()).insert(pid);
+    }
+
+    /// The shell exited.
+    pub fn untrack_shell(&self, pid: u32) {
+        self.shells.lock().unwrap_or_else(|e| e.into_inner()).remove(&pid);
+    }
+
+    /// Ask every tracked managed shell to restart with the active
+    /// generation. They get `SIGURG`: the managed zsh reloads at once when
+    /// it's idle at an empty prompt, otherwise at its next prompt (and not
+    /// at all while it has jobs; it says so instead). `SIGURG` is ignored
+    /// by default, so a process that isn't our zsh (the user ran
+    /// `exec bash`, or the pid was reused) is unaffected. Returns how many
+    /// shells were signaled.
+    pub fn reload_shells(&self) -> usize {
+        let mut shells = self.shells.lock().unwrap_or_else(|e| e.into_inner());
+        shells.retain(|&pid| {
+            let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
+            // SAFETY: kill(2) has no memory-safety preconditions; a stale
+            // pid at worst gets an ignored-by-default signal.
+            unsafe { libc::kill(pid, libc::SIGURG) == 0 }
+        });
+        log::info!("asked {} managed shell(s) to reload", shells.len());
+        shells.len()
     }
 
     /// Activate generation `to` (default: the previous one) and restore its

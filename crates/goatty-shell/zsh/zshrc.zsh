@@ -208,6 +208,42 @@ goatty-reload() {
   ZDOTDIR=$_goatty_dir builtin exec "${commands[zsh]:-zsh}" -l
 }
 
+# --- Reload on request -------------------------------------------------------
+# After host settings change, goatty can ask running shells to pick up the
+# new configuration: it sends SIGURG (ignored by default, so other programs
+# don't care). An idle, empty prompt reloads right away; otherwise the shell
+# reloads at its next prompt. A shell with jobs only says so: exec would
+# lose them.
+builtin zmodload -F zsh/parameter p:jobstates 2>/dev/null
+typeset -gi _goatty_reload_pending=0
+
+_goatty_reload_requested() {
+  (( _goatty_reload_pending )) || return 0
+  _goatty_reload_pending=0
+  if (( ${#jobstates} )); then
+    builtin print -r -- $'\e[33mgoatty:\e[0m shell settings changed; run \e[1mgoatty-reload\e[0m once your jobs are done.'
+    return 0
+  fi
+  goatty-reload
+}
+
+# Abandon the empty line, so the precmd hook runs and reloads. (From a trap,
+# accept-line would only take effect on the next keypress; send-break
+# returns to the top level at once.)
+_goatty_reload_idle() {
+  [[ $CONTEXT == start && -z $BUFFER ]] && zle .send-break
+}
+zle -N _goatty_reload_idle
+
+TRAPURG() {
+  _goatty_reload_pending=1
+  zle && zle _goatty_reload_idle
+  return 0
+}
+
+builtin autoload -Uz add-zsh-hook
+add-zsh-hook precmd _goatty_reload_requested
+
 # --- Missing-tools hint -----------------------------------------------------
 () {
   local -a missing=(${(ko)_goatty_state[(R)missing]})
