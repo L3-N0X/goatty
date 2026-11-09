@@ -96,6 +96,8 @@ pub(crate) fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                 ClientMsg::Input { session, data } => {
                     if let Some((s, _)) = subs.get(&session) {
                         let _ = s.pty.lock().write(&data);
+                        // Enter may have started a program that prints nothing.
+                        s.poke_foreground();
                     }
                 }
                 ClientMsg::Resize { session, size } => {
@@ -148,6 +150,11 @@ pub(crate) fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                         reply(ServerMsg::Error { req: Some(req), message: format!("couldn't start the plugin operation: {e}") });
                     }
                 }
+                ClientMsg::SaveLayout { id, sessions, json } => {
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                    daemon.layouts.lock().save(conn, id, sessions, json, now);
+                }
+                ClientMsg::ClaimLayout { req } => reply(ServerMsg::Layout { req, layout: daemon.claim_layout(conn) }),
                 ClientMsg::SetPalette { session, colors } => {
                     // Any client of the session may set it (last one wins);
                     // it only affects answers to color queries.
@@ -161,6 +168,7 @@ pub(crate) fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
         }
     })();
 
+    daemon.layouts.lock().release(conn);
     for (id, (s, _)) in subs {
         s.unsubscribe(conn);
         log::info!("connection {conn} detached from session {id}");

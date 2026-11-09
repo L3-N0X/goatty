@@ -107,6 +107,13 @@ impl TextInput {
         &self.content
     }
 
+    /// Select everything (typing replaces it).
+    pub fn select_all_text(&mut self, cx: &mut Context<'_, Self>) {
+        self.selected_range = 0..self.content.len();
+        self.selection_reversed = false;
+        cx.notify();
+    }
+
     /// Replace the text without emitting `Changed`.
     pub fn set_text(&mut self, text: impl Into<SharedString>, cx: &mut Context<'_, Self>) {
         self.content = text.into();

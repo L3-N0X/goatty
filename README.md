@@ -43,6 +43,8 @@ Environment variables: `GOATTY_FONT`, `GOATTY_FONT_SIZE`, `GOATTY_SHELL`, `GOATT
 
 Keys: `Ctrl+C` copies when text is selected and sends an interrupt otherwise. `Ctrl+V` / `Ctrl+Shift+V` paste, `Ctrl+Shift+C` copies, `Shift+PgUp/PgDn` scroll back, `Ctrl` with `+`/`-` (with or without Shift, on US and German layouts) changes the font size, `Ctrl+0` resets it. `Ctrl+Shift+P` opens the command palette (fuzzy search over every command), `Ctrl+,` opens settings.
 
+Tabs and panes: `Ctrl+Shift+T` new tab, `Ctrl+Shift+W` closes the pane (and the tab with its last pane), `Ctrl+Tab` / `Ctrl+PgDn` and `Ctrl+Shift+Tab` / `Ctrl+PgUp` switch tabs, `Alt+1`…`Alt+8` go to a tab (`Alt+9` the last), `Ctrl+Shift+PgUp/PgDn` move it. `Ctrl+Shift+E` splits right, `Ctrl+Shift+O` down; `Alt+arrows` move between panes, `Alt+Shift+arrows` resize, `Ctrl+Shift+Z` zooms a pane. Tabs come in two styles (Settings → Workspace): modern browser-like tabs or a compact one-line bar, both with Nerd Font icons for the running program when a Nerd Font is installed.
+
 ## Development environment
 
 With [nix](https://nixos.org) (flakes enabled), `nix develop` (or [direnv](https://direnv.net) with the checked-in `.envrc`) provides the Rust toolchain, [`just`](https://just.systems) and the system libraries GPUI needs. Run `just` to list the common tasks (`just build`, `just run`, `just test`, `just ci`). Without nix, install the libraries with `scripts/ci-deps.sh` and Rust with rustup.

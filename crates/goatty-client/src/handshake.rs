@@ -136,11 +136,11 @@ mod tests {
     #[test]
     fn legacy_exact_match_daemons_get_a_retry() {
         let err = |d: u32| ServerMsg::Error { req: None, message: format!("protocol mismatch: daemon v{d}, client v{PROTOCOL_VERSION}") };
-        assert!(matches!(check_greeting(err(5), PROTOCOL_VERSION).unwrap(), Outcome::RetryWith(5)));
+        assert!(matches!(check_greeting(err(MIN_PROTOCOL_VERSION), PROTOCOL_VERSION).unwrap(), Outcome::RetryWith(MIN_PROTOCOL_VERSION)));
         // Too old to speak to at all.
         assert!(!mismatch(check_greeting(err(MIN_PROTOCOL_VERSION - 1), PROTOCOL_VERSION)).daemon_is_newer);
         // Retrying with that version and getting the same answer again doesn't loop.
-        assert!(check_greeting(err(5), 5).is_err());
+        assert!(check_greeting(err(MIN_PROTOCOL_VERSION), MIN_PROTOCOL_VERSION).is_err());
         let other = ServerMsg::Error { req: None, message: "nope".into() };
         assert_eq!(check_greeting(other, PROTOCOL_VERSION).unwrap_err().to_string(), "goattyd: nope");
     }

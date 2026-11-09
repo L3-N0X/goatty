@@ -35,6 +35,7 @@ use crate::settings_window::HostLink;
 use crate::ui::controls::{ButtonKind, button};
 use crate::ui::icons::Icon;
 use crate::ui::style::Ui;
+use crate::workspace::saved::{self, Startup};
 
 /// What `goatty` was asked to connect to.
 #[derive(Clone)]
@@ -246,7 +247,7 @@ impl Focusable for ConnectView {
     }
 }
 
-type Ready = (Arc<Session>, HostLink);
+type Ready = (Startup, HostLink);
 
 impl ConnectView {
     fn ssh_target(&self) -> Option<SshTarget> {
@@ -276,8 +277,8 @@ impl ConnectView {
 
     fn finish(&mut self, result: Result<Ready>, window: &mut Window, cx: &mut Context<'_, Self>) {
         match result {
-            Ok((session, link)) => {
-                crate::app::open_terminal_window(cx, session, link, self.plan.open_settings.take());
+            Ok((startup, link)) => {
+                crate::app::open_terminal_window(cx, startup, link, self.plan.open_settings.take());
                 window.remove_window();
             }
             Err(e) => {
@@ -296,8 +297,8 @@ impl ConnectView {
         let (endpoint, mode) = (self.plan.endpoint.clone(), self.plan.mode);
         self.work(format!("Connecting to {}…", endpoint.label()), window, cx, move || {
             let conn = Connection::open(endpoint, crate::CLIENT)?;
-            let session = Session::daemon(conn.clone(), initial_size(), mode)?;
-            Ok((session, HostLink::Daemon(conn)))
+            let startup = saved::startup(&conn, initial_size(), mode)?;
+            Ok((startup, HostLink::Daemon(conn)))
         });
     }
 
@@ -330,8 +331,8 @@ impl ConnectView {
                         remote::stop_daemon(&target)?;
                     }
                     let conn = Connection::open(endpoint, crate::CLIENT)?;
-                    let session = Session::daemon(conn.clone(), initial_size(), mode)?;
-                    Ok((session, HostLink::Daemon(conn)))
+                    let startup = saved::startup(&conn, initial_size(), mode)?;
+                    Ok((startup, HostLink::Daemon(conn)))
                 });
             }
         }
@@ -358,14 +359,14 @@ pub fn plain_ssh(host: &str) -> Result<Ready> {
     let argv = vec!["ssh".to_string(), "--".into(), host.to_string()];
     match Connection::open(Endpoint::Local, crate::CLIENT) {
         Ok(conn) => match Session::daemon_run(conn.clone(), initial_size(), argv.clone()) {
-            Ok(session) => return Ok((session, HostLink::Daemon(conn))),
+            Ok(session) => return Ok((Startup::Session(session), HostLink::Daemon(conn))),
             Err(e) => log::warn!("the local goattyd can't run ssh ({e:#}); running it in this window"),
         },
         Err(e) => log::warn!("no local goattyd ({e:#}); running ssh in this window"),
     }
     let session = Session::local_command(initial_size(), argv).context("couldn't start ssh")?;
     let daemon = std::env::current_exe().ok().map(|e| e.with_file_name("goattyd")).filter(|d| d.exists());
-    Ok((session, HostLink::Local(Arc::new(HostService::from_env(daemon)))))
+    Ok((Startup::Session(session), HostLink::Local(Arc::new(HostService::from_env(daemon)))))
 }
 
 impl Render for ConnectView {

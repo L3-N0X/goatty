@@ -43,6 +43,43 @@ actions!(
     ]
 );
 
+actions!(
+    workspace,
+    [
+        NewTab,
+        /// Close the focused pane (the tab with its last pane).
+        ClosePane,
+        CloseTab,
+        NextTab,
+        PreviousTab,
+        MoveTabLeft,
+        MoveTabRight,
+        SelectTab1,
+        SelectTab2,
+        SelectTab3,
+        SelectTab4,
+        SelectTab5,
+        SelectTab6,
+        SelectTab7,
+        SelectTab8,
+        SelectLastTab,
+        RenameTab,
+        SplitRight,
+        SplitDown,
+        FocusPaneLeft,
+        FocusPaneRight,
+        FocusPaneUp,
+        FocusPaneDown,
+        ResizePaneLeft,
+        ResizePaneRight,
+        ResizePaneUp,
+        ResizePaneDown,
+        /// Let the focused pane fill the tab, or go back to the split.
+        TogglePaneZoom,
+        EqualizePanes,
+    ]
+);
+
 /// The GPUI action for a settings name (`goatty_config::keys::ACTIONS`).
 pub fn action_by_name(name: &str) -> Option<Box<dyn Action>> {
     Some(match name {
@@ -57,6 +94,35 @@ pub fn action_by_name(name: &str) -> Option<Box<dyn Action>> {
         "open_settings" => Box::new(OpenSettings),
         "command_palette" => Box::new(ToggleCommandPalette),
         "reload_shells" => Box::new(ReloadShells),
+        "new_tab" => Box::new(NewTab),
+        "close_pane" => Box::new(ClosePane),
+        "close_tab" => Box::new(CloseTab),
+        "next_tab" => Box::new(NextTab),
+        "previous_tab" => Box::new(PreviousTab),
+        "move_tab_left" => Box::new(MoveTabLeft),
+        "move_tab_right" => Box::new(MoveTabRight),
+        "select_tab_1" => Box::new(SelectTab1),
+        "select_tab_2" => Box::new(SelectTab2),
+        "select_tab_3" => Box::new(SelectTab3),
+        "select_tab_4" => Box::new(SelectTab4),
+        "select_tab_5" => Box::new(SelectTab5),
+        "select_tab_6" => Box::new(SelectTab6),
+        "select_tab_7" => Box::new(SelectTab7),
+        "select_tab_8" => Box::new(SelectTab8),
+        "select_last_tab" => Box::new(SelectLastTab),
+        "rename_tab" => Box::new(RenameTab),
+        "split_right" => Box::new(SplitRight),
+        "split_down" => Box::new(SplitDown),
+        "focus_pane_left" => Box::new(FocusPaneLeft),
+        "focus_pane_right" => Box::new(FocusPaneRight),
+        "focus_pane_up" => Box::new(FocusPaneUp),
+        "focus_pane_down" => Box::new(FocusPaneDown),
+        "resize_pane_left" => Box::new(ResizePaneLeft),
+        "resize_pane_right" => Box::new(ResizePaneRight),
+        "resize_pane_up" => Box::new(ResizePaneUp),
+        "resize_pane_down" => Box::new(ResizePaneDown),
+        "toggle_pane_zoom" => Box::new(TogglePaneZoom),
+        "equalize_panes" => Box::new(EqualizePanes),
         _ => return None,
     })
 }
@@ -92,6 +158,7 @@ pub fn apply_keybindings(overrides: &BTreeMap<String, Option<String>>, cx: &mut 
     cx.bind_keys(crate::ui::color_picker::bindings());
     cx.bind_keys(crate::settings_window::bindings());
     cx.bind_keys(crate::paste_confirm::bindings());
+    cx.bind_keys(crate::close_confirm::bindings());
     let palette_keys = goatty_config::keys::keys_for("command_palette", overrides);
     let palette = crate::command_palette::bindings(&palette_keys, cx);
     cx.bind_keys(palette);

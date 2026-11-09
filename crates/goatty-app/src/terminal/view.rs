@@ -47,7 +47,8 @@ const ZOOM_TOAST: Duration = Duration::from_millis(1800);
 /// What a pane tells its parent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminalEvent {
-    /// [`TerminalView::title`] changed.
+    /// [`TerminalView::title`], the foreground program or the link state
+    /// changed (what tabs and the window title show).
     TitleChanged,
     /// The shell exited; the pane should close.
     Exited,
@@ -110,6 +111,8 @@ pub struct TerminalView {
     app_title: String,
     /// Last decorated title reported via [`TerminalEvent::TitleChanged`].
     title: String,
+    /// Last foreground program reported the same way.
+    process: Option<String>,
     exited: bool,
     // Links.
     link_click: LinkClick,
@@ -214,6 +217,7 @@ impl TerminalView {
             last_bytes: 0,
             app_title: DEFAULT_TITLE.into(),
             title: String::new(),
+            process: None,
             exited: false,
             link_click: settings.links.open_on,
             mouse_cell: None,
@@ -261,22 +265,46 @@ impl TerminalView {
         self.session.decorate_title(&self.app_title)
     }
 
+    /// The title the application set (OSC 0/2), if any.
+    pub fn app_title(&self) -> Option<&str> {
+        (self.app_title != DEFAULT_TITLE).then_some(self.app_title.as_str())
+    }
+
+    /// The foreground program (`zsh`, `nvim`, …), when the host can tell.
+    pub fn process(&self) -> Option<&str> {
+        self.process.as_deref()
+    }
+
+    /// The shell's directory (OSC 7), on the session's host.
+    pub fn cwd(&self) -> Option<PathBuf> {
+        self.session.terminal.current_directory()
+    }
+
+    pub fn session(&self) -> &Arc<Session> {
+        &self.session
+    }
+
     fn on_wake(&mut self, cx: &mut Context<'_, Self>) {
         self.session.clear_wake();
         self.poke_cursor();
+        // Tabs fall back to the directory when there's no title.
+        let mut cwd_changed = false;
         while let Ok(ev) = self.session.ui_events.try_recv() {
             match ev {
                 UiEvent::Title(t) => self.app_title = t,
                 UiEvent::ResetTitle => self.app_title = DEFAULT_TITLE.into(),
                 UiEvent::ClipboardStore(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
-                UiEvent::Bell | UiEvent::CwdChanged | UiEvent::Exit => {}
+                UiEvent::CwdChanged => cwd_changed = true,
+                UiEvent::Bell | UiEvent::Exit => {}
             }
         }
         // Host and link state (reconnecting…) are part of the title, so
         // re-check even without a Title event.
         let title = self.title();
-        if title != self.title {
+        let process = self.session.process.lock().clone();
+        if title != self.title || process != self.process || cwd_changed {
             self.title = title;
+            self.process = process;
             cx.emit(TerminalEvent::TitleChanged);
         }
         if !self.exited && self.session.exited.load(Ordering::Acquire) {

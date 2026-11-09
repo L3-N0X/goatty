@@ -26,13 +26,19 @@
 use serde::{Deserialize, Serialize};
 
 /// The newest protocol version this build speaks.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// The oldest protocol version this build still speaks.
-pub const MIN_PROTOCOL_VERSION: u32 = 5;
+pub const MIN_PROTOCOL_VERSION: u32 = 7;
 
 /// v6: `ClientMsg::Run` (a session running a given command).
 pub const RUN_SINCE: u32 = 6;
+
+/// v7: `ServerMsg::Process` and `SessionInfo::process`.
+pub const PROCESS_SINCE: u32 = 7;
+
+/// v8: `SaveLayout` / `ClaimLayout` (saved window layouts).
+pub const LAYOUT_SINCE: u32 = 8;
 
 /// The version to use with a peer whose newest version is `peer`, or
 /// `None` when the ranges don't overlap.
@@ -44,6 +50,9 @@ pub fn negotiate(peer: u32) -> Option<u32> {
 pub type SessionId = u64;
 /// Client-chosen correlation id for request/response pairs.
 pub type ReqId = u32;
+/// Client-chosen id of a window layout (random, so windows on different
+/// machines don't collide).
+pub type LayoutId = u64;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WinSize {
@@ -188,6 +197,31 @@ pub enum ClientMsg {
         argv: Vec<String>,
         opts: StreamOpts,
     },
+    /// v8: remember a window's layout (tabs and splits) so a later window
+    /// can restore it. `json` is the client's own format, opaque to the
+    /// daemon; `sessions` are the sessions it shows. Saving also claims the
+    /// layout for this connection. No `sessions`: forget it. No reply.
+    SaveLayout {
+        id: LayoutId,
+        sessions: Vec<SessionId>,
+        json: String,
+    },
+    /// v8: take over the most recently saved layout that no connection
+    /// holds and that still shows a running session. One window gets it;
+    /// the next one gets the next layout or none. Reply: `Layout`.
+    ClaimLayout {
+        req: ReqId,
+    },
+}
+
+/// A saved window layout (see `ClientMsg::SaveLayout`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LayoutInfo {
+    pub id: LayoutId,
+    pub json: String,
+    /// The layout's sessions that are still running.
+    pub sessions: Vec<SessionId>,
+    pub saved_unix: u64,
 }
 
 /// One changed file of the generated shell configuration.
@@ -214,6 +248,9 @@ pub struct SessionInfo {
     pub rows: u16,
     pub attached: u32,
     pub created_unix: u64,
+    /// v7: the foreground program (`zsh` at the prompt, `nvim` while that
+    /// runs), if the host can tell.
+    pub process: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -306,6 +343,17 @@ pub enum ServerMsg {
         req: ReqId,
         reply: String,
     },
+    /// v7: the session's foreground program changed (also sent right after
+    /// `Attached`). Tabs show it as an icon and title fallback.
+    Process {
+        session: SessionId,
+        name: Option<String>,
+    },
+    /// v8: reply to `ClaimLayout`.
+    Layout {
+        req: ReqId,
+        layout: Option<LayoutInfo>,
+    },
 }
 
 impl ServerMsg {
@@ -319,7 +367,8 @@ impl ServerMsg {
             | ServerMsg::HostSettingsApplied { req, .. }
             | ServerMsg::Generations { req, .. }
             | ServerMsg::ShellsReloaded { req, .. }
-            | ServerMsg::Plugin { req, .. } => Some(*req),
+            | ServerMsg::Plugin { req, .. }
+            | ServerMsg::Layout { req, .. } => Some(*req),
             ServerMsg::Error { req, .. } => *req,
             _ => None,
         }

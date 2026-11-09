@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use goatty_client::{Connection, PaneEvent, PaneSink};
 use goatty_proto::WinSize;
 use goatty_shell::HostService;
+use goatty_term::process::ForegroundWatch;
 use goatty_term::pty::{Pty, ShellCommand};
 use goatty_term::{Palette, TermSize, Terminal, UiEvent};
 use parking_lot::Mutex;
@@ -68,7 +69,30 @@ pub struct Session {
     pub status: Mutex<LinkStatus>,
     /// `user@host` for remote daemons, `None` locally.
     pub host_label: Option<String>,
+    /// The foreground program (`zsh`, `nvim`, …), when known.
+    pub process: Mutex<Option<String>>,
+    /// Local sessions watch their own PTY; daemon sessions hear it from goattyd.
+    fg: std::sync::OnceLock<ForegroundWatch>,
     waker: Arc<Waker>,
+}
+
+/// Makes the sessions for new tabs and panes: on the window's goattyd
+/// connection, or as local PTYs (`--local`).
+#[derive(Clone)]
+pub enum Spawner {
+    Local(Arc<HostService>),
+    Daemon(Arc<Connection>),
+}
+
+impl Spawner {
+    /// A new shell, started in `cwd` when given (a path on the session's
+    /// host). Blocks on the daemon's reply: call it off the UI thread.
+    pub fn spawn(&self, size: TermSize, cwd: Option<String>) -> Result<Arc<Session>> {
+        match self {
+            Spawner::Local(host) => Session::local(size, host, cwd),
+            Spawner::Daemon(conn) => Session::daemon(conn.clone(), size, AttachMode::New, cwd),
+        }
+    }
 }
 
 fn palette_list(p: &Palette) -> Vec<u32> {
@@ -107,6 +131,7 @@ impl PaneSink for Sink {
                 *s.status.lock() = LinkStatus::Lost(why);
             }
             PaneEvent::Exited(_) => s.exited.store(true, Ordering::Release),
+            PaneEvent::Process(name) => *s.process.lock() = name,
         }
         s.waker.wake();
     }
@@ -124,15 +149,21 @@ impl Session {
             bytes_in: AtomicU64::new(0),
             status: Mutex::new(LinkStatus::Connected),
             host_label,
+            process: Mutex::new(None),
+            fg: std::sync::OnceLock::new(),
             waker,
         }
     }
 
     /// A shell owned by this process (`--local`): no daemon, so it ends
     /// with the window. Same shell choice and managed zsh as goattyd.
-    pub fn local(size: TermSize, host: &HostService) -> Result<Arc<Self>> {
+    pub fn local(size: TermSize, host: &HostService, cwd: Option<String>) -> Result<Arc<Self>> {
         let launch = host.launcher.launch(&host.settings());
-        Self::local_pty(size, ShellCommand::new(launch.program, launch.args, launch.env), launch.managed.then_some(host))
+        let mut cmd = ShellCommand::new(launch.program, launch.args, launch.env);
+        if let Some(cwd) = cwd.filter(|c| std::path::Path::new(c).is_dir()) {
+            cmd.cwd = Some(cwd.into());
+        }
+        Self::local_pty(size, cmd, launch.managed.then_some(host))
     }
 
     /// `argv` in a PTY owned by this process (when no daemon can run it).
@@ -152,6 +183,23 @@ impl Session {
         }
         let (terminal, chans) = Terminal::new(size, true, Arc::new(Palette::default()));
         let s = Arc::new(Self::new(terminal, chans.ui, Backend::Local(Mutex::new(pty)), None));
+        let probe = {
+            let weak = Arc::downgrade(&s);
+            move || match &weak.upgrade()?.backend {
+                Backend::Local(pty) => pty.lock().foreground_name(),
+                Backend::Daemon { .. } => None,
+            }
+        };
+        let on_change = {
+            let weak = Arc::downgrade(&s);
+            move |name| {
+                if let Some(s) = weak.upgrade() {
+                    *s.process.lock() = name;
+                    s.waker.wake();
+                }
+            }
+        };
+        let _ = s.fg.set(ForegroundWatch::spawn("pty-fg".into(), probe, on_change)?);
         let weak = Arc::downgrade(&s);
         std::thread::Builder::new().name("pty-replies".into()).spawn(move || {
             while let Ok(bytes) = chans.replies.recv() {
@@ -166,7 +214,12 @@ impl Session {
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
-                    Ok(n) => s2.ingest(&buf[..n]),
+                    Ok(n) => {
+                        s2.ingest(&buf[..n]);
+                        if let Some(fg) = s2.fg.get() {
+                            fg.poke();
+                        }
+                    }
                 }
             }
             if let (Some(pid), Some(host)) = (managed_pid, &host) {
@@ -179,7 +232,9 @@ impl Session {
     }
 
     /// Attach to (or create) a session on the daemon behind `conn`.
-    pub fn daemon(conn: Arc<Connection>, size: TermSize, mode: AttachMode) -> Result<Arc<Self>> {
+    /// New sessions start in `cwd` (a path on the daemon's host); without
+    /// one, a local daemon uses this process's directory.
+    pub fn daemon(conn: Arc<Connection>, size: TermSize, mode: AttachMode, cwd: Option<String>) -> Result<Arc<Self>> {
         let target = match mode {
             AttachMode::New => None,
             AttachMode::Id(id) => Some(id),
@@ -200,8 +255,9 @@ impl Session {
             }
             None => {
                 // A local cwd means nothing on another host.
-                let cwd =
-                    conn.endpoint().is_local().then(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned())).flatten();
+                let cwd = cwd.or_else(|| {
+                    conn.endpoint().is_local().then(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned())).flatten()
+                });
                 conn.create(win(size), cwd, sink)?
             }
         };
@@ -243,6 +299,9 @@ impl Session {
         match &self.backend {
             Backend::Local(pty) => {
                 let _ = pty.lock().write(bytes);
+                if let Some(fg) = self.fg.get() {
+                    fg.poke();
+                }
             }
             Backend::Daemon { conn, id } => conn.input(id.load(Ordering::Relaxed), bytes),
         }
@@ -268,10 +327,24 @@ impl Session {
         }
     }
 
-    pub fn backend_name(&self) -> String {
+    /// End the shell (closing its pane). The daemon's reply is awaited:
+    /// call it off the UI thread.
+    pub fn kill(&self) {
         match &self.backend {
-            Backend::Local(_) => "local pty".into(),
-            Backend::Daemon { conn, .. } => format!("goattyd via {}", conn.endpoint().label()),
+            Backend::Local(pty) => pty.lock().kill(),
+            Backend::Daemon { conn, id } => {
+                if let Err(e) = conn.kill(id.load(Ordering::Relaxed)) {
+                    log::warn!("closing session: {e:#}");
+                }
+            }
+        }
+    }
+
+    /// The goattyd session id; `None` for local PTYs.
+    pub fn daemon_id(&self) -> Option<u64> {
+        match &self.backend {
+            Backend::Local(_) => None,
+            Backend::Daemon { id, .. } => Some(id.load(Ordering::Relaxed)),
         }
     }
 

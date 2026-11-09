@@ -87,6 +87,17 @@ impl Pty {
         let _ = self.child.kill();
     }
 
+    /// The foreground process group's leader (the shell at its prompt, the
+    /// running program otherwise).
+    pub fn foreground_pid(&self) -> Option<u32> {
+        self.master.process_group_leader().and_then(|p| u32::try_from(p).ok()).filter(|&p| p > 0)
+    }
+
+    /// Name of the foreground program (see [`crate::process`]).
+    pub fn foreground_name(&self) -> Option<String> {
+        crate::process::process_name(self.foreground_pid()?)
+    }
+
     /// Foreground process group's working directory is a later feature;
     /// for now report the shell's cwd via /proc (Linux).
     pub fn cwd(&self) -> Option<PathBuf> {

@@ -8,6 +8,7 @@ mod actions;
 mod app;
 mod askpass;
 mod cli;
+mod close_confirm;
 mod command_palette;
 mod commands;
 mod connect;
@@ -33,6 +34,7 @@ use crate::app::Start;
 use crate::cli::Cli;
 use crate::connect::ConnectPlan;
 use crate::session::Session;
+use crate::workspace::saved::{self, Startup};
 
 pub const CLIENT: &str = concat!("goatty ", env!("CARGO_PKG_VERSION"));
 
@@ -57,17 +59,18 @@ fn main() -> Result<()> {
     let initial = TermSize::new(100, 30);
     let mode = cli.attach_mode(on_launch == OnLaunch::New);
     let open_settings = cli.settings.clone();
-    let (session, link) = match cli.endpoint()? {
+    let (startup, link) = match cli.endpoint()? {
         None => {
             // No daemon: this process owns the shell and the host settings.
             let daemon = std::env::current_exe().ok().map(|e| e.with_file_name("goattyd")).filter(|d| d.exists());
             let host = Arc::new(HostService::from_env(daemon));
-            (Session::local(initial, &host)?, settings_window::HostLink::Local(host))
+            log::info!("backend: local pty");
+            (Startup::Session(Session::local(initial, &host, None)?), settings_window::HostLink::Local(host))
         }
         Some(Endpoint::Local) => {
             let conn = Connection::open(Endpoint::Local, CLIENT)?;
-            let session = Session::daemon(conn.clone(), initial, mode)?;
-            (session, settings_window::HostLink::Daemon(conn))
+            log::info!("backend: goattyd via {}", conn.endpoint().label());
+            (saved::startup(&conn, initial, mode)?, settings_window::HostLink::Daemon(conn))
         }
         Some(Endpoint::Ssh(target)) if cli.plain => connect::plain_ssh(&target.host)?,
         Some(mut endpoint) => {
@@ -80,8 +83,7 @@ fn main() -> Result<()> {
             return Ok(());
         }
     };
-    log::info!("backend: {}", session.backend_name());
 
-    app::run(Start::Ready { session, link, open_settings });
+    app::run(Start::Ready { startup, link, open_settings });
     Ok(())
 }

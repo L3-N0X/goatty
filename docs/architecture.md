@@ -91,11 +91,17 @@ ui/
   controls.rs  toggle, segmented, stepper, button, rows
   text_input.rs single-line text field (IME-aware; adapted from GPUI's example)
   color_picker.rs color picker widget: `Entity<ColorPicker>` emitting `Changed`/`Committed`; `Pick` (float state), `Wheel` geometry, painting, drag handling
-workspace.rs   root view per window: owns panes, window title, closes on exit, shows the command palette, paste confirmations and the toast layer
+workspace/
+  mod.rs       root view per window: tabs of split panes, spawning/closing panes, window title, closes with the last pane; command palette, paste confirmations, toast layer
+  layout.rs    a tab's split tree (pure, unit-tested): n-ary splits with weights, split/remove/normalize, layout → leaf rects + dividers, neighbor, resize
+  tab_bar.rs   the tab strip in both styles (`tabs.style`: modern / compact): switch, close, rename, drag to reorder
+  icons.rs     process name → Nerd Font glyph + theme color; finds a font that really has the glyphs (terminal font, then Symbols Nerd Font)
+  saved.rs     the window's layout as goattyd keeps it (JSON: tabs, split trees with session ids, names, focus, zoom); `restore` claims and reattaches it
+close_confirm.rs  "Close this pane?" dialog when a program other than the shell still runs (`panes.confirm_close`, "Don't ask again")
 connect.rs     connect window for remote endpoints: connects off the UI thread, turns RemoteProblem into questions (install / update and restart / plain SSH), opens the terminal window
 askpass.rs     goatty as ssh's SSH_ASKPASS: one window per prompt (passphrase, host key, confirm), answer on stdout
 paste_confirm.rs  "Paste this?" dialog: risks, preview with control/invisible chars marked, paste as is / cleaned / as one line
-session.rs     a pane's data: local PTY or goattyd session → mirror Terminal; coalescing waker
+session.rs     a pane's data: local PTY or goattyd session → mirror Terminal; coalescing waker; foreground program; `Spawner` for new panes
 terminal/
   view.rs      TerminalView: input → terminal, actions, emits TerminalEvent
   element.rs   custom grid Element (prepaint/paint)
@@ -105,7 +111,13 @@ terminal/
   stats.rs     GOATTY_STATS frame statistics
 ```
 
-View tree: `Workspace` → `TerminalView` (one today). A `TerminalView` never touches the window directly. It emits `TerminalEvent::{TitleChanged, Exited, ConfirmPaste}` and the workspace decides what that means (window title, close the pane or the window, show the paste dialog and hand the chosen text back via `TerminalView::paste_text`).
+View tree: `Workspace` → tab bar + the active tab's panes (`TerminalView`s, absolutely positioned from `layout::Node::layout`). A `TerminalView` never touches the window directly. It emits `TerminalEvent::{TitleChanged, Exited, ConfirmPaste}` and the workspace decides what that means (tab and window title, close the pane, its tab or the window, show the paste dialog and hand the chosen text back via `TerminalView::paste_text`).
+
+Tabs and panes (#30): every pane is its own session from the window's `Spawner` (another `Create` on the same `Connection`, or another local PTY), started in the focused pane's OSC 7 directory and created off the UI thread. Closing a pane kills its session; closing the window only detaches. Closing asks first (`close_confirm.rs`) when a pane's foreground program isn't a shell and `panes.confirm_close` is on. Pane and tab shortcuts are actions handled on the workspace's root div (they bubble up from the focused `TerminalView`); Alt+digit / Alt+arrow `cx.propagate()` when there's no such tab or pane, so the key still reaches the shell. Dividers are GPUI drags (`DividerDrag` + `on_drag_move` on the pane area). Background tabs aren't rendered, so their output costs no frames.
+
+Restoring windows (#118): the workspace sends its layout with `Connection::save_layout` (protocol v7 `SaveLayout`, fire-and-forget, only when the JSON changed, re-sent after a reconnect) whenever tabs, splits, sizes, names, focus or zoom change. The JSON (`workspace/saved.rs`, `version` 1) is opaque to goattyd, which only keeps the session list and which connection holds the layout (`goatty-daemon/src/layouts.rs`). A connection ending frees its layout. `goatty` in reattach mode sends `ClaimLayout`: the daemon hands out the newest free layout that still shows a running session, to one window only (a second window gets the next free layout, else the newest detached session as before, else a new shell). Sessions that ended drop out of the tree (`Node::map_leaves`). `--new`, `--attach` and `--local` start a fresh layout.
+
+Foreground program: `goatty_term::process::ForegroundWatch` checks the PTY's foreground process group (`tcgetpgrp` → `/proc/<pid>/comm|cmdline`) shortly after output or input, never while idle. goattyd sends changes as `ServerMsg::Process` (v6; also right after `Attached`, and in `SessionInfo.process`); `--local` watches its own PTY. Tabs use it for the icon and as the title fallback (app title → program unless it's a shell → directory name).
 
 Links (#27): `goatty_term::Terminal::link_at(col, row)` finds the OSC 8 hyperlink, URL or path candidate under a cell, on the whole wrapped line, only when asked (mouse move / modifier change / new output while hovering), so idle and flood frames pay nothing. `terminal/links.rs` resolves it (relative paths against the OSC 7 directory, which rio-vt only accepts from this host) and the view underlines it, shows the target at the bottom of the pane, and opens it on Ctrl+click (`links.open_on`).
 
@@ -119,7 +131,7 @@ Input: GPUI dispatches a bound action before the view's raw `on_key_down`. Short
 
 | Work                                   | Where                                                                 |
 |----------------------------------------|-----------------------------------------------------------------------|
-| Tabs and splits (#30)                  | `workspace.rs`: tab strip + split tree of `Entity<TerminalView>`; new panes reuse the window's `Connection` |
+| Tab/pane features (layout restore, titlebar tabs, …) | `workspace/` (`mod.rs` for behaviour, `layout.rs` for tree operations, `tab_bar.rs` for looks); a new program icon: `workspace/icons.rs` |
 | IME / compose (#21)                    | `terminal/view.rs`: implement `EntityInputHandler`, register it in the element's paint |
 | Box drawing (#24)                      | `terminal/element.rs` (+ a new `terminal/boxdraw.rs`)                 |
 | Kitty keyboard (#22)                   | `goatty-term/src/input.rs`, fed from `terminal/keys.rs`               |

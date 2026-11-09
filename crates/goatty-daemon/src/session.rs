@@ -2,10 +2,11 @@
 //! connections subscribed to its output (with per-subscriber flow control).
 
 use std::io::Read;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock, Weak};
 
 use goatty_proto::{Frame, ReqId, ServerMsg, SessionId, SessionInfo, StreamOpts, WinSize, encode};
+use goatty_term::process::ForegroundWatch;
 use goatty_term::pty::Pty;
 use goatty_term::{TermSize, Terminal};
 use parking_lot::Mutex;
@@ -47,9 +48,48 @@ pub(crate) struct Session {
     /// no overlap.
     pub(crate) subs: Mutex<Vec<Arc<Subscriber>>>,
     pub(crate) created_unix: u64,
+    /// The foreground program, kept current by `fg` (see [`Session::watch_foreground`]).
+    pub(crate) process: Mutex<Option<String>>,
+    pub(crate) fg: OnceLock<ForegroundWatch>,
 }
 
 impl Session {
+    /// Start tracking the foreground program: subscribers get
+    /// `ServerMsg::Process` whenever it changes.
+    pub(crate) fn watch_foreground(self: &Arc<Self>) -> std::io::Result<()> {
+        let probe = {
+            let s: Weak<Self> = Arc::downgrade(self);
+            move || s.upgrade().and_then(|s| s.pty.lock().foreground_name())
+        };
+        let on_change = {
+            let s: Weak<Self> = Arc::downgrade(self);
+            move |name: Option<String>| {
+                if let Some(s) = s.upgrade() {
+                    s.set_process(name);
+                }
+            }
+        };
+        let watch = ForegroundWatch::spawn(format!("s{}-fg", self.id), probe, on_change)?;
+        let _ = self.fg.set(watch);
+        Ok(())
+    }
+
+    /// Something happened on the PTY: look at the foreground again soon.
+    pub(crate) fn poke_foreground(&self) {
+        if let Some(w) = self.fg.get() {
+            w.poke();
+        }
+    }
+
+    fn set_process(&self, name: Option<String>) {
+        *self.process.lock() = name.clone();
+        let Ok(frame) = encode(&ServerMsg::Process { session: self.id, name }) else { return };
+        // Not stream data: doesn't count against the flow-control window.
+        for sub in self.subs.lock().iter() {
+            sub.push(frame.clone(), 0);
+        }
+    }
+
     pub(crate) fn info(&self) -> SessionInfo {
         let (cols, rows) = self.term.size();
         let pty = self.pty.lock();
@@ -62,6 +102,7 @@ impl Session {
             rows,
             attached: self.subs.lock().len() as u32,
             created_unix: self.created_unix,
+            process: self.process.lock().clone(),
         }
     }
 
@@ -92,6 +133,12 @@ impl Session {
         let len = snapshot.len();
         if let Ok(f) = encode(&ServerMsg::Attached { req, session: self.id, snapshot }) {
             sub.push(f, len);
+        }
+        let name = self.process.lock().clone();
+        if name.is_some()
+            && let Ok(f) = encode(&ServerMsg::Process { session: self.id, name })
+        {
+            sub.push(f, 0);
         }
         subs.push(sub.clone());
         sub
@@ -151,6 +198,7 @@ pub(crate) fn pump_output(s: &Session, mut reader: Box<dyn Read + Send>) {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                s.poke_foreground();
                 let mut subs = s.subs.lock();
                 s.term.feed(&buf[..n]);
                 // Encode once, lazily: nobody may be listening, or everyone

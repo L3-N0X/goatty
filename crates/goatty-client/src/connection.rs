@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
 use goatty_proto::{
-    ClientMsg, FileDiff, Frame, GenerationInfo, HostInfo, PROTOCOL_VERSION, RUN_SINCE, ReqId, ServerMsg, SessionId, SessionInfo,
-    StreamOpts, WinSize, encode, read_msg,
+    ClientMsg, FileDiff, Frame, GenerationInfo, HostInfo, LayoutId, LayoutInfo, PROTOCOL_VERSION, RUN_SINCE, ReqId, ServerMsg, SessionId,
+    SessionInfo, StreamOpts, WinSize, encode, read_msg,
 };
 use parking_lot::Mutex;
 
@@ -73,6 +73,9 @@ struct Shared {
     client_name: String,
     out: flume::Sender<WriterCmd>,
     panes: Mutex<HashMap<SessionId, Pane>>,
+    /// The window's last saved layout, saved again after a reconnect (the
+    /// daemon frees a layout when its connection drops).
+    layout: Mutex<Option<ClientMsg>>,
     pending: Mutex<HashMap<ReqId, Pending>>,
     next_req: AtomicU32,
     host: Mutex<HostInfo>,
@@ -179,6 +182,7 @@ impl Connection {
             client_name: client_name.into(),
             out,
             panes: Mutex::new(HashMap::new()),
+            layout: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             next_req: AtomicU32::new(1),
             host: Mutex::new(HostInfo::default()),
@@ -400,6 +404,26 @@ impl Connection {
         }
     }
 
+    /// Remember the window's layout (tabs and splits; `json` is the
+    /// client's format) on the host, so a later window can restore it. No
+    /// `sessions`: forget it. Never blocks; saved again after a reconnect.
+    pub fn save_layout(&self, id: LayoutId, sessions: Vec<SessionId>, json: String) {
+        let msg = ClientMsg::SaveLayout { id, sessions, json };
+        if self.is_connected() {
+            self.shared.send(&msg);
+        }
+        *self.shared.layout.lock() = Some(msg);
+    }
+
+    /// Take over the newest layout no window holds (see
+    /// `ClientMsg::ClaimLayout`). Blocks: call off the UI thread.
+    pub fn claim_layout(&self) -> Result<Option<LayoutInfo>> {
+        match self.request(Pending::Reply, |req| ClientMsg::ClaimLayout { req })? {
+            ServerMsg::Layout { layout, .. } => Ok(layout),
+            other => bail!("unexpected reply {other:?}"),
+        }
+    }
+
     /// Drop the current link as if the network failed (debugging/tests).
     pub fn force_disconnect(&self) {
         self.shared.close_transport();
@@ -489,6 +513,9 @@ fn reader_main(s: Arc<Shared>, mut reader: Reader) {
                         let req = s.req_id();
                         s.pending.lock().insert(req, Pending::Reattach(session));
                         s.send(&ClientMsg::Attach { req, session, size, opts: s.opts });
+                    }
+                    if let Some(layout) = &*s.layout.lock() {
+                        s.send(layout);
                     }
                     break;
                 }
@@ -581,6 +608,12 @@ fn dispatch(s: &Shared, msg: ServerMsg) {
                 p.sink.event(PaneEvent::Exited(code));
             }
         }
+        ServerMsg::Process { session, name } => {
+            let sink = s.panes.lock().get(&session).map(|p| p.sink.clone());
+            if let Some(sink) = sink {
+                sink.event(PaneEvent::Process(name));
+            }
+        }
         ServerMsg::Pong { nonce } => {
             s.rtt_us.store(s.now_us().saturating_sub(nonce).max(1), Ordering::Relaxed);
         }
@@ -590,7 +623,8 @@ fn dispatch(s: &Shared, msg: ServerMsg) {
         | ServerMsg::HostSettingsApplied { req, .. }
         | ServerMsg::Generations { req, .. }
         | ServerMsg::ShellsReloaded { req, .. }
-        | ServerMsg::Plugin { req, .. } => {
+        | ServerMsg::Plugin { req, .. }
+        | ServerMsg::Layout { req, .. } => {
             if let Some(Pending::Reply(tx) | Pending::Attach { tx, .. }) = s.pending.lock().remove(&req) {
                 let _ = tx.send(msg);
             }

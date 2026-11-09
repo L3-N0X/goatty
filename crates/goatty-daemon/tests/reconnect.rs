@@ -5,7 +5,8 @@
 //! * a client that doesn't keep up is skipped forward with a Resync instead
 //!   of buffering without bound,
 //! * the remote path (`goattyd proxy` over stdio, exactly what ssh runs)
-//!   works, including transparent reconnect + reattach.
+//!   works, including transparent reconnect + reattach,
+//! * a window's saved layout goes to exactly one later window.
 
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -95,7 +96,7 @@ fn pump_until(s: &mut UnixStream, session: SessionId, t: &Terminal, consumed: &m
             ServerMsg::Attached { session: id, snapshot, .. } | ServerMsg::Resync { session: id, snapshot, .. } if id == session => {
                 t.feed(&snapshot);
             }
-            ServerMsg::Output { .. } | ServerMsg::Pong { .. } => {}
+            ServerMsg::Output { .. } | ServerMsg::Pong { .. } | ServerMsg::Process { .. } => {}
             other => panic!("unexpected {other:?}"),
         }
         send(s, &ClientMsg::Ack { session, consumed: *consumed });
@@ -104,9 +105,13 @@ fn pump_until(s: &mut UnixStream, session: SessionId, t: &Terminal, consumed: &m
 
 fn create(s: &mut UnixStream, opts: StreamOpts) -> (SessionId, u64) {
     send(s, &ClientMsg::Create { req: 1, size: SIZE, cwd: None, opts });
-    match read_msg::<_, ServerMsg>(s).unwrap() {
-        ServerMsg::Attached { req: 1, session, snapshot } => (session, snapshot.len() as u64),
-        other => panic!("{other:?}"),
+    loop {
+        match read_msg::<_, ServerMsg>(s).unwrap() {
+            ServerMsg::Attached { req: 1, session, snapshot } => return (session, snapshot.len() as u64),
+            // Another session's foreground program (multiplexed connection).
+            ServerMsg::Process { .. } => {}
+            other => panic!("{other:?}"),
+        }
     }
 }
 
@@ -201,6 +206,7 @@ fn sessions_multiplex_over_one_connection() {
                 c2 += data.len() as u64;
                 t2.feed(&data);
             }
+            ServerMsg::Process { .. } => {}
             other => panic!("{other:?}"),
         }
     }
@@ -237,7 +243,14 @@ fn slow_client_is_skipped_forward_with_resync() {
     // Catch up: the daemon answers with a Resync showing the final screen.
     c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     send(&mut c, &ClientMsg::Ack { session: id, consumed });
-    match read_msg::<_, ServerMsg>(&mut c).unwrap() {
+    // Foreground-program changes aren't stream data and may come first.
+    let resync = loop {
+        match read_msg::<_, ServerMsg>(&mut c).unwrap() {
+            ServerMsg::Process { .. } => continue,
+            other => break other,
+        }
+    };
+    match resync {
         ServerMsg::Resync { session, skipped, snapshot } => {
             assert_eq!(session, id);
             assert!(skipped > 7_000_000, "skipped {skipped}");
@@ -252,6 +265,34 @@ fn slow_client_is_skipped_forward_with_resync() {
     send(&mut c, &ClientMsg::Ack { session: id, consumed });
     send(&mut c, &ClientMsg::Input { session: id, data: b"echo after-$((6*7))\r".to_vec() });
     pump_until(&mut c, id, &t, &mut consumed, "after-42");
+}
+
+#[test]
+fn foreground_program_changes_are_reported() {
+    let d = start_daemon();
+    let mut c = connect(&d.sock);
+    let (id, _) = create(&mut c, StreamOpts::LOCAL);
+    // Read until a Process message matches `want`.
+    let wait_for = |c: &mut UnixStream, want: &dyn Fn(&str) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut seen = Vec::new();
+        loop {
+            assert!(Instant::now() < deadline, "no matching Process message; saw {seen:?}");
+            if let ServerMsg::Process { session, name } = read_msg::<_, ServerMsg>(c).unwrap() {
+                assert_eq!(session, id);
+                let name = name.unwrap_or_default();
+                seen.push(name.clone());
+                if want(&name) {
+                    return;
+                }
+            }
+        }
+    };
+    send(&mut c, &ClientMsg::Input { session: id, data: b"sleep 2\r".to_vec() });
+    wait_for(&mut c, &|n| n == "sleep");
+    assert_eq!(session_info(&d.sock, id).process.as_deref(), Some("sleep"));
+    // Back at the prompt: the shell again.
+    wait_for(&mut c, &|n| n != "sleep" && !n.is_empty());
 }
 
 // ---- remote path: goatty-client over `goattyd proxy` ------------------------
@@ -323,4 +364,57 @@ fn client_over_proxy_reconnects_and_reattaches() {
     conn.input(id, b"echo still-$MARK\r");
     sink.wait_for("still-proxied2");
     assert_eq!(session_info(&d.sock, id).pid, pid, "same shell process");
+}
+
+/// Wait until `f` holds.
+fn eventually(what: &str, mut f: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !f() {
+        assert!(Instant::now() < deadline, "timed out: {what}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn window_layouts_go_to_one_later_window() {
+    let d = start_daemon();
+    let a = Connection::open(proxy_endpoint(&d), "window a").unwrap();
+    let sink = Arc::new(TestSink::default());
+    let (s1, s2, s3) = (
+        a.create(SIZE, None, sink.clone()).unwrap(),
+        a.create(SIZE, None, Arc::new(TestSink::default())).unwrap(),
+        a.create(SIZE, None, Arc::new(TestSink::default())).unwrap(),
+    );
+    a.save_layout(7, vec![s1, s2, s3], "{\"tabs\":3}".into());
+    // Window A still holds it, also across a reconnect (saved again).
+    let b = Connection::open(proxy_endpoint(&d), "window b").unwrap();
+    assert_eq!(b.claim_layout().unwrap(), None);
+    a.force_disconnect();
+    eventually("window a reconnects", || sink.events.lock().iter().any(|e| e == "Reconnected"));
+    // The layout is saved right after the reattach requests.
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(b.claim_layout().unwrap(), None, "the reconnected window saved its layout again");
+
+    // One session ends, then window A closes: the layout is free.
+    a.kill(s2).unwrap();
+    eventually("session ends", || !Control::connect(&d.sock, "t").unwrap().list_sessions().unwrap().iter().any(|s| s.id == s2));
+    drop(a);
+    let mut got = None;
+    eventually("window b gets the layout", || {
+        got = b.claim_layout().unwrap();
+        got.is_some()
+    });
+    let got = got.unwrap();
+    assert_eq!((got.id, got.json.as_str(), got.sessions), (7, "{\"tabs\":3}", vec![s1, s3]));
+    // A third window doesn't get it too.
+    let c = Connection::open(proxy_endpoint(&d), "window c").unwrap();
+    assert_eq!(c.claim_layout().unwrap(), None);
+
+    // Saving without sessions forgets it.
+    b.save_layout(7, Vec::new(), String::new());
+    // Requests are handled in order: once this is answered, the save was too.
+    assert_eq!(b.claim_layout().unwrap(), None);
+    drop(b);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(c.claim_layout().unwrap(), None);
 }
