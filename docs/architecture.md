@@ -30,17 +30,18 @@ Rules:
 - **Which shell a session runs is `goatty-shell`'s decision** (`Launcher::launch`). goattyd and `goatty --local` both use it; `goatty-term` only spawns what it's given. `goatty-shell` has no rio-vt or UI dependency.
 - **Client vs host settings** (#14): `ClientSettings` (`settings.json`) is read by the app; `HostSettings` (`host.json`) by goattyd/`HostService` on its own host. The GUI edits host settings through the protocol (`GetHostSettings`, `SetHostSettings`, …), never by writing a remote file. See [`profiles.md`](profiles.md).
 - **`goatty-plugin` knows the format, not the host.** Manifests, settings schema, templates, permissions, zsh rendering, the signed index and the JSON API live there with no knowledge of `Dirs`; `goatty-shell::plugins` decides where things go. The authoring/registry CLI (`goatty-plugin`) depends on nothing else in the workspace, so registry CI builds it quickly. See [`plugins.md`](plugins.md).
-- **Settings come from `goatty-config`.** Don't read `GOATTY_*` variables elsewhere (the exception is `GOATTY_SOCKET`, which is a location, not a setting, and lives in `goatty_proto::socket_path`).
+- **Settings come from `goatty-config`.** Don't read `GOATTY_*` variables elsewhere (the exceptions: `GOATTY_SOCKET`, a location, in `goatty_proto::socket_path`; `GOATTY_ASKPASS`, goatty's marker to itself as ssh's askpass, in `goatty_client::askpass`).
+- **Remote hosts** (`goatty-client`): `transport` (endpoints; ssh with captured stderr and askpass), `remote` (the connect script and its `goatty-remote:` probe line, `RemoteProblem`, install/stop over ssh, bundled binaries), `askpass` (decode ssh's question), `service` (systemd user units). The app turns `RemoteProblem`s into questions in `connect.rs`. See [`remote-architecture.md`](remote-architecture.md) §5a/§5b.
 
 ## Daemon (`crates/goatty-daemon`)
 
 | Module       | Owns                                                                     |
 |--------------|--------------------------------------------------------------------------|
-| `server`     | socket bind (0600 in a 0700 dir), accept loop, socket watchdog, the session registry (`Daemon`), shutdown |
+| `server`     | socket bind (0600 in a 0700 dir) or the socket from systemd (`LISTEN_FDS`), accept loop, socket watchdog, the session registry (`Daemon`: shells and `Run` commands), shutdown |
 | `client`     | one connection: decode requests, its subscriptions, the writer thread    |
 | `session`    | PTY + authoritative `Terminal` + subscribers with flow control, the output pump |
 | `proxy`      | `goattyd proxy`: stdio ⇄ socket relay for remote transports              |
-| `main.rs`    | clap CLI; control commands go through `goatty_client::Control`           |
+| `main.rs`    | clap CLI; control commands go through `goatty_client::Control`; `stop --force` (any protocol version, via `SO_PEERCRED`), `service install|uninstall|status` |
 
 Threads per session: `s{id}-reader` (PTY → terminal → subscribers) and `s{id}-replies` (query answers → PTY). Per connection: a reader (the accept thread's spawn) and `c{conn}-writer`.
 
@@ -91,6 +92,8 @@ ui/
   text_input.rs single-line text field (IME-aware; adapted from GPUI's example)
   color_picker.rs color picker widget: `Entity<ColorPicker>` emitting `Changed`/`Committed`; `Pick` (float state), `Wheel` geometry, painting, drag handling
 workspace.rs   root view per window: owns panes, window title, closes on exit, shows the command palette, paste confirmations and the toast layer
+connect.rs     connect window for remote endpoints: connects off the UI thread, turns RemoteProblem into questions (install / update and restart / plain SSH), opens the terminal window
+askpass.rs     goatty as ssh's SSH_ASKPASS: one window per prompt (passphrase, host key, confirm), answer on stdout
 paste_confirm.rs  "Paste this?" dialog: risks, preview with control/invisible chars marked, paste as is / cleaned / as one line
 session.rs     a pane's data: local PTY or goattyd session → mirror Terminal; coalescing waker
 terminal/
@@ -129,7 +132,8 @@ Input: GPUI dispatches a bound action before the view's raw `on_key_down`. Short
 | A color setting / editing a color      | embed `Entity<ColorPicker>` (`ui/color_picker.rs`): `open(color)` to start, `sync(color)` to follow outside changes, react to `ColorPickerEvent::Changed` (live; `AppSettings::preview`) and `Committed` (save). Parsing and formats: `goatty-config/src/colorspace.rs` |
 | New theme import format                | `goatty-config/src/theme_import.rs` (detect + parse to `ThemeColors`) |
 | Settings migration                     | bump `Document::VERSION`, add `(from, fn(&mut Value))` to `migrations()` |
-| systemd user service (#7)              | `goatty-daemon` (`server::serve` already takes the socket path)       |
+| FDSTORE / shells across restarts (#131) | `goatty-daemon/src/server.rs` (restore), `goatty-client/src/service.rs` (unit options) |
+| Host list / switcher (#4)              | a GPUI view that builds `ConnectPlan`s for `connect.rs`; per-host "plain SSH" choice in client settings |
 | A plugin feature (new manifest field)  | `goatty-plugin/src/manifest.rs` (+ validation, permissions if it can run code), rendering in `goatty-plugin/src/zsh.rs`, document it in `docs/plugins.md` and the template |
 | A plugin operation (GUI/CLI)           | `goatty_plugin::api::Request`/`Reply` (no protocol bump), `HostService::plugin_request`, `settings_window/plugins.rs`, `plugins/cmd.rs` |
-| New wire messages                      | `goatty-proto/src/msg.rs` (bump `PROTOCOL_VERSION`), handle in `goatty-daemon/src/client.rs` and `goatty-client/src/connection.rs` |
+| New wire messages                      | `goatty-proto/src/msg.rs`: a new variant at the *end* (append-only), bump `PROTOCOL_VERSION`, mark it `vN:`; handle in `goatty-daemon/src/client.rs` and `goatty-client/src/connection.rs`, which must not send it to a daemon that agreed on an older version (`Connection::protocol_version`) |

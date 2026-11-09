@@ -7,9 +7,9 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
-use goatty_proto::{ClientMsg, HostInfo, ReqId, ServerMsg, SessionId, SessionInfo, encode, read_msg};
+use goatty_proto::{ClientMsg, HostInfo, PROTOCOL_VERSION, ReqId, ServerMsg, SessionId, SessionInfo, encode, read_msg};
 
-use crate::handshake;
+use crate::handshake::{self, Outcome};
 
 pub struct Control {
     stream: UnixStream,
@@ -17,13 +17,42 @@ pub struct Control {
     next_req: ReqId,
 }
 
+/// The pid of the process listening on the Unix socket at `path`
+/// (`SO_PEERCRED`), whatever protocol it speaks. Only processes of this
+/// user count (the socket directory is 0700 anyway).
+pub fn socket_owner(path: &Path) -> Result<u32> {
+    use std::os::fd::AsRawFd;
+    let stream = UnixStream::connect(path).with_context(|| format!("nothing is listening on {}", path.display()))?;
+    let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `cred` and `len` are valid for writes of the sizes passed, and
+    // the fd stays open for the duration of the call.
+    let rc = unsafe { libc::getsockopt(stream.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, (&raw mut cred).cast(), &raw mut len) };
+    if rc != 0 {
+        bail!("SO_PEERCRED: {}", std::io::Error::last_os_error());
+    }
+    // SAFETY: getuid has no preconditions.
+    let me = unsafe { libc::getuid() };
+    if cred.uid != me || cred.pid <= 0 {
+        bail!("{} belongs to another user (uid {})", path.display(), cred.uid);
+    }
+    Ok(cred.pid as u32)
+}
+
 impl Control {
     /// Connect to the daemon socket at `path` and perform the handshake.
     pub fn connect(path: &Path, client: &str) -> Result<Self> {
-        let mut stream = UnixStream::connect(path).with_context(|| format!("goattyd is not running (no socket at {})", path.display()))?;
-        stream.write_all(&handshake::hello(client)?)?;
-        let (host, _pid) = handshake::read_greeting(&mut stream, &path.display().to_string())?;
-        Ok(Self { stream, host, next_req: 1 })
+        let mut announce = PROTOCOL_VERSION;
+        loop {
+            let mut stream =
+                UnixStream::connect(path).with_context(|| format!("goattyd is not running (no socket at {})", path.display()))?;
+            stream.write_all(&handshake::hello(client, announce)?)?;
+            match handshake::read_greeting(&mut stream, &path.display().to_string(), announce)? {
+                Outcome::Ok(g) => return Ok(Self { stream, host: g.host, next_req: 1 }),
+                // An old exact-match daemon: speak its version (only ever lower).
+                Outcome::RetryWith(v) => announce = v,
+            }
+        }
     }
 
     /// Connect to this user's daemon (`goatty_proto::socket_path`).
@@ -93,5 +122,19 @@ impl Control {
     /// Stop the daemon and every session it owns.
     pub fn shutdown(&mut self) -> Result<()> {
         self.request(|req| ClientMsg::Shutdown { req }).map(drop)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn socket_owner_is_the_listener() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        assert_eq!(socket_owner(&path).unwrap(), std::process::id());
+        assert!(socket_owner(&dir.path().join("none.sock")).is_err());
     }
 }

@@ -28,8 +28,13 @@ pub struct Cli {
     pub ssh: Option<String>,
 
     /// Path of goattyd on the SSH host, if it isn't in PATH.
-    #[arg(long, value_name = "PATH", requires = "ssh")]
+    #[arg(long, value_name = "PATH", requires = "ssh", conflicts_with = "plain")]
     pub remote_daemon: Option<String>,
+
+    /// With --ssh: a plain `ssh HOST` in a local session instead of goattyd on HOST.
+    /// Nothing is installed there, and goatty's shell setup doesn't reach it.
+    #[arg(long, requires = "ssh", conflicts_with_all = ["new", "attach"])]
+    pub plain: bool,
 
     /// Use goattyd behind any stdio command, e.g. 'docker exec -i box goattyd proxy'.
     #[arg(long, value_name = "CMD")]
@@ -155,6 +160,9 @@ mod tests {
         assert!(Cli::parse_from(["goatty", "--local"]).endpoint().unwrap().is_none());
         assert!(Cli::try_parse_from(["goatty", "--local", "--ssh", "h"]).is_err());
         assert!(Cli::try_parse_from(["goatty", "--remote-daemon", "/x"]).is_err());
+        assert!(Cli::parse_from(["goatty", "--ssh", "box", "--plain"]).plain);
+        assert!(Cli::try_parse_from(["goatty", "--plain"]).is_err());
+        assert!(matches!(Cli::parse_from(["goatty", "--ssh", "box"]).endpoint().unwrap(), Some(Endpoint::Ssh(t)) if t.host == "box"));
         let cli = Cli::parse_from(["goatty", "settings", "set", "font.size", "15"]);
         assert!(matches!(cli.cmd, Some(Command::Settings(SettingsCmd::Set { .. }))));
         let cli = Cli::parse_from(["goatty", "theme", "set", "nord", "--for", "dark"]);

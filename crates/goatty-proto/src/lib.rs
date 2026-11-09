@@ -1,4 +1,5 @@
-//! goatty ⇄ goattyd wire protocol (v2).
+//! goatty ⇄ goattyd wire protocol (see [`PROTOCOL_VERSION`]; peers negotiate
+//! a common version, see the compatibility notes in `msg`).
 //!
 //! The protocol doesn't care where the daemon runs. Any reliable, ordered
 //! byte stream works as a transport: the local Unix socket, `ssh host goattyd
