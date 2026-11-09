@@ -82,6 +82,9 @@ pub struct TextInput {
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
+    /// Draw no border, background or padding: the caller wraps the field
+    /// (search fields with an icon, inline editors).
+    bare: bool,
 }
 
 impl EventEmitter<TextInputEvent> for TextInput {}
@@ -100,7 +103,18 @@ impl TextInput {
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
+            bare: false,
         }
+    }
+
+    /// No chrome of its own (see [`TextInput::bare`]'s field).
+    pub fn bare(mut self) -> Self {
+        self.bare = true;
+        self
+    }
+
+    pub fn is_focused(&self, window: &Window) -> bool {
+        self.focus_handle.is_focused(window)
     }
 
     pub fn text(&self) -> &str {
@@ -699,17 +713,22 @@ impl Render for TextInput {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .w_full()
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .border_1()
-            .border_color(if focused { ui.accent } else { ui.border })
-            .bg(ui.input_bg)
+            .items_center()
+            .text_size(px(super::style::text::BODY))
             .text_color(ui.text)
+            .when(!self.bare, |d| {
+                d.h(px(36.))
+                    .px(px(12.))
+                    .rounded(px(super::style::radius::CONTROL))
+                    .border_1()
+                    .border_color(if focused { ui.accent } else { ui.border })
+                    .bg(ui.input_bg)
+                    .when(!focused, |d| d.hover(|s| s.border_color(ui.muted)))
+            })
             .child(TextElement {
                 input: cx.entity(),
                 text: ui.text,
-                placeholder: ui.muted,
+                placeholder: ui.faint,
                 accent: ui.accent,
                 selection: ui.accent.opacity(0.3),
             })

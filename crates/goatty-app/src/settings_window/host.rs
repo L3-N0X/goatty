@@ -50,6 +50,14 @@ impl HostLink {
         }
     }
 
+    /// The host is this computer (its files are ours to show).
+    pub fn is_local(&self) -> bool {
+        match self {
+            HostLink::Daemon(c) => c.endpoint().is_local(),
+            HostLink::Local(_) => true,
+        }
+    }
+
     /// "this computer" or `user@host`.
     pub fn label(&self) -> String {
         match self {

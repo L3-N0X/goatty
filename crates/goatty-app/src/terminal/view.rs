@@ -96,7 +96,7 @@ pub struct TerminalView {
     /// Ctrl with +/- on top of the settings size, until reset.
     zoom: f32,
     line_height: f32,
-    padding: Pixels,
+    padding: gpui::Edges<Pixels>,
     /// Background opacity (`terminal.opacity`).
     opacity: f32,
     glyph_mode: bool,
@@ -206,7 +206,7 @@ impl TerminalView {
             font_size: px(settings.font.size),
             zoom: 0.0,
             line_height: settings.font.line_height,
-            padding: px(settings.terminal.padding),
+            padding: edges(settings.terminal.padding),
             opacity: settings.terminal.opacity,
             glyph_mode: true,
             cursor_blink: true,
@@ -240,7 +240,7 @@ impl TerminalView {
         }
         self.font_size = px((s.font.size + self.zoom).clamp(FontSettings::MIN_SIZE, FontSettings::MAX_SIZE));
         self.line_height = s.font.line_height;
-        self.padding = px(s.terminal.padding);
+        self.padding = edges(s.terminal.padding);
         self.opacity = s.terminal.opacity;
         self.glyph_mode = s.terminal.renderer == Renderer::Glyphs;
         self.cursor_blink = s.terminal.cursor_blink;
@@ -821,6 +821,11 @@ impl Render for TerminalView {
                 )
             })
     }
+}
+
+/// The padding setting as GPUI edges.
+fn edges(p: goatty_config::Padding) -> gpui::Edges<Pixels> {
+    gpui::Edges { top: px(p.top), right: px(p.right), bottom: px(p.bottom), left: px(p.left) }
 }
 
 #[cfg(test)]

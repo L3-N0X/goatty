@@ -58,7 +58,8 @@ pub struct TerminalElement {
     pub font: Font,
     pub font_size: Pixels,
     pub line_height_factor: f32,
-    pub padding: Pixels,
+    /// Space around the grid (top, right, bottom, left).
+    pub padding: gpui::Edges<Pixels>,
     pub focused: bool,
     /// true: per-cell glyph cache (default). false: per-segment line shaping
     /// (supports ligatures, slower when many lines change).
@@ -182,11 +183,12 @@ impl Element for TerminalElement {
         let font_id = ts.resolve_font(&self.font);
         let cell_w = ts.advance(font_id, self.font_size, 'm').map(|s| s.width).unwrap_or(self.font_size * 0.6);
         let line_height = (self.font_size * self.line_height_factor).round();
-        let inner_w = bounds.size.width - self.padding * 2.0;
-        let inner_h = bounds.size.height - self.padding * 2.0;
+        let pad = self.padding;
+        let inner_w = bounds.size.width - pad.left - pad.right;
+        let inner_h = bounds.size.height - pad.top - pad.bottom;
         let cols = ((inner_w / cell_w).floor() as u16).max(2);
         let rows = ((inner_h / line_height).floor() as u16).max(1);
-        let origin = bounds.origin + point(self.padding, self.padding);
+        let origin = bounds.origin + point(pad.left, pad.top);
 
         if self.session.terminal.size() != (cols, rows) {
             let scale = window.scale_factor();

@@ -1,28 +1,39 @@
-//! Small stateless controls for settings pages. Each takes the colors and
-//! a callback; state lives in the settings, not in the control.
+//! Small stateless controls shared by goatty's windows. Each takes the
+//! colors and a callback; state lives in the settings, not in the control.
+//!
+//! The look is one system (see `.claude/rules/settings-ui.md`): pill-shaped
+//! buttons and segmented controls, Material 3-style switches, keycaps for
+//! shortcuts, the type scale and radii from [`super::style`].
 
+use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui::{AnyElement, App, Div, ElementId, FontWeight, SharedString, Window, div, prelude::*, px};
+use gpui::{
+    AnyView, App, Bounds, Context, DispatchPhase, Div, ElementId, FontWeight, Hsla, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Render, SharedString, Stateful, Window, canvas, div, prelude::*, px, relative,
+};
 
-use super::style::Ui;
+use super::icons::Icon;
+use super::style::{Ui, radius, text};
 
 type Callback = Rc<dyn Fn(&mut Window, &mut App)>;
 
-/// An on/off switch.
-pub fn toggle(id: impl Into<ElementId>, on: bool, ui: Ui, f: impl Fn(&mut Window, &mut App) + 'static) -> impl IntoElement {
+/// An on/off switch (Material 3: an outlined track with a small thumb when
+/// off, a filled track with a bigger thumb when on).
+pub fn toggle(id: impl Into<ElementId>, on: bool, ui: Ui, f: impl Fn(&mut Window, &mut App) + 'static) -> Stateful<Div> {
     div()
         .id(id)
         .flex()
         .flex_shrink_0()
-        .w(px(38.))
-        .h(px(22.))
+        .items_center()
+        .w(px(42.))
+        .h(px(24.))
         .rounded_full()
-        .p(px(3.))
+        .border_2()
         .cursor_pointer()
-        .bg(if on { ui.accent } else { ui.border })
-        .when(on, |d| d.justify_end())
-        .child(div().size(px(16.)).rounded_full().bg(if on { ui.on_accent } else { ui.bg }))
+        .when(on, |d| d.bg(ui.accent).border_color(ui.accent).justify_end().pr(px(2.)))
+        .when(!on, |d| d.bg(ui.field).border_color(ui.border).pl(px(4.)).hover(|s| s.border_color(ui.muted)))
+        .child(div().rounded_full().when(on, |d| d.size(px(16.)).bg(ui.on_accent)).when(!on, |d| d.size(px(12.)).bg(ui.muted)))
         .on_click(move |_, window, cx| f(window, cx))
 }
 
@@ -33,148 +44,412 @@ pub fn segmented<T: Clone + PartialEq + 'static>(
     selected: &T,
     ui: Ui,
     f: impl Fn(T, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> Div {
     let f = Rc::new(f);
-    div().flex().flex_shrink_0().rounded_md().border_1().border_color(ui.border).overflow_hidden().children(options.iter().enumerate().map(
+    div().flex().flex_shrink_0().p(px(3.)).gap(px(2.)).rounded_full().bg(ui.field).children(options.iter().enumerate().map(
         |(i, (value, label))| {
             let on = value == selected;
             let value = value.clone();
             let f = f.clone();
             div()
-                .id(format!("{id}-{i}"))
-                .px_3()
-                .py_1()
-                .text_sm()
+                .id(SharedString::from(format!("{id}-{i}")))
+                .h(px(28.))
+                .px(px(14.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .text_size(px(text::LABEL))
+                .font_weight(FontWeight::MEDIUM)
                 .cursor_pointer()
-                .when(i > 0, |d| d.border_l_1().border_color(ui.border))
                 .when(on, |d| d.bg(ui.accent).text_color(ui.on_accent))
-                .when(!on, |d| d.hover(|s| s.bg(ui.surface_hover)))
+                .when(!on, |d| d.text_color(ui.muted).hover(|s| s.bg(ui.field_hover).text_color(ui.text)))
                 .child(SharedString::from(label.to_string()))
                 .on_click(move |_, window, cx| f(value.clone(), window, cx))
         },
     ))
 }
 
-/// `[-] value [+]`.
+/// `[−] value [+]`.
 pub fn stepper(
     id: &str,
     value: impl Into<SharedString>,
     ui: Ui,
     dec: impl Fn(&mut Window, &mut App) + 'static,
     inc: impl Fn(&mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    let btn = |suffix: &str, label: &'static str, f: Callback| {
+) -> Div {
+    let btn = |suffix: &str, icon: StepIcon, f: Callback| {
         div()
-            .id(format!("{id}-{suffix}"))
-            .w(px(28.))
+            .id(SharedString::from(format!("{id}-{suffix}")))
+            .size(px(28.))
             .flex()
+            .items_center()
             .justify_center()
+            .rounded_full()
             .cursor_pointer()
-            .hover(|s| s.bg(ui.surface_hover))
-            .child(label)
+            .text_color(ui.muted)
+            .hover(|s| s.bg(ui.field_hover).text_color(ui.text))
+            .child(match icon {
+                // Drawn: matches the plus icon's 2px stroke.
+                StepIcon::Minus => div().w(px(10.)).h(px(2.)).rounded_full().bg(ui.muted),
+                StepIcon::Plus => div().child(Icon::Plus.svg().size(px(14.)).text_color(ui.muted)),
+            })
             .on_click(move |_, window, cx| f(window, cx))
     };
     div()
         .flex()
         .flex_shrink_0()
         .items_center()
-        .rounded_md()
-        .border_1()
-        .border_color(ui.border)
-        .child(btn("dec", "−", Rc::new(dec)))
-        .child(div().min_w(px(64.)).flex().justify_center().text_sm().child(value.into()))
-        .child(btn("inc", "+", Rc::new(inc)))
+        .p(px(3.))
+        .rounded_full()
+        .bg(ui.field)
+        .child(btn("dec", StepIcon::Minus, Rc::new(dec)))
+        .child(
+            div()
+                .min_w(px(64.))
+                .flex()
+                .justify_center()
+                .text_size(px(text::LABEL))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(ui.text)
+                .child(value.into()),
+        )
+        .child(btn("inc", StepIcon::Plus, Rc::new(inc)))
+}
+
+enum StepIcon {
+    Minus,
+    Plus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonKind {
+    /// Filled with the accent: the one main action of a view.
     Primary,
+    /// Tonal: a filled neutral pill for ordinary actions.
     Normal,
+    /// Text only until hovered: secondary actions in toolbars and rows.
+    Ghost,
+    /// Destructive.
     Danger,
 }
 
+/// A pill button.
 pub fn button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     kind: ButtonKind,
     ui: Ui,
     f: impl Fn(&mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    let (bg, fg, border) = match kind {
-        ButtonKind::Primary => (ui.accent, ui.on_accent, ui.accent),
-        ButtonKind::Normal => (ui.surface, ui.text, ui.border),
-        ButtonKind::Danger => (ui.surface, ui.danger, ui.danger.opacity(0.5)),
+) -> Stateful<Div> {
+    button_with(id, None, label, kind, ui, f)
+}
+
+/// A pill button with a leading icon.
+pub fn button_with(
+    id: impl Into<ElementId>,
+    icon: Option<Icon>,
+    label: impl Into<SharedString>,
+    kind: ButtonKind,
+    ui: Ui,
+    f: impl Fn(&mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let (bg, fg, hover) = match kind {
+        ButtonKind::Primary => (ui.accent, ui.on_accent, ui.accent.opacity(0.88)),
+        ButtonKind::Normal => (ui.field, ui.text, ui.field_hover),
+        ButtonKind::Ghost => (ui.field.opacity(0.0), ui.text, ui.field),
+        ButtonKind::Danger => (ui.danger.opacity(0.12), ui.danger, ui.danger.opacity(0.2)),
     };
     div()
         .id(id)
+        .flex()
         .flex_shrink_0()
-        .px_3()
-        .py_1()
-        .rounded_md()
-        .border_1()
-        .border_color(border)
+        .items_center()
+        .gap(px(6.))
+        .h(px(32.))
+        .px(px(if icon.is_some() { 12. } else { 14. }))
+        .rounded_full()
         .bg(bg)
         .text_color(fg)
-        .text_sm()
+        .text_size(px(text::LABEL))
+        .font_weight(FontWeight::MEDIUM)
         .cursor_pointer()
-        .hover(|s| s.opacity(0.85))
+        .hover(move |s| s.bg(hover))
+        .when_some(icon, |d, i| d.child(i.svg().size(px(15.)).text_color(fg)))
         .child(label.into())
         .on_click(move |_, window, cx| f(window, cx))
 }
 
-/// A setting: label and description on the left, the control on the right.
-pub fn row(ui: Ui, label: &str, description: Option<&str>, control: impl IntoElement) -> Div {
+/// A round icon-only button with a tooltip.
+pub fn icon_button(
+    id: impl Into<ElementId>,
+    icon: Icon,
+    tip: impl Into<SharedString>,
+    ui: Ui,
+    f: impl Fn(&mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    icon_button_tinted(id, icon, tip, None, ui, f)
+}
+
+/// [`icon_button`] with the icon in `tint` (a toggled-on state).
+pub fn icon_button_tinted(
+    id: impl Into<ElementId>,
+    icon: Icon,
+    tip: impl Into<SharedString>,
+    tint: Option<Hsla>,
+    ui: Ui,
+    f: impl Fn(&mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let tip: SharedString = tip.into();
+    let id: ElementId = id.into();
+    // An svg doesn't inherit the text color: hover recolors it through the group.
+    let group = SharedString::from(format!("icon-button-{}", hash_id(&id)));
+    let svg = icon.svg().size(px(16.));
+    let svg = match tint {
+        Some(c) => svg.text_color(c),
+        None => svg.text_color(ui.muted).group_hover(group.clone(), |s| s.text_color(ui.text)),
+    };
     div()
+        .id(id)
+        .group(group)
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .size(px(30.))
+        .rounded_full()
+        .cursor_pointer()
+        .hover(|s| s.bg(ui.field))
+        .child(svg)
+        .tooltip(tooltip(tip))
+        .on_click(move |_, window, cx| f(window, cx))
+}
+
+/// How a badge is tinted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Neutral,
+    Accent,
+    Success,
+    Warning,
+    Danger,
+}
+
+impl Tone {
+    pub fn color(self, ui: Ui) -> Hsla {
+        match self {
+            Tone::Neutral => ui.muted,
+            Tone::Accent => ui.accent_text,
+            Tone::Success => ui.success,
+            Tone::Warning => ui.warning,
+            Tone::Danger => ui.danger,
+        }
+    }
+}
+
+/// A small tinted label: status, counts.
+pub fn badge(label: impl Into<SharedString>, tone: Tone, ui: Ui) -> Div {
+    let c = tone.color(ui);
+    div()
+        .flex_shrink_0()
+        .h(px(20.))
+        .px(px(8.))
         .flex()
         .items_center()
-        .justify_between()
-        .gap_4()
-        .py_2()
-        .border_b_1()
-        .border_color(ui.border.opacity(0.5))
+        .rounded_full()
+        .bg(if tone == Tone::Neutral { ui.field } else { c.opacity(0.14) })
+        .text_color(c)
+        .text_size(px(text::CAPTION))
+        .font_weight(FontWeight::MEDIUM)
+        .child(label.into())
+}
+
+/// A colored banner: an icon, a title and lines (warnings, errors, results).
+pub fn banner(ui: Ui, tone: Tone, title: impl Into<SharedString>, lines: Vec<String>) -> Div {
+    let c = tone.color(ui);
+    let icon = match tone {
+        Tone::Success => Icon::CircleCheck,
+        Tone::Warning => Icon::TriangleAlert,
+        Tone::Danger => Icon::CircleX,
+        Tone::Neutral | Tone::Accent => Icon::Info,
+    };
+    div()
+        .flex()
+        .gap(px(12.))
+        .p(px(14.))
+        .rounded(px(radius::CARD))
+        .bg(c.opacity(if ui.dark { 0.1 } else { 0.08 }))
+        .border_1()
+        .border_color(c.opacity(0.28))
+        .child(icon.svg().size(px(18.)).mt(px(1.)).text_color(c))
         .child(
             div()
                 .flex()
                 .flex_col()
+                .gap(px(4.))
                 .flex_1()
                 .min_w_0()
-                .child(div().text_color(ui.text).child(SharedString::from(label.to_string())))
-                .when_some(description, |d, desc| {
-                    d.child(div().text_xs().text_color(ui.muted).child(SharedString::from(desc.to_string())))
-                }),
+                .child(div().text_size(px(text::BODY)).font_weight(FontWeight::SEMIBOLD).text_color(ui.text).child(title.into()))
+                .children(lines.into_iter().map(|l| div().text_size(px(text::SMALL)).text_color(ui.muted).child(SharedString::from(l)))),
         )
-        .child(control)
 }
 
-pub fn section(ui: Ui, title: &str) -> Div {
-    div().pt_5().pb_1().text_xs().font_weight(FontWeight::BOLD).text_color(ui.muted).child(SharedString::from(title.to_uppercase()))
+/// A keyboard shortcut as keycaps: `ctrl-shift-t` → [Ctrl] [Shift] [T].
+pub fn keycaps(keystroke: &str, ui: Ui) -> Div {
+    div().flex().items_center().gap(px(3.)).children(key_parts(keystroke).into_iter().map(|k| keycap(k, ui)))
 }
 
-/// A muted explanatory line.
-pub fn note(ui: Ui, text: impl Into<SharedString>) -> Div {
-    div().py_1().text_xs().text_color(ui.muted).child(text.into())
-}
-
-/// A colored notice box (warnings, errors, results).
-pub fn notice(ui: Ui, color: gpui::Hsla, lines: Vec<String>) -> AnyElement {
+pub fn keycap(label: impl Into<SharedString>, ui: Ui) -> Div {
     div()
-        .my_2()
-        .p_2()
-        .rounded_md()
-        .border_1()
-        .border_color(color.opacity(0.6))
-        .bg(color.opacity(0.08))
-        .text_sm()
-        .text_color(ui.text)
+        .flex_shrink_0()
+        .min_w(px(22.))
+        .h(px(22.))
+        .px(px(6.))
         .flex()
-        .flex_col()
-        .gap_1()
-        .children(lines.into_iter().map(|l| div().child(SharedString::from(l))))
-        .into_any_element()
+        .items_center()
+        .justify_center()
+        .rounded(px(radius::SMALL))
+        .bg(ui.field)
+        .border_1()
+        .border_b_2()
+        .border_color(ui.border)
+        .text_size(px(text::CAPTION))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(ui.text)
+        .child(label.into())
 }
 
-/// `ctrl-shift-c` → `Ctrl+Shift+C`.
-pub fn pretty_keys(k: &str) -> String {
+/// A horizontal slider over `0.0..=1.0`. `f(value, done)` runs while
+/// dragging (`done == false`, for a live preview) and once more when the
+/// mouse is released (`done == true`, to save).
+pub fn slider(id: impl Into<ElementId>, value: f32, ui: Ui, f: impl Fn(f32, bool, &mut Window, &mut App) + 'static) -> impl IntoElement {
+    let id: ElementId = id.into();
+    let key = hash_id(&id);
+    let f = Rc::new(f);
+    let t = value.clamp(0.0, 1.0);
+    const THUMB: f32 = 18.0;
+    div()
+        .id(id)
+        .relative()
+        .w(px(180.))
+        .h(px(28.))
+        .flex_shrink_0()
+        .cursor_pointer()
+        .child(
+            // Track, inset by half a thumb on both ends.
+            div()
+                .absolute()
+                .left(px(THUMB / 2.))
+                .right(px(THUMB / 2.))
+                .top(px(11.))
+                .h(px(6.))
+                .rounded_full()
+                .bg(ui.field_hover)
+                .child(div().h_full().w(relative(t)).rounded_full().bg(ui.accent)),
+        )
+        .child(
+            div().absolute().top(px(5.)).left(px(THUMB / 2.)).right(px(THUMB / 2.)).h(px(THUMB)).child(
+                div()
+                    .absolute()
+                    .left(relative(t))
+                    .ml(px(-THUMB / 2.))
+                    .size(px(THUMB))
+                    .rounded_full()
+                    .bg(ui.accent)
+                    .border_3()
+                    .border_color(ui.card)
+                    .shadow_sm(),
+            ),
+        )
+        .child(
+            canvas(
+                |_, _, _| (),
+                move |bounds, _, window, _| {
+                    let f = f.clone();
+                    slider_listeners(window, bounds, key, THUMB, f);
+                },
+            )
+            .absolute()
+            .size_full(),
+        )
+}
+
+thread_local! {
+    /// The slider being dragged (only one at a time; the UI is one thread).
+    static DRAGGING: Cell<Option<u64>> = const { Cell::new(None) };
+}
+
+type SliderFn = Rc<dyn Fn(f32, bool, &mut Window, &mut App)>;
+
+fn slider_listeners(window: &mut Window, bounds: Bounds<Pixels>, key: u64, thumb: f32, f: SliderFn) {
+    let at = move |x: Pixels| {
+        let w = f32::from(bounds.size.width) - thumb;
+        ((f32::from(x - bounds.left()) - thumb / 2.0) / w.max(1.0)).clamp(0.0, 1.0)
+    };
+    let g = f.clone();
+    window.on_mouse_event(move |ev: &MouseDownEvent, phase, window, cx| {
+        if phase == DispatchPhase::Bubble && ev.button == MouseButton::Left && bounds.contains(&ev.position) {
+            DRAGGING.set(Some(key));
+            g(at(ev.position.x), false, window, cx);
+        }
+    });
+    let g = f.clone();
+    window.on_mouse_event(move |ev: &MouseMoveEvent, phase, window, cx| {
+        if phase != DispatchPhase::Bubble || DRAGGING.get() != Some(key) {
+            return;
+        }
+        if ev.pressed_button == Some(MouseButton::Left) {
+            g(at(ev.position.x), false, window, cx);
+        } else {
+            // Released somewhere we couldn't hear.
+            DRAGGING.set(None);
+            g(at(ev.position.x), true, window, cx);
+        }
+    });
+    window.on_mouse_event(move |ev: &MouseUpEvent, phase, window, cx| {
+        if phase == DispatchPhase::Bubble && ev.button == MouseButton::Left && DRAGGING.get() == Some(key) {
+            DRAGGING.set(None);
+            f(at(ev.position.x), true, window, cx);
+        }
+    });
+}
+
+fn hash_id(id: &ElementId) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut h);
+    h.finish()
+}
+
+/// A tooltip builder for `.tooltip(…)`.
+pub fn tooltip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let text: SharedString = text.into();
+    move |_, cx| cx.new(|_| Tooltip(text.clone())).into()
+}
+
+pub struct Tooltip(SharedString);
+
+impl Render for Tooltip {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
+        let ui = Ui::get(cx);
+        div()
+            .font_family(cx.global::<crate::settings::AppSettings>().ui_font.clone())
+            .max_w(px(320.))
+            .px(px(10.))
+            .py(px(6.))
+            .rounded(px(8.))
+            .bg(ui.menu)
+            .border_1()
+            .border_color(ui.border)
+            .shadow_md()
+            .text_size(px(text::SMALL))
+            .text_color(ui.text)
+            .child(self.0.clone())
+    }
+}
+
+/// The parts of a keystroke as shown on keycaps: `ctrl-shift--` → Ctrl, Shift, -.
+pub fn key_parts(k: &str) -> Vec<String> {
     let parts: Vec<&str> = match k.strip_suffix("--") {
         Some(rest) => {
             let mut p: Vec<&str> = rest.split('-').collect();
@@ -192,14 +467,19 @@ pub fn pretty_keys(k: &str) -> String {
             "super" | "cmd" | "platform" => "Super".to_string(),
             "pageup" => "PageUp".to_string(),
             "pagedown" => "PageDown".to_string(),
+            "escape" => "Esc".to_string(),
             other if other.len() == 1 => other.to_uppercase(),
             other => {
                 let mut c = other.chars();
                 c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
             }
         })
-        .collect::<Vec<_>>()
-        .join("+")
+        .collect()
+}
+
+/// `ctrl-shift-c` → `Ctrl+Shift+C`.
+pub fn pretty_keys(k: &str) -> String {
+    key_parts(k).join("+")
 }
 
 #[cfg(test)]
@@ -212,5 +492,6 @@ mod tests {
         assert_eq!(pretty_keys("ctrl-shift--"), "Ctrl+Shift+-");
         assert_eq!(pretty_keys("shift-pageup"), "Shift+PageUp");
         assert_eq!(pretty_keys("ctrl-,"), "Ctrl+,");
+        assert_eq!(key_parts("alt-shift-left"), ["Alt", "Shift", "Left"]);
     }
 }

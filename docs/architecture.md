@@ -77,11 +77,20 @@ command_palette/
   registry.rs  Command (id, category, title, keywords, action or handler), CommandRegistry global, built-ins
   fuzzy.rs     fzf-style matcher: word starts, consecutive runs, gaps; any word order; highlight positions
 settings_window/
-  mod.rs       the settings window: pages, host draft → preview → apply, export/import
+  mod.rs       the settings window: pages, navigation, host draft → preview → apply, themes, export/import, rollback
   host.rs      HostLink: the daemon connection or the local HostService
-  pages.rs     rendering of every page
-settings_window/plugins.rs  the Plugins page: catalog, install review (plan), schema-driven setting controls
-settings_window/hosts.rs    the Hosts page: open hosts in a tab or window, add/remove hosts, plain SSH per host, `~/.ssh/config` discovery
+  kit.rs       the pieces pages are built from: section/row, dropdown (`select`), search field, chips, choice cards, modal; search-result highlight + scroll
+  chrome.rs    sidebar (rail + drawer below 920 px), page header, the floating bar for unapplied host changes, `Render`
+  search.rs    "Search settings": the index of every setting (row label, section, keywords) + pages + shortcut actions
+  appearance.rs  live preview, theme gallery + color editor, font picker, cursor, padding per side, opacity
+  terminal.rs  the Terminal page (links, selection, pasting) and the Workspace page (startup, tabs, panes)
+  shell.rs     Shell, Prompt (live prompt preview), History
+  shortcuts.rs the Shortcuts table: groups or sorting, search by name or pressed keys, changed/unbound filters
+  aliases.rs   the Aliases page: mine first, plugin groups folded, filters, the add/edit dialog
+  plugins.rs   the Plugins page: installed list, each plugin's own page (schema-driven settings by group), browse, install review
+  hosts.rs     the Hosts page: open hosts in a tab or window, add/remove hosts, plain SSH per host, `~/.ssh/config` discovery
+  profile.rs   files (copy path, open folder), problems, export/import, generations, reset
+  about.rs     version, connection, links, "copy for a bug report"
 toast/
   mod.rs       Toast (level, title, body, buttons, key, lifetime) and the API: show/show_in/update/dismiss/dismiss_all, routed to a window's layer
   stack.rs     one window's toasts without UI: replace by key, eviction, pausable timers (unit-tested with explicit clocks)
@@ -141,8 +150,8 @@ Input: GPUI dispatches a bound action before the view's raw `on_key_down`. Short
 | Managed zsh features, tool versions    | `goatty-shell/zsh/zshrc.zsh` (load order matters, see `managed-zsh.md`); the tools are built-in plugins: `goatty-shell/plugins/<id>/plugin.toml` (+ `builtins.rs` to list a new one) |
 | GUI first-run / shell diagnostics      | daemon API for `goatty_shell::cmd`-style status/install (new wire messages), then a GPUI view |
 | Bash/Fish adapters (Stage 6)           | `goatty-shell`: a sibling of `zsh.rs` + its startup files; `Launcher::launch` picks by program |
-| New client setting                     | field in `goatty-config/src/client.rs` (+ `validate`), control in `settings_window/pages.rs`, apply in `TerminalView::apply_settings` |
-| New host setting                       | field in `goatty-config/src/host.rs`, render it in `goatty-shell/src/zsh.rs` (`settings.zsh`/`starship.toml`), control in `pages.rs` |
+| New client setting                     | field in `goatty-config/src/client.rs` (+ `validate`), a `kit::row` on its page in `settings_window/` (+ an entry in `search.rs`), apply in `TerminalView::apply_settings` |
+| New host setting                       | field in `goatty-config/src/host.rs`, render it in `goatty-shell/src/zsh.rs` (`settings.zsh`/`starship.toml`), a row in `settings_window/shell.rs` (+ `search.rs`) |
 | A color setting / editing a color      | embed `Entity<ColorPicker>` (`ui/color_picker.rs`): `open(color)` to start, `sync(color)` to follow outside changes, react to `ColorPickerEvent::Changed` (live; `AppSettings::preview`) and `Committed` (save). Parsing and formats: `goatty-config/src/colorspace.rs` |
 | New theme import format                | `goatty-config/src/theme_import.rs` (detect + parse to `ThemeColors`) |
 | Settings migration                     | bump `Document::VERSION`, add `(from, fn(&mut Value))` to `migrations()` |

@@ -6,7 +6,7 @@ The profile is the source of truth for everything goatty manages. The settings w
 
 | Document | File (`$XDG_CONFIG_HOME/goatty/`) | Lives on | Contains |
 |---|---|---|---|
-| `ClientSettings` | `settings.json` | the machine running the window | font, theme, cursor, padding, background opacity/blur, renderer, keybindings, links, paste, selection (copy on select), workspace (on launch), ssh hosts (added hosts, plain SSH per host, list `~/.ssh/config`, open hosts in a new window or tab), debug |
+| `ClientSettings` | `settings.json` | the machine running the window | font, theme, cursor, padding (one number, or `{top, right, bottom, left}`), background opacity/blur, renderer, keybindings, links, paste, selection (copy on select), workspace (on launch), ssh hosts (added hosts, plain SSH per host, list `~/.ssh/config`, open hosts in a new window or tab), debug |
 | `HostSettings` | `host.json` | each machine running a goattyd | shell program, managed zsh and its features, user dotfiles, prompt, history |
 
 The split follows where a setting takes effect. The window draws text, so fonts and colors are the client's. Shells run on the daemon's host, so their configuration belongs to that host. A remote host keeps its own `host.json`, and the settings window edits it through the protocol. Connecting to a different host shows that host's shell settings.
@@ -64,21 +64,24 @@ Settings travel as JSON documents rather than typed structs, so a schema change 
 
 ### The settings window
 
-`Ctrl+,` (or `goatty --settings[=page]`) opens it. Pages:
+`Ctrl+,` (or `goatty --settings[=page]`) opens it. The sidebar groups this computer's pages, then the shell pages of the active tab's host, then Profile and About; below 920 px it becomes a navigation rail. **Search settings** at the top finds any setting (by label or what it does), page or shortcut, and jumps to it. Pages:
 
 | Page | Edits | Applies |
 |---|---|---|
-| Appearance | theme gallery, bold-is-bright, font size/line height/renderer, font family (filterable list), padding, background opacity (+ blur when below 100 %), cursor shape/blink | live, saved immediately |
-| Terminal | how links open, file opener command, copy on select (primary selection / clipboard / off), what a middle click pastes (primary selection / clipboard / nothing), when to ask before pasting | live |
-| Shell | program, managed zsh, user dotfiles, autosuggestions/highlighting/fzf/integration | staged → preview → apply |
-| Prompt | Starship, rich/minimal style, two-line, blank line, duration threshold, prefer own starship.toml | staged |
+| Appearance | live preview; theme gallery (one theme, or light + dark following the desktop), import, color editor (folded); font (searchable picker, monospace or all), size, line height, ligatures, bold-is-bright; cursor shape (visual) and blink; padding (all sides or each side), background opacity (+ blur) | live, saved immediately |
+| Terminal | how links open, file opener command, copy on select (primary selection / clipboard / off), what a middle click pastes, when to ask before pasting | live |
+| Workspace | what a new window shows, tab style (visual), tab bar, program icons, fading inactive panes, asking before closing a running program | live / next launch |
+| Shortcuts | a table of every action: grouped or sorted by name or keys, search by name or keys (typed, or pressed with the keyboard button), filters for changed and unbound; per action: keycaps (× removes), + records a keystroke, reset; warnings when a recorded key took over another action's key, when a key you added is one the shell uses, and when a keystroke doesn't parse | live |
+| Hosts | open hosts in a new window or tab (`ssh.open_in`), add hosts (`user@host` or an ssh alias, optional name), plain SSH per host, list the hosts in `~/.ssh/config`, connect | saved immediately |
+| Shell | managed zsh, program, user dotfiles, shell integration (the built-in tools are on Plugins) | staged → preview → apply |
+| Prompt | live preview; Starship, rich/minimal style, own starship.toml (off by default), two-line, blank line, duration threshold | staged |
 | History | size, duplicates, leading space, sharing, Atuin, Atuin on Up | staged |
-| Shortcuts | per action: key chips (× removes), + records a new keystroke, reset; warns when a recorded key took over another action's key, when a key you added is one the shell uses (Ctrl+R, Ctrl+W, Alt+letters, plain typing keys), and when a keystroke doesn't parse | live |
-| Workspace | reattach newest session vs. start new on launch | next launch |
-| Hosts | open hosts in a new window or a new tab (`ssh.open_in`), add hosts (`user@host` or an ssh alias, optional name), plain SSH per host, list the hosts in `~/.ssh/config`, connect | saved immediately |
-| Profile | file locations, problems, env overrides, export/import, reset, generations with rollback | – |
+| Aliases | yours first, then each plugin's (folded); filters All / Mine / From plugins; add/edit in a dialog (group completes existing groups) | staged |
+| Plugins | installed and built-in plugins, each with its own page (settings by the manifest's groups, advanced folded; tools; permissions; aliases); browse the registries; install review | staged / installs right away |
+| Profile | status, file locations (copy, open folder), env overrides, export/import, generations with rollback, reset | – |
+| About | version, what the window is connected to, links, a summary to copy into bug reports | – |
 
-Host edits collect in a draft. A bar at the bottom offers **Discard**, **Preview** (the host computes the diff of the generated files, shown colored) and **Apply** (a new generation, validated first). When an apply or a rollback changed the shell configuration, the bar offers **Reload running shells** (or **Not now**); see below. Calls to the daemon run off the UI thread. With `--local` there is no daemon, and the window uses `goatty_shell::HostService` in-process: same code path, same files.
+Host edits collect in a draft. A floating bar at the bottom offers **Discard**, **Preview** (the host computes the diff of the generated files, shown colored) and **Apply** (a new generation, validated first); the sidebar marks the pages with unapplied changes. When an apply or a rollback changed the shell configuration, the bar offers **Reload running shells** (or **Not now**); see below. Calls to the daemon run off the UI thread. With `--local` there is no daemon, and the window uses `goatty_shell::HostService` in-process: same code path, same files.
 
 **Export** writes `{ "goatty_profile": 1, "client": {...}, "host": {...} }` with non-default values only, minus machine-specific ones (`host.shell.program`, `client.debug`). **Import** applies the client part right away and stages the host part as a draft to preview and apply.
 

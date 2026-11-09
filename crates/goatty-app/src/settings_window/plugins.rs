@@ -1,6 +1,7 @@
-//! The settings window's Plugins page (Stage 5): what's installed, what
-//! the registries offer, the install review, and each plugin's settings
-//! rendered from its schema.
+//! The settings window's Plugins page (Stage 5): the installed plugins as
+//! a list, each with its own page (settings from its schema, grouped as
+//! the manifest groups them; its tools, permissions and aliases), what the
+//! registries offer, and the install review.
 //!
 //! Installing and removing are host operations (`goatty_plugin::api`
 //! through the daemon, or in-process with `--local`). A plugin's settings
@@ -11,14 +12,18 @@ use std::collections::HashMap;
 
 use goatty_config::{HostSettings, PluginConfig};
 use goatty_plugin::api::{self, Catalog, Installed, PackageState, Plan};
-use goatty_plugin::manifest::{Setting, SettingKind};
-use goatty_plugin::{Permission, schema};
-use gpui::{AnyElement, Context, Entity, FontWeight, IntoElement, ParentElement, SharedString, Styled, Subscription, div, prelude::*, px};
+use goatty_plugin::manifest::{Category, Setting, SettingKind};
+use goatty_plugin::{Permission, permissions, schema};
+use gpui::{
+    AnyElement, Context, Entity, FontWeight, IntoElement, ParentElement, SharedString, Styled, Subscription, Window, div, prelude::*, px,
+};
 use serde_json::Value;
 
-use super::{Outcome, SettingsWindow};
-use crate::ui::controls::{ButtonKind, button, note, notice, row, section, segmented, stepper, toggle};
-use crate::ui::style::Ui;
+use super::kit::{self, card, opt, row, search_field, section};
+use super::{Outcome, Page, SettingsWindow};
+use crate::ui::controls::{ButtonKind, Tone, badge, banner, button, button_with, icon_button, segmented, stepper, toggle, tooltip};
+use crate::ui::icons::Icon;
+use crate::ui::style::{Ui, radius, text};
 use crate::ui::text_input::{TextInput, TextInputEvent};
 
 /// The page's own state (the catalog is the host's).
@@ -31,6 +36,9 @@ pub struct PluginsPage {
     pub plan: Option<Box<Plan>>,
     pub show_code: bool,
     pub show_advanced: bool,
+    /// The installed plugin whose page is open.
+    pub detail: Option<String>,
+    pub tab: Tab,
     /// Plugin whose Uninstall was clicked once (the second click removes it).
     pub confirm_uninstall: Option<String>,
     /// Text fields for string/path/list settings: `"<plugin>.<setting>"`.
@@ -39,20 +47,16 @@ pub struct PluginsPage {
     _subs: Vec<Subscription>,
 }
 
+/// Which list the page shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tab {
+    #[default]
+    Installed,
+    Browse,
+}
+
 /// A host request's result, back on the UI thread.
 type Done<T> = Box<dyn FnOnce(&mut SettingsWindow, anyhow::Result<T>, &mut Context<'_, SettingsWindow>)>;
-
-fn badge(text: &str, color: gpui::Hsla) -> AnyElement {
-    div()
-        .px_2()
-        .rounded_md()
-        .border_1()
-        .border_color(color.opacity(0.6))
-        .text_xs()
-        .text_color(color)
-        .child(SharedString::from(text.to_string()))
-        .into_any_element()
-}
 
 fn size(bytes: u64) -> String {
     if bytes < 1_000_000 { format!("{} kB", bytes.div_ceil(1000)) } else { format!("{:.1} MB", bytes as f64 / 1e6) }
@@ -122,7 +126,10 @@ impl SettingsWindow {
                 _ => None,
             },
             Box::new(|view, result, _cx| match result {
-                Ok(p) => view.plugins.plan = Some(p),
+                Ok(p) => {
+                    view.plugins.plan = Some(p);
+                    view.scroll.set_offset(gpui::point(px(0.), px(0.)));
+                }
                 Err(e) => view.outcome = Some(Outcome { ok: false, lines: vec![format!("{e:#}")], diff: Vec::new(), reload: false }),
             }),
             cx,
@@ -193,7 +200,7 @@ impl SettingsWindow {
     /// settings, showing the current values.
     pub fn sync_plugin_inputs(&mut self, cx: &mut Context<'_, Self>) {
         if self.plugins.filter.is_none() {
-            let filter = cx.new(|cx| TextInput::new("Search plugins…", "", cx));
+            let filter = cx.new(|cx| TextInput::new("Search plugins", "", cx).bare());
             self.plugins._subs.push(cx.subscribe(&filter, |_, _, _: &TextInputEvent, cx| cx.notify()));
             self.plugins.filter = Some(filter);
         }
@@ -239,44 +246,39 @@ impl SettingsWindow {
 
     // ---- Rendering ----------------------------------------------------------
 
-    pub(super) fn plugins_page(&self, ui: Ui, cx: &Context<'_, Self>) -> AnyElement {
-        let label = self.link.as_ref().map(|l| l.label()).unwrap_or_else(|| "no host".into());
-        let mut page = div().flex().flex_col().gap_1().child(note(
-            ui,
-            format!(
-                "Plugins install command-line tools into goatty's own directory on {label} (never system-wide, no sudo) and wire them into goatty's shell. Their settings are host settings: change them here, then preview and apply."
-            ),
-        ));
+    pub(super) fn plugins_page(&self, ui: Ui, window: &Window, cx: &Context<'_, Self>) -> AnyElement {
         if let Some(plan) = &self.plugins.plan {
-            return page.child(self.plan_view(ui, plan, cx)).into_any_element();
+            return self.plan_view(ui, plan, cx);
         }
-        page = page.child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .pt_2()
-                .children(self.plugins.filter.clone().map(|f| div().flex_1().child(f)))
-                .child(button(
-                    "plugins-refresh",
-                    "Refresh registries",
-                    ButtonKind::Normal,
-                    ui,
-                    self.act(cx, |v, cx| v.load_plugins(true, cx)),
-                ))
-                .when(self.plugins.loading, |d| d.child(div().text_sm().text_color(ui.muted).child("Working…"))),
-        );
+        if let Some(inst) =
+            self.plugins.detail.as_ref().and_then(|id| self.plugins.catalog.as_ref()?.installed.iter().find(|i| &i.id == id))
+        {
+            return self.plugin_detail(ui, inst, cx);
+        }
+        let mut page = div().flex().flex_col().gap(px(20.));
         if let Some(e) = &self.plugins.error {
-            page = page.child(notice(ui, ui.danger, vec![e.clone()]));
+            page = page.child(banner(ui, Tone::Danger, "Couldn't talk to the host", vec![e.clone()]));
         }
         let Some(cat) = &self.plugins.catalog else {
-            return page.child(note(ui, if self.plugins.loading { "Loading…" } else { "" })).into_any_element();
+            return page
+                .child(card(ui).child(kit::empty(
+                    ui,
+                    Icon::Loader,
+                    if self.plugins.loading { "Loading plugins…" } else { "No plugins to show" },
+                    format!("From {}", self.host_label()),
+                )))
+                .into_any_element();
         };
         for r in cat.registries.iter().filter(|r| r.error.is_some()) {
-            page = page.child(notice(ui, ui.warning, vec![format!("Registry {}: {}", r.name, r.error.clone().unwrap_or_default())]));
+            page = page.child(banner(
+                ui,
+                Tone::Warning,
+                format!("Couldn't read the {} registry", r.name),
+                vec![r.error.clone().unwrap_or_default()],
+            ));
         }
         if !cat.issues.is_empty() {
-            page = page.child(notice(ui, ui.warning, cat.issues.iter().map(|i| format!("⚠ {i}")).collect()));
+            page = page.child(banner(ui, Tone::Warning, "Some plugins have problems", cat.issues.clone()));
         }
 
         let query = self.plugins.filter.as_ref().map(|f| f.read(cx).text().to_lowercase()).unwrap_or_default();
@@ -287,238 +289,500 @@ impl SettingsWindow {
                 || summary.to_lowercase().contains(&query)
                 || keywords.iter().any(|k| k.contains(&query))
         };
-
-        let shown = |i: &&Installed| matches(&i.id, &i.manifest.name, &i.manifest.summary, &i.manifest.keywords);
-        let builtin: Vec<&Installed> = cat.installed.iter().filter(|i| i.builtin).filter(shown).collect();
-        if !builtin.is_empty() {
-            page = page.child(section(ui, "Built in"));
-            for inst in builtin {
-                page = page.child(self.installed_card(ui, inst, cx));
-            }
-        }
-        page = page.child(section(ui, "Installed"));
-        let installed: Vec<&Installed> = cat.installed.iter().filter(|i| !i.builtin).filter(shown).collect();
-        if installed.is_empty() {
-            page = page
-                .child(note(ui, if cat.installed.iter().all(|i| i.builtin) { "Nothing yet: pick something below." } else { "No match." }));
-        }
-        for inst in installed {
-            page = page.child(self.installed_card(ui, inst, cx));
-        }
-        if cat.installed.iter().any(|i| i.manifest.settings.iter().any(|s| s.advanced)) {
-            page = page.child(row(
-                ui,
-                "Show advanced settings",
-                None,
-                toggle(
-                    "plugins-advanced",
-                    self.plugins.show_advanced,
+        let available: Vec<&api::Available> = cat.available.iter().filter(|a| a.installed.is_none()).collect();
+        let tab = self.plugins.tab;
+        let installed_label = format!("Installed  {}", cat.installed.len());
+        let browse_label = format!("Browse  {}", available.len());
+        page = page.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(segmented(
+                    "plugins-tab",
+                    &[(Tab::Installed, installed_label.as_str()), (Tab::Browse, browse_label.as_str())],
+                    &tab,
                     ui,
-                    self.act(cx, |v, cx| {
-                        v.plugins.show_advanced = !v.plugins.show_advanced;
-                        cx.notify();
-                    }),
+                    {
+                        let this = cx.entity().downgrade();
+                        move |t, _, cx| {
+                            let _ = this.update(cx, |v, cx| {
+                                v.plugins.tab = t;
+                                cx.notify();
+                            });
+                        }
+                    },
+                ))
+                .children(self.plugins.filter.as_ref().map(|f| div().flex_1().child(search_field(ui, "plugin-search", f, window, cx))))
+                .child(
+                    icon_button(
+                        "plugins-refresh",
+                        if self.plugins.loading { Icon::Loader } else { Icon::Refresh },
+                        "Check the registries for new plugins and updates",
+                        ui,
+                        self.act(cx, |v, cx| v.load_plugins(true, cx)),
+                    )
+                    .size(px(38.)),
                 ),
-            ));
-        }
+        );
 
-        page = page.child(section(ui, "Available"));
-        let available: Vec<&api::Available> =
-            cat.available.iter().filter(|a| a.installed.is_none() && matches(&a.id, &a.name, &a.summary, &a.keywords)).collect();
-        if available.is_empty() {
-            let why = if cat.registries.iter().all(|r| r.sequence.is_none()) {
-                "No registry could be read yet. Check the connection and press Refresh."
-            } else {
-                "Nothing else to install."
-            };
-            page = page.child(note(ui, why));
-        }
-        for a in available {
-            page = page.child(self.available_card(ui, a, cx));
+        match tab {
+            Tab::Installed => {
+                let shown = |i: &&Installed| matches(&i.id, &i.manifest.name, &i.manifest.summary, &i.manifest.keywords);
+                let builtin: Vec<&Installed> = cat.installed.iter().filter(|i| i.builtin).filter(shown).collect();
+                let installed: Vec<&Installed> = cat.installed.iter().filter(|i| !i.builtin).filter(shown).collect();
+                if !installed.is_empty() || query.is_empty() {
+                    let mut s = section(ui, "Installed");
+                    if installed.is_empty() {
+                        s = s.child(
+                            row(ui, "Nothing installed yet")
+                                .icon(Icon::Package)
+                                .desc("Add tools like eza, zoxide or bat, in goatty's own directory: never system-wide, no sudo")
+                                .on_click(
+                                    "plugins-browse",
+                                    cx.listener(|v, _, _, cx| {
+                                        v.plugins.tab = Tab::Browse;
+                                        cx.notify();
+                                    }),
+                                ),
+                        );
+                    }
+                    page = page.child(s.children(installed.into_iter().map(|i| self.plugin_row(ui, i, cx))));
+                }
+                if !builtin.is_empty() {
+                    page = page.child(
+                        section(ui, "Built in")
+                            .desc("Come with goatty: switch them off instead of uninstalling")
+                            .children(builtin.into_iter().map(|i| self.plugin_row(ui, i, cx))),
+                    );
+                }
+            }
+            Tab::Browse => {
+                let list: Vec<&&api::Available> = available.iter().filter(|a| matches(&a.id, &a.name, &a.summary, &a.keywords)).collect();
+                if list.is_empty() {
+                    let (title, why) = if cat.registries.iter().all(|r| r.sequence.is_none()) {
+                        ("No registry could be read", "Check the connection and press refresh.")
+                    } else if !query.is_empty() {
+                        ("No plugin matches", "Search looks at names, summaries and keywords.")
+                    } else {
+                        ("You have them all", "Every plugin the registries offer is installed.")
+                    };
+                    page = page.child(card(ui).child(kit::empty(ui, Icon::Puzzle, title, why)));
+                } else {
+                    page = page
+                        .child(div().grid().grid_cols(2).gap(px(12.)).children(list.into_iter().map(|a| self.available_card(ui, a, cx))));
+                }
+            }
         }
         let regs: Vec<String> = cat
             .registries
             .iter()
             .map(|r| match r.sequence {
-                Some(seq) => format!("{} (#{seq}, {} plugins)", r.name, r.plugins),
+                Some(_) => format!("{} ({} plugins)", r.name, r.plugins),
                 None => format!("{} (not fetched)", r.name),
             })
             .collect();
-        page = page.child(note(ui, format!("Registries: {}. Add others with `goattyd plugin registry add`.", regs.join(", "))));
-        page.into_any_element()
+        page.child(kit::hint(ui, format!("Registries: {}. Add one with goattyd plugin registry add.", regs.join(", "))).px(px(4.)))
+            .into_any_element()
     }
 
-    fn card(ui: Ui) -> gpui::Div {
-        div().flex().flex_col().gap_1().my_1().p_3().rounded_md().border_1().border_color(ui.border).bg(ui.surface)
+    /// The round icon standing for a plugin.
+    fn plugin_avatar(ui: Ui, category: Category, builtin: bool, size: f32) -> impl IntoElement {
+        let icon = match category {
+            Category::Prompt => Icon::TextCursorInput,
+            Category::Application => Icon::AppWindow,
+            Category::Environment if builtin => Icon::Zap,
+            Category::Environment => Icon::Package,
+        };
+        div()
+            .flex_shrink_0()
+            .size(px(size))
+            .rounded(px(size * 0.3))
+            .bg(ui.accent_soft)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(icon.svg().size(px(size * 0.5)).text_color(ui.accent_text))
     }
 
-    fn perm_badges(ui: Ui, perms: &[Permission]) -> Vec<AnyElement> {
-        let mut v = Vec::new();
-        if perms.contains(&Permission::Binaries) {
-            v.push(badge("installs programs", ui.muted));
-        }
-        if perms.contains(&Permission::ShellCode) {
-            v.push(badge("runs shell code", ui.warning));
-        }
-        if perms.contains(&Permission::Network) {
-            v.push(badge("uses the network", ui.muted));
-        }
-        v
+    fn enabled(&self, id: &str) -> bool {
+        self.host_value().and_then(|h| h.plugins.get(id)).is_none_or(|p| p.enabled)
+    }
+
+    /// An installed plugin in the list: opens its page.
+    fn plugin_row(&self, ui: Ui, inst: &Installed, cx: &Context<'_, Self>) -> AnyElement {
+        let id = inst.id.clone();
+        let enabled = self.enabled(&id);
+        let missing = inst.packages.iter().any(|p| matches!(p.state, PackageState::Missing));
+        let fetch = inst.builtin && inst.packages.iter().any(|p| p.available && p.needs_install());
+        let open_id = id.clone();
+        div()
+            .id(SharedString::from(format!("plugin-{id}")))
+            .flex()
+            .items_center()
+            .gap(px(14.))
+            .min_h(px(64.))
+            .px(px(16.))
+            .py(px(10.))
+            .cursor_pointer()
+            .rounded(px(radius::CARD))
+            .hover(|s| s.bg(ui.surface_hover))
+            .child(Self::plugin_avatar(ui, inst.manifest.category, inst.builtin, 38.))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .text_size(px(text::BODY))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(if enabled { ui.text } else { ui.muted })
+                                    .child(SharedString::from(inst.manifest.name.clone())),
+                            )
+                            .when_some(inst.update.clone(), |d, v| d.child(badge(format!("Update {v}"), Tone::Accent, ui)))
+                            .when(fetch && enabled, |d| d.child(badge(if missing { "Needs install" } else { "Update" }, Tone::Warning, ui)))
+                            .when(inst.incompatible.is_some(), |d| d.child(badge("Not for this host", Tone::Danger, ui)))
+                            .when(!inst.verified && !inst.builtin, |d| d.child(badge("Unverified", Tone::Warning, ui))),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(text::SMALL))
+                            .text_color(ui.muted)
+                            .truncate()
+                            .child(SharedString::from(inst.manifest.summary.clone())),
+                    ),
+            )
+            .child({
+                let id = id.clone();
+                div().on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(toggle(
+                    SharedString::from(format!("enabled-{id}")),
+                    enabled,
+                    ui,
+                    self.act(cx, move |v, cx| v.edit_plugin(&id, cx, move |p| p.enabled = !enabled)),
+                ))
+            })
+            .child(Icon::ChevronRight.svg().size(px(16.)).text_color(ui.faint))
+            .on_click(cx.listener(move |v, _, _, cx| {
+                v.plugins.detail = Some(open_id.clone());
+                v.plugins.confirm_uninstall = None;
+                v.plugins.show_advanced = false;
+                v.scroll.set_offset(gpui::point(px(0.), px(0.)));
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
+    fn perm_icons(ui: Ui, perms: &[Permission]) -> impl IntoElement {
+        let item = |p: Permission, icon: Icon, tone: gpui::Hsla| {
+            perms.contains(&p).then(|| {
+                div()
+                    .id(SharedString::from(format!("perm-{}", p.key())))
+                    .size(px(24.))
+                    .rounded_full()
+                    .bg(tone.opacity(0.12))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon.svg().size(px(13.)).text_color(tone))
+                    .tooltip(tooltip(p.title()))
+            })
+        };
+        div()
+            .flex()
+            .gap(px(4.))
+            .children(item(Permission::Binaries, Icon::Package, ui.muted))
+            .children(item(Permission::ShellCode, Icon::Code, ui.warning))
+            .children(item(Permission::Network, Icon::Globe, ui.muted))
     }
 
     fn available_card(&self, ui: Ui, a: &api::Available, cx: &Context<'_, Self>) -> AnyElement {
         let (id, version) = (a.id.clone(), a.version.clone());
-        Self::card(ui)
+        card(ui)
+            .p(px(16.))
+            .gap(px(10.))
+            .child(
+                div().flex().items_center().gap(px(12.)).child(Self::plugin_avatar(ui, a.category, false, 38.)).child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .text_size(px(text::BODY))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .truncate()
+                                .child(SharedString::from(a.name.clone())),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(text::CAPTION))
+                                .text_color(ui.muted)
+                                .truncate()
+                                .child(SharedString::from(format!("{} · {}", a.publisher, a.version))),
+                        ),
+                ),
+            )
+            .child(
+                div().h(px(40.)).text_size(px(text::SMALL)).text_color(ui.muted).line_clamp(2).child(SharedString::from(a.summary.clone())),
+            )
+            .child(
+                div().flex().items_center().justify_between().child(Self::perm_icons(ui, &a.permissions)).child(match &a.incompatible {
+                    Some(why) => div()
+                        .id(SharedString::from(format!("incompat-{id}")))
+                        .child(badge("Not for this host", Tone::Neutral, ui))
+                        .tooltip(tooltip(why.clone()))
+                        .into_any_element(),
+                    None => button_with(
+                        SharedString::from(format!("review-{id}")),
+                        Some(Icon::Download),
+                        "Install",
+                        ButtonKind::Normal,
+                        ui,
+                        self.act(cx, move |v, cx| v.review_plugin(id.clone(), Some(version.clone()), cx)),
+                    )
+                    .into_any_element(),
+                }),
+            )
+            .into_any_element()
+    }
+
+    // ---- A plugin's page ----------------------------------------------------
+
+    fn plugin_detail(&self, ui: Ui, inst: &Installed, cx: &Context<'_, Self>) -> AnyElement {
+        let id = inst.id.clone();
+        let enabled = self.enabled(&id);
+        let confirming = self.plugins.confirm_uninstall.as_deref() == Some(id.as_str());
+        let fetch = inst.builtin && inst.packages.iter().any(|p| p.available && p.needs_install());
+        let outdated = inst.packages.iter().any(|p| matches!(&p.state, PackageState::Managed { version } if *version != p.version));
+        let source = if inst.builtin {
+            "Built into goatty".to_string()
+        } else if inst.verified {
+            format!("From the {} registry", inst.source)
+        } else {
+            "Installed from a local file, unverified".to_string()
+        };
+        let mut by = format!("Version {} · {}", inst.version, inst.manifest.publisher);
+        if let Some(l) = &inst.manifest.license {
+            by.push_str(&format!(" · {l}"));
+        }
+
+        let mut actions = div().flex().flex_wrap().items_center().gap(px(8.));
+        if let Some(newer) = inst.update.clone() {
+            let (id, v) = (id.clone(), newer.clone());
+            actions = actions.child(button_with(
+                SharedString::from(format!("update-{id}")),
+                Some(Icon::Download),
+                format!("Update to {newer}"),
+                ButtonKind::Primary,
+                ui,
+                self.act(cx, move |view, cx| view.review_plugin(id.clone(), Some(v.clone()), cx)),
+            ));
+        }
+        if fetch {
+            let id = id.clone();
+            actions = actions.child(button_with(
+                SharedString::from(format!("fetch-{id}")),
+                Some(Icon::Download),
+                if outdated { "Update the tool" } else { "Install the tool" },
+                ButtonKind::Primary,
+                ui,
+                self.act(cx, move |v, cx| v.review_plugin(id.clone(), None, cx)),
+            ));
+        }
+        if let Some(home) = inst.manifest.homepage.clone() {
+            actions =
+                actions.child(button_with("plugin-home", Some(Icon::ExternalLink), "Website", ButtonKind::Ghost, ui, move |_, cx| {
+                    cx.open_url(&home)
+                }));
+        }
+        actions = actions.child(div().flex_1());
+        if !inst.builtin {
+            let id = id.clone();
+            actions = actions.child(button_with(
+                SharedString::from(format!("uninstall-{id}")),
+                Some(Icon::Trash),
+                if confirming { "Really uninstall?" } else { "Uninstall" },
+                ButtonKind::Danger,
+                ui,
+                self.act(cx, move |v, cx| {
+                    if v.plugins.confirm_uninstall.as_deref() == Some(id.as_str()) {
+                        v.uninstall_plugin(id.clone(), cx);
+                        v.plugins.detail = None;
+                    } else {
+                        v.plugins.confirm_uninstall = Some(id.clone());
+                        cx.notify();
+                    }
+                }),
+            ));
+        }
+        let hero = card(ui)
+            .p(px(20.))
+            .gap(px(16.))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .child(div().font_weight(FontWeight::BOLD).child(SharedString::from(a.name.clone())))
+                    .gap(px(16.))
+                    .child(Self::plugin_avatar(ui, inst.manifest.category, inst.builtin, 52.))
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(ui.muted)
-                            .child(SharedString::from(format!("{} · by {} · {}", a.version, a.publisher, a.registry))),
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(
+                                        div().text_size(px(text::BODY)).font_weight(FontWeight::MEDIUM).child(SharedString::from(source)),
+                                    )
+                                    .when(inst.verified && !inst.builtin, |d| {
+                                        d.child(
+                                            div()
+                                                .id("verified")
+                                                .child(Icon::ShieldCheck.svg().size(px(16.)).text_color(ui.success))
+                                                .tooltip(tooltip("Signed by its registry")),
+                                        )
+                                    }),
+                            )
+                            .child(div().text_size(px(text::SMALL)).text_color(ui.muted).child(SharedString::from(by))),
                     )
-                    .children(Self::perm_badges(ui, &a.permissions))
-                    .child(div().flex_1())
-                    .when(a.incompatible.is_none(), |d| {
-                        d.child(button(
-                            SharedString::from(format!("review-{id}")),
-                            "Review & install…",
-                            ButtonKind::Primary,
-                            ui,
-                            self.act(cx, move |v, cx| v.review_plugin(id.clone(), Some(version.clone()), cx)),
-                        ))
-                    }),
-            )
-            .child(div().text_sm().child(SharedString::from(a.summary.clone())))
-            .when_some(a.incompatible.clone(), |d, why| d.child(note(ui, format!("Not for this host: {why}"))))
-            .into_any_element()
-    }
-
-    fn installed_card(&self, ui: Ui, inst: &Installed, cx: &Context<'_, Self>) -> AnyElement {
-        let id = inst.id.clone();
-        let enabled = self.host_value().and_then(|h| h.plugins.get(&id)).is_none_or(|p| p.enabled);
-        let confirming = self.plugins.confirm_uninstall.as_deref() == Some(id.as_str());
-        let source = if inst.builtin {
-            "comes with goatty".to_string()
-        } else if inst.verified {
-            format!("{} · {}", inst.version, inst.source)
-        } else {
-            format!("{} · local, unverified", inst.version)
-        };
-        // A built-in plugin whose tool is missing or older than its pin: goatty can download it.
-        let fetch = inst.builtin && inst.packages.iter().any(|p| p.available && p.needs_install());
-        let outdated = inst.packages.iter().any(|p| matches!(&p.state, PackageState::Managed { version } if *version != p.version));
-        let mut card = Self::card(ui).child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(div().font_weight(FontWeight::BOLD).child(SharedString::from(inst.manifest.name.clone())))
-                .child(div().text_sm().text_color(ui.muted).child(SharedString::from(source)))
-                .children(Self::perm_badges(ui, &goatty_plugin::permissions::all(&inst.manifest)))
-                .child(div().flex_1())
-                .when_some(inst.update.clone(), |d, newer| {
-                    let (id, v) = (id.clone(), newer.clone());
-                    d.child(button(
-                        SharedString::from(format!("update-{id}")),
-                        format!("Update to {newer}…"),
-                        ButtonKind::Primary,
-                        ui,
-                        self.act(cx, move |view, cx| view.review_plugin(id.clone(), Some(v.clone()), cx)),
-                    ))
-                })
-                .when(fetch, |d| {
-                    let id = id.clone();
-                    d.child(button(
-                        SharedString::from(format!("fetch-{id}")),
-                        if outdated { "Update…" } else { "Install…" },
-                        ButtonKind::Primary,
-                        ui,
-                        self.act(cx, move |v, cx| v.review_plugin(id.clone(), None, cx)),
-                    ))
-                })
-                .when(!inst.builtin, |d| {
-                    let id = id.clone();
-                    d.child(button(
-                        SharedString::from(format!("uninstall-{id}")),
-                        if confirming { "Really uninstall?" } else { "Uninstall" },
-                        ButtonKind::Danger,
-                        ui,
-                        self.act(cx, move |v, cx| {
-                            if v.plugins.confirm_uninstall.as_deref() == Some(id.as_str()) {
-                                v.uninstall_plugin(id.clone(), cx);
-                            } else {
-                                v.plugins.confirm_uninstall = Some(id.clone());
-                                cx.notify();
-                            }
-                        }),
-                    ))
-                })
-                .child({
-                    let id = id.clone();
-                    toggle(
-                        SharedString::from(format!("enabled-{id}")),
-                        enabled,
-                        ui,
-                        self.act(cx, move |v, cx| v.edit_plugin(&id, cx, move |p| p.enabled = !enabled)),
-                    )
-                }),
-        );
-        card = card.child(div().text_sm().child(SharedString::from(inst.manifest.summary.clone())));
-        if inst.builtin {
-            for p in &inst.packages {
-                let line = match &p.state {
-                    PackageState::System { path } => format!("Uses {path}"),
-                    PackageState::Managed { version } if *version == p.version => format!("goatty's copy, {version}"),
-                    PackageState::Managed { version } => format!("goatty's copy, {version} ({} available)", p.version),
-                    PackageState::Missing if p.available => "Not installed yet: Install… downloads it into goatty's directory".into(),
-                    PackageState::Missing => {
-                        "Not installed, and goatty has no build for this host: install it with your package manager".into()
-                    }
-                };
-                card = card.child(note(ui, line));
-            }
-        }
-        if let Some(why) = &inst.incompatible {
-            card = card.child(note(ui, format!("Off on this host: {why}")));
-        }
-        if !enabled {
-            let why = if inst.builtin { "Off: not loaded in new shells." } else { "Disabled: installed, but not loaded in new shells." };
-            return card.child(note(ui, why)).into_any_element();
-        }
-        let values = self.plugin_values(inst);
-        let mut group: Option<&str> = None;
-        for s in inst.manifest.settings.iter().filter(|s| self.plugins.show_advanced || !s.advanced) {
-            if s.group.as_deref() != group {
-                group = s.group.as_deref();
-                if let Some(g) = group {
-                    card = card.child(
+                    .child(
                         div()
-                            .pt_2()
-                            .text_xs()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(ui.muted)
-                            .child(SharedString::from(g.to_uppercase())),
-                    );
+                            .flex()
+                            .flex_col()
+                            .items_end()
+                            .gap(px(4.))
+                            .child(toggle(SharedString::from(format!("enabled-{id}")), enabled, ui, {
+                                let id = id.clone();
+                                self.act(cx, move |v, cx| v.edit_plugin(&id, cx, move |p| p.enabled = !enabled))
+                            }))
+                            .child(div().text_size(px(text::CAPTION)).text_color(ui.muted).child(if enabled { "On" } else { "Off" })),
+                    ),
+            )
+            .when(!inst.manifest.description.trim().is_empty(), |d| {
+                d.child(
+                    div()
+                        .text_size(px(text::BODY))
+                        .text_color(ui.text)
+                        .child(SharedString::from(inst.manifest.description.trim().to_string())),
+                )
+            })
+            .when_some(inst.incompatible.clone(), |d, why| d.child(banner(ui, Tone::Warning, "Off on this host", vec![why])))
+            .child(actions);
+
+        let mut page = div().flex().flex_col().gap(px(28.)).child(hero);
+
+        // Settings, in the manifest's groups; advanced ones behind an expander.
+        let settings: Vec<&Setting> = inst.manifest.settings.iter().collect();
+        if !settings.is_empty() {
+            let values = self.plugin_values(inst);
+            let mut groups: Vec<(Option<String>, Vec<&Setting>)> = Vec::new();
+            for s in settings.iter().filter(|s| !s.advanced) {
+                match groups.iter_mut().find(|(g, _)| *g == s.group) {
+                    Some((_, v)) => v.push(s),
+                    None => groups.push((s.group.clone(), vec![s])),
                 }
             }
-            card = card.child(self.setting_row(ui, inst, s, &values, cx));
+            for (g, items) in groups {
+                let title = g.unwrap_or_else(|| "Settings".into());
+                page = page
+                    .child(section(ui, title).children(items.into_iter().map(|s| self.setting_row(ui, inst, s, &values, !enabled, cx))));
+            }
+            let advanced: Vec<&&Setting> = settings.iter().filter(|s| s.advanced).collect();
+            if !advanced.is_empty() {
+                let open = self.plugins.show_advanced;
+                let mut s = section(ui, "Advanced").child(
+                    row(ui, if open { "Hide advanced settings" } else { "Show advanced settings" })
+                        .desc(format!("{} more, for special setups", advanced.len()))
+                        .on_click(
+                            "plugin-advanced",
+                            cx.listener(|v, _, _, cx| {
+                                v.plugins.show_advanced = !v.plugins.show_advanced;
+                                cx.notify();
+                            }),
+                        ),
+                );
+                if open {
+                    s = s.children(advanced.into_iter().map(|st| self.setting_row(ui, inst, st, &values, !enabled, cx)));
+                }
+                page = page.child(s);
+            }
+            if !enabled {
+                page = page.child(kit::hint(ui, "Turn the plugin on to use these settings.").px(px(4.)));
+            }
         }
-        card.into_any_element()
+
+        // The programs it needs.
+        if !inst.packages.is_empty() {
+            page = page.child(section(ui, "Tools").children(inst.packages.iter().map(|p| {
+                let (desc, tone, label) = match &p.state {
+                    PackageState::System { path } => (format!("Installed on the system: {path}"), Tone::Success, "Installed"),
+                    PackageState::Managed { version } if *version == p.version => {
+                        (format!("goatty's copy, version {version}"), Tone::Success, "Installed")
+                    }
+                    PackageState::Managed { version } => {
+                        (format!("goatty's copy, version {version}; {} is available", p.version), Tone::Accent, "Update")
+                    }
+                    PackageState::Missing if p.available => {
+                        ("Not installed: goatty can download it into its own directory".into(), Tone::Warning, "Missing")
+                    }
+                    PackageState::Missing => {
+                        ("Not installed, and goatty has no build for this host: use your package manager".into(), Tone::Danger, "Missing")
+                    }
+                };
+                row(ui, p.id.clone()).icon(Icon::Package).desc(desc).control(badge(label, tone, ui))
+            })));
+        }
+
+        // What it may do.
+        let granted = permissions::describe(&inst.manifest);
+        if !granted.is_empty() {
+            page = page.child(section(ui, "Permissions").children(granted.into_iter().map(|g| {
+                let icon = perm_icon(g.permission);
+                row(ui, g.title.clone()).icon(icon).desc_opt((!g.details.is_empty()).then(|| g.details.join(", ")))
+            })));
+        }
+
+        // Its aliases live on the Aliases page.
+        if !inst.manifest.aliases.is_empty() {
+            let name = inst.manifest.name.clone();
+            page = page.child(
+                section(ui, "Aliases").child(
+                    row(ui, format!("{} aliases", inst.manifest.aliases.len()))
+                        .icon(Icon::Link2)
+                        .desc(inst.manifest.aliases.iter().take(6).map(|a| a.name.clone()).collect::<Vec<_>>().join("  ·  "))
+                        .on_click(
+                            "plugin-aliases",
+                            cx.listener(move |v, _, _, cx| {
+                                v.go(Page::Aliases, cx);
+                                v.show_plugin_aliases(&name, cx);
+                            }),
+                        ),
+                ),
+            );
+        }
+        page.into_any_element()
     }
 
     /// One schema-driven control.
-    fn setting_row(&self, ui: Ui, inst: &Installed, s: &Setting, values: &schema::Values, cx: &Context<'_, Self>) -> AnyElement {
+    fn setting_row(&self, ui: Ui, inst: &Installed, s: &Setting, values: &schema::Values, off: bool, cx: &Context<'_, Self>) -> AnyElement {
         let id = inst.id.clone();
         let key = s.id.clone();
         let value = values.get(&s.id).cloned().unwrap_or(Value::Null);
-        let help = (!s.help.is_empty()).then_some(s.help.as_str());
-        let elem_prefix = format!("ps-{id}-{key}");
-        let elem_id = |suffix: &str| SharedString::from(format!("{elem_prefix}{suffix}"));
+        let prefix = format!("ps-{id}-{key}");
+        let elem_id = |suffix: &str| SharedString::from(format!("{prefix}{suffix}"));
         let this = cx.entity().downgrade();
         let set = move |v: Option<Value>| {
             let (this, id, key) = (this.clone(), id.clone(), key.clone());
@@ -526,44 +790,39 @@ impl SettingsWindow {
                 let _ = this.update(cx, |view, cx| view.set_plugin_value(&id, &key, v.clone(), cx));
             }
         };
-        let control: AnyElement = match s.kind {
+        let r = row(ui, s.label.clone()).desc_opt((!s.help.is_empty()).then(|| s.help.clone())).disabled(off);
+        let r = match s.kind {
             SettingKind::Bool => {
                 let on = value.as_bool().unwrap_or(false);
-                toggle(elem_id(""), on, ui, set(Some(Value::Bool(!on)))).into_any_element()
-            }
-            SettingKind::Choice if s.choices.len() > 4 => {
-                // Too many for one row: a list, one choice per line.
-                let selected = schema::plain_string(&value);
-                let mut list = div().flex().flex_col().w(px(220.)).rounded_md().border_1().border_color(ui.border).overflow_hidden();
-                for (i, c) in s.choices.iter().enumerate() {
-                    let on = c.value == selected;
-                    list = list.child(
-                        div()
-                            .id(elem_id(&format!("-{i}")))
-                            .px_3()
-                            .py_1()
-                            .text_sm()
-                            .cursor_pointer()
-                            .when(on, |d| d.bg(ui.accent).text_color(ui.on_accent))
-                            .when(!on, |d| d.hover(|st| st.bg(ui.surface_hover)))
-                            .child(SharedString::from(c.label.clone()))
-                            .on_click({
-                                let f = set(Some(Value::String(c.value.clone())));
-                                move |_, window, cx| f(window, cx)
-                            }),
-                    );
-                }
-                list.into_any_element()
+                r.control(toggle(elem_id(""), on, ui, set(Some(Value::Bool(!on)))))
             }
             SettingKind::Choice => {
                 let selected = schema::plain_string(&value);
-                let options: Vec<(String, &str)> = s.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
+                let short = s.choices.len() <= 3
+                    && s.choices.iter().map(|c| c.label.len()).sum::<usize>() <= 24
+                    && s.choices.iter().all(|c| c.help.is_empty());
                 let this = cx.entity().downgrade();
-                let (id, key) = (inst.id.clone(), s.id.clone());
-                segmented(&elem_id(""), &options, &selected, ui, move |v: String, _, cx| {
-                    let _ = this.update(cx, |view, cx| view.set_plugin_value(&id, &key, Some(Value::String(v)), cx));
-                })
-                .into_any_element()
+                let (pid, key) = (inst.id.clone(), s.id.clone());
+                let pick = move |v: String, _: &mut gpui::Window, cx: &mut gpui::App| {
+                    let _ = this.update(cx, |view, cx| view.set_plugin_value(&pid, &key, Some(Value::String(v)), cx));
+                };
+                if short {
+                    let options: Vec<(String, &str)> = s.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
+                    r.control(segmented(&elem_id(""), &options, &selected, ui, pick))
+                } else {
+                    let options = s
+                        .choices
+                        .iter()
+                        .map(|c| {
+                            if c.help.is_empty() {
+                                opt(c.value.clone(), c.label.clone())
+                            } else {
+                                opt(c.value.clone(), c.label.clone()).desc(c.help.clone())
+                            }
+                        })
+                        .collect();
+                    r.control(self.select(&elem_id(""), options, &selected, ui, cx, pick))
+                }
             }
             SettingKind::Integer => {
                 let n = value.as_i64().unwrap_or(0);
@@ -573,163 +832,218 @@ impl SettingsWindow {
                     Some(u) => format!("{n} {u}"),
                     None => n.to_string(),
                 };
-                stepper(&elem_id(""), shown, ui, set(Some(Value::from(clamp(n - step)))), set(Some(Value::from(clamp(n + step)))))
-                    .into_any_element()
+                r.control(stepper(
+                    &elem_id(""),
+                    shown,
+                    ui,
+                    set(Some(Value::from(clamp(n - step)))),
+                    set(Some(Value::from(clamp(n + step)))),
+                ))
             }
             SettingKind::String | SettingKind::Path | SettingKind::List => {
                 match self.plugins.inputs.get(&format!("{}.{}", inst.id, s.id)) {
-                    Some(input) => div().w(px(260.)).child(input.clone()).into_any_element(),
-                    None => div().child(SharedString::from(schema::plain_string(&value))).into_any_element(),
+                    Some(input) => r.below(input.clone()),
+                    None => r.control(div().text_size(px(text::SMALL)).child(SharedString::from(schema::plain_string(&value)))),
                 }
             }
         };
-        let mut r = row(ui, &s.label, help, control).into_any_element();
-        if s.kind == SettingKind::Choice
-            && let Some(c) = s.choices.iter().find(|c| c.value == schema::plain_string(&value)).filter(|c| !c.help.is_empty())
-        {
-            r = div().flex().flex_col().child(r).child(note(ui, format!("{}: {}", c.label, c.help))).into_any_element();
-        }
-        r
+        r.into_any_element()
     }
 
-    /// The install review: everything the plugin will do, before it does it.
+    // ---- The install review -------------------------------------------------
+
+    /// Everything the plugin will do, before it does it.
     fn plan_view(&self, ui: Ui, plan: &Plan, cx: &Context<'_, Self>) -> AnyElement {
-        let mono: SharedString =
-            cx.global::<crate::settings::AppSettings>().client.font.family.clone().unwrap_or_else(|| "monospace".into()).into();
-        let title = match &plan.replaces {
-            Some(old) if *old != plan.version => format!("Update {} {old} → {}", plan.name, plan.version),
-            Some(_) => format!("Reinstall {} {}", plan.name, plan.version),
-            None => format!("Install {} {}", plan.name, plan.version),
-        };
+        let mono = kit::mono(cx);
         let source = if plan.builtin {
             "Comes with goatty: this installs the tool it needs into goatty's own directory".to_string()
         } else if plan.verified {
-            format!("From the {} registry (signature checked) · by {}", plan.source, plan.publisher)
+            format!("By {} · from the {} registry, signature checked", plan.publisher, plan.source)
         } else {
-            format!("From {} (not from a registry) · by {}", plan.source, plan.publisher)
+            format!("By {} · from {}, not from a registry", plan.publisher, plan.source)
         };
-        let mut v = Self::card(ui)
-            .child(div().text_lg().font_weight(FontWeight::BOLD).child(SharedString::from(title)))
-            .child(div().text_sm().text_color(ui.muted).child(SharedString::from(source)))
-            .child(div().child(SharedString::from(plan.summary.clone())));
-        if !plan.description.trim().is_empty() {
-            v = v.child(div().text_sm().child(SharedString::from(plan.description.trim().to_string())));
-        }
-        if let Some(h) = &plan.homepage {
-            v = v.child(note(ui, h.clone()));
-        }
+        let version = match &plan.replaces {
+            Some(old) if *old != plan.version => format!("{old} → {}", plan.version),
+            _ => plan.version.clone(),
+        };
+        let hero = card(ui)
+            .p(px(20.))
+            .gap(px(14.))
+            .child(
+                div().flex().items_center().gap(px(16.)).child(Self::plugin_avatar(ui, Category::Environment, plan.builtin, 52.)).child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .min_w_0()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(
+                                    div().text_size(px(17.)).font_weight(FontWeight::SEMIBOLD).child(SharedString::from(plan.name.clone())),
+                                )
+                                .child(badge(version, Tone::Neutral, ui))
+                                .when(plan.verified, |d| d.child(Icon::ShieldCheck.svg().size(px(16.)).text_color(ui.success))),
+                        )
+                        .child(div().text_size(px(text::SMALL)).text_color(ui.muted).child(SharedString::from(source))),
+                ),
+            )
+            .child(div().text_size(px(text::BODY)).child(SharedString::from(plan.summary.clone())))
+            .when(!plan.description.trim().is_empty(), |d| {
+                d.child(
+                    div().text_size(px(text::SMALL)).text_color(ui.muted).child(SharedString::from(plan.description.trim().to_string())),
+                )
+            });
+        let mut page = div().flex().flex_col().gap(px(28.)).child(hero);
         if !plan.warnings.is_empty() {
-            v = v.child(notice(ui, ui.warning, plan.warnings.iter().map(|w| format!("⚠ {w}")).collect()));
+            page = page.child(banner(ui, Tone::Warning, "Read this first", plan.warnings.clone()));
         }
-        if !plan.downloads.is_empty() {
-            v = v.child(section(ui, "Downloads"));
-            for d in &plan.downloads {
-                let line = match &d.system {
-                    Some(p) => format!("{} {}: already installed at {p}; goatty uses that copy", d.package, d.version),
-                    None if d.current => format!("{} {}: goatty's copy is already installed", d.package, d.version),
-                    None => format!("{} {} · {} · {}", d.package, d.version, size(d.size), d.url),
-                };
-                v = v.child(div().text_sm().child(SharedString::from(line)));
-                if d.fetches() {
-                    v = v.child(
-                        div()
-                            .text_xs()
-                            .text_color(ui.muted)
-                            .font_family(mono.clone())
-                            .child(SharedString::from(format!("sha256 {}", d.sha256))),
-                    );
-                }
+        page = page.child(section(ui, "What it may do").children(plan.permissions.iter().map(|g| {
+            let mut desc = String::new();
+            if !g.details.is_empty() {
+                desc.push_str(&g.details.join(", "));
+                desc.push_str(". ");
             }
-            v = v.child(note(
-                ui,
-                "Into goatty's own directory, no sudo. Each download is checked against the sha256 in the signed manifest before anything is unpacked.",
-            ));
-        }
-        v = v.child(section(ui, "What it may do"));
-        for g in &plan.permissions {
-            let color = if g.permission.runs_code() { ui.warning } else { ui.text };
-            let mut item = div().flex().flex_col().py_1().child(div().text_color(color).child(SharedString::from(format!(
-                "{} {}{}",
-                if g.permission.runs_code() { "⚠" } else { "•" },
-                g.title,
-                if g.details.is_empty() { String::new() } else { format!(": {}", g.details.join(", ")) }
-            ))));
             if !g.reason.is_empty() {
-                item = item.child(div().text_sm().child(SharedString::from(format!("Why: {}", g.reason))));
+                desc.push_str(&g.reason);
+                desc.push(' ');
             }
-            item = item.child(note(ui, g.meaning.clone()));
-            v = v.child(item);
+            desc.push_str(&g.meaning);
+            row(ui, g.title.clone()).icon(perm_icon(g.permission)).desc(desc)
+        })));
+        if !plan.downloads.is_empty() {
+            page = page.child(
+                section(ui, "Downloads")
+                    .children(plan.downloads.iter().map(|d| {
+                        let (desc, control) = match &d.system {
+                            Some(p) => (format!("Already installed at {p}: goatty uses that copy"), badge("Skipped", Tone::Success, ui)),
+                            None if d.current => ("goatty's copy is already installed".to_string(), badge("Skipped", Tone::Success, ui)),
+                            None => (url_host(&d.url), badge(size(d.size), Tone::Neutral, ui)),
+                        };
+                        row(ui, format!("{} {}", d.package, d.version)).icon(Icon::Download).desc(desc).control(control)
+                    }))
+                    .footer("Into goatty's own directory, no sudo. Each download is checked against the checksum in the signed manifest before it's unpacked."),
+            );
         }
-        let list = |v: gpui::Div, title: &str, items: &[String]| {
-            if items.is_empty() {
-                return v;
-            }
-            let mut v = v.child(section(ui, title));
-            for i in items {
-                v = v.child(div().text_sm().font_family(mono.clone()).child(SharedString::from(i.clone())));
-            }
-            v
-        };
-        v = list(v, "Aliases", &plan.aliases);
-        v = list(v, "Environment", &plan.env);
-        v = list(v, "Needs", &plan.requires);
-        if let Some((file, code)) = &plan.shell_code {
-            v = v.child(section(ui, "Shell code")).child(
+        // Short items as chips; long ones (alias definitions) as wrapped lines.
+        let chips = |items: &[String]| {
+            if items.iter().any(|i| i.len() > 32) {
                 div()
                     .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(note(ui, format!("{file} runs at the start of every goatty shell ({} lines).", code.lines().count())))
-                    .child(button(
+                    .flex_col()
+                    .gap(px(6.))
+                    .p(px(10.))
+                    .rounded(px(radius::CONTROL))
+                    .bg(ui.bg)
+                    .border_1()
+                    .border_color(ui.divider)
+                    .font_family(mono.clone())
+                    .text_size(px(text::CAPTION))
+                    .children(items.iter().map(|i| div().child(SharedString::from(i.clone()))))
+            } else {
+                div().flex().flex_wrap().gap(px(6.)).children(items.iter().map(|i| {
+                    div()
+                        .px(px(8.))
+                        .py(px(3.))
+                        .rounded(px(6.))
+                        .bg(ui.field)
+                        .font_family(mono.clone())
+                        .text_size(px(text::CAPTION))
+                        .child(SharedString::from(i.clone()))
+                }))
+            }
+        };
+        let adds: Vec<(&str, &Vec<String>)> = [("Aliases", &plan.aliases), ("Environment variables", &plan.env), ("Needs", &plan.requires)]
+            .into_iter()
+            .filter(|(_, v)| !v.is_empty())
+            .collect();
+        if !adds.is_empty() {
+            page = page.child(section(ui, "Adds to your shell").children(adds.into_iter().map(|(t, v)| row(ui, t).below(chips(v)))));
+        }
+        if let Some((file, code)) = &plan.shell_code {
+            let open = self.plugins.show_code;
+            let mut s = section(ui, "Shell code").child(
+                row(ui, if open { "Hide the code" } else { "Read the code" })
+                    .icon(Icon::Code)
+                    .desc(format!("{file} runs when every goatty shell starts · {} lines", code.lines().count()))
+                    .on_click(
                         "plan-code",
-                        if self.plugins.show_code { "Hide code" } else { "Read the code" },
-                        ButtonKind::Normal,
-                        ui,
-                        self.act(cx, |v, cx| {
+                        cx.listener(|v, _, _, cx| {
                             v.plugins.show_code = !v.plugins.show_code;
                             cx.notify();
                         }),
-                    )),
+                    ),
             );
-            if self.plugins.show_code {
-                v = v.child(
+            if open {
+                s = s.child(
                     div()
-                        .p_2()
-                        .rounded_md()
-                        .bg(ui.input_bg)
+                        .id("plan-code-text")
+                        .max_h(px(320.))
+                        .overflow_y_scroll()
+                        .mx(px(16.))
+                        .mb(px(16.))
+                        .p(px(12.))
+                        .rounded(px(radius::CONTROL))
+                        .bg(ui.bg)
                         .border_1()
-                        .border_color(ui.border)
+                        .border_color(ui.divider)
                         .font_family(mono.clone())
-                        .text_xs()
-                        .children(
-                            code.lines()
-                                .map(|l| div().child(SharedString::from(if l.is_empty() { " ".to_string() } else { l.to_string() }))),
-                        ),
+                        .text_size(px(text::CAPTION))
+                        .children(code.lines().map(|l| {
+                            div().whitespace_nowrap().child(SharedString::from(if l.is_empty() { " ".to_string() } else { l.to_string() }))
+                        })),
                 );
             }
+            page = page.child(s);
         }
         let verb = if plan.replaces.is_some() { "Update" } else { "Install" };
-        v.child(
+        page.child(
             div()
                 .flex()
+                .items_center()
                 .justify_end()
-                .gap_2()
-                .pt_3()
-                .when(self.plugins.loading, |d| d.child(div().text_sm().text_color(ui.muted).child("Installing…")))
+                .gap(px(8.))
+                .when(self.plugins.loading, |d| d.child(kit::hint(ui, "Installing…")))
                 .child(button(
                     "plan-cancel",
                     "Cancel",
-                    ButtonKind::Normal,
+                    ButtonKind::Ghost,
                     ui,
                     self.act(cx, |v, cx| {
                         v.plugins.plan = None;
                         cx.notify();
                     }),
                 ))
-                .child(button("plan-install", verb, ButtonKind::Primary, ui, self.act(cx, |v, cx| v.install_reviewed(cx)))),
+                .child(button_with(
+                    "plan-install",
+                    Some(Icon::Download),
+                    verb,
+                    ButtonKind::Primary,
+                    ui,
+                    self.act(cx, |v, cx| v.install_reviewed(cx)),
+                )),
         )
         .into_any_element()
     }
+}
+
+fn perm_icon(p: Permission) -> Icon {
+    match p {
+        Permission::Binaries => Icon::Package,
+        Permission::ShellCode => Icon::Code,
+        Permission::Network => Icon::Globe,
+        Permission::Aliases => Icon::Link2,
+        Permission::Env => Icon::Sliders,
+        Permission::ConfigFiles => Icon::FileText,
+    }
+}
+
+/// `https://github.com/x/y/releases/…` → `github.com`.
+fn url_host(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    format!("From {}", rest.split('/').next().unwrap_or(rest))
 }
 
 fn changed(r: api::Reply) -> Option<api::Changed> {

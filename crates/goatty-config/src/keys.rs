@@ -21,50 +21,55 @@ pub struct ActionInfo {
     /// Stable name used in settings.
     pub name: &'static str,
     pub label: &'static str,
+    /// What it's about, for grouping lists of shortcuts ([`GROUPS`]).
+    pub group: &'static str,
 }
 
+/// Action groups in display order.
+pub const GROUPS: &[&str] = &["Clipboard", "Scrolling", "Text size", "goatty", "Tabs", "Panes"];
+
 pub static ACTIONS: &[ActionInfo] = &[
-    ActionInfo { name: "copy", label: "Copy the selection" },
-    ActionInfo { name: "copy_or_interrupt", label: "Copy if there's a selection, otherwise interrupt (Ctrl+C)" },
-    ActionInfo { name: "paste", label: "Paste" },
-    ActionInfo { name: "scroll_page_up", label: "Scroll back one screen" },
-    ActionInfo { name: "scroll_page_down", label: "Scroll forward one screen" },
-    ActionInfo { name: "increase_font_size", label: "Bigger text" },
-    ActionInfo { name: "decrease_font_size", label: "Smaller text" },
-    ActionInfo { name: "reset_font_size", label: "Reset text size" },
-    ActionInfo { name: "open_settings", label: "Open settings" },
-    ActionInfo { name: "command_palette", label: "Show the command palette" },
-    ActionInfo { name: "connect_to_host", label: "Connect to a host (SSH)" },
-    ActionInfo { name: "reload_shells", label: "Reload running shells (pick up shell settings)" },
-    ActionInfo { name: "new_tab", label: "New tab" },
-    ActionInfo { name: "close_pane", label: "Close the pane (the tab with its last pane)" },
-    ActionInfo { name: "close_tab", label: "Close the tab" },
-    ActionInfo { name: "next_tab", label: "Next tab" },
-    ActionInfo { name: "previous_tab", label: "Previous tab" },
-    ActionInfo { name: "move_tab_left", label: "Move the tab left" },
-    ActionInfo { name: "move_tab_right", label: "Move the tab right" },
-    ActionInfo { name: "select_tab_1", label: "Go to tab 1" },
-    ActionInfo { name: "select_tab_2", label: "Go to tab 2" },
-    ActionInfo { name: "select_tab_3", label: "Go to tab 3" },
-    ActionInfo { name: "select_tab_4", label: "Go to tab 4" },
-    ActionInfo { name: "select_tab_5", label: "Go to tab 5" },
-    ActionInfo { name: "select_tab_6", label: "Go to tab 6" },
-    ActionInfo { name: "select_tab_7", label: "Go to tab 7" },
-    ActionInfo { name: "select_tab_8", label: "Go to tab 8" },
-    ActionInfo { name: "select_last_tab", label: "Go to the last tab" },
-    ActionInfo { name: "rename_tab", label: "Rename the tab" },
-    ActionInfo { name: "split_right", label: "Split: new pane on the right" },
-    ActionInfo { name: "split_down", label: "Split: new pane below" },
-    ActionInfo { name: "focus_pane_left", label: "Focus the pane on the left" },
-    ActionInfo { name: "focus_pane_right", label: "Focus the pane on the right" },
-    ActionInfo { name: "focus_pane_up", label: "Focus the pane above" },
-    ActionInfo { name: "focus_pane_down", label: "Focus the pane below" },
-    ActionInfo { name: "resize_pane_left", label: "Move the pane's divider left" },
-    ActionInfo { name: "resize_pane_right", label: "Move the pane's divider right" },
-    ActionInfo { name: "resize_pane_up", label: "Move the pane's divider up" },
-    ActionInfo { name: "resize_pane_down", label: "Move the pane's divider down" },
-    ActionInfo { name: "toggle_pane_zoom", label: "Zoom the pane (fill the tab) or back" },
-    ActionInfo { name: "equalize_panes", label: "Make the tab's panes the same size" },
+    ActionInfo { name: "copy", label: "Copy the selection", group: "Clipboard" },
+    ActionInfo { name: "copy_or_interrupt", label: "Copy the selection, or interrupt when there's none", group: "Clipboard" },
+    ActionInfo { name: "paste", label: "Paste", group: "Clipboard" },
+    ActionInfo { name: "scroll_page_up", label: "Scroll back one screen", group: "Scrolling" },
+    ActionInfo { name: "scroll_page_down", label: "Scroll forward one screen", group: "Scrolling" },
+    ActionInfo { name: "increase_font_size", label: "Bigger text", group: "Text size" },
+    ActionInfo { name: "decrease_font_size", label: "Smaller text", group: "Text size" },
+    ActionInfo { name: "reset_font_size", label: "Reset text size", group: "Text size" },
+    ActionInfo { name: "open_settings", label: "Open settings", group: "goatty" },
+    ActionInfo { name: "command_palette", label: "Show the command palette", group: "goatty" },
+    ActionInfo { name: "connect_to_host", label: "Connect to a host (SSH)", group: "goatty" },
+    ActionInfo { name: "reload_shells", label: "Reload running shells with new shell settings", group: "goatty" },
+    ActionInfo { name: "new_tab", label: "New tab", group: "Tabs" },
+    ActionInfo { name: "close_pane", label: "Close the pane (the tab with its last pane)", group: "Panes" },
+    ActionInfo { name: "close_tab", label: "Close the tab", group: "Tabs" },
+    ActionInfo { name: "next_tab", label: "Next tab", group: "Tabs" },
+    ActionInfo { name: "previous_tab", label: "Previous tab", group: "Tabs" },
+    ActionInfo { name: "move_tab_left", label: "Move the tab left", group: "Tabs" },
+    ActionInfo { name: "move_tab_right", label: "Move the tab right", group: "Tabs" },
+    ActionInfo { name: "select_tab_1", label: "Go to tab 1", group: "Tabs" },
+    ActionInfo { name: "select_tab_2", label: "Go to tab 2", group: "Tabs" },
+    ActionInfo { name: "select_tab_3", label: "Go to tab 3", group: "Tabs" },
+    ActionInfo { name: "select_tab_4", label: "Go to tab 4", group: "Tabs" },
+    ActionInfo { name: "select_tab_5", label: "Go to tab 5", group: "Tabs" },
+    ActionInfo { name: "select_tab_6", label: "Go to tab 6", group: "Tabs" },
+    ActionInfo { name: "select_tab_7", label: "Go to tab 7", group: "Tabs" },
+    ActionInfo { name: "select_tab_8", label: "Go to tab 8", group: "Tabs" },
+    ActionInfo { name: "select_last_tab", label: "Go to the last tab", group: "Tabs" },
+    ActionInfo { name: "rename_tab", label: "Rename the tab", group: "Tabs" },
+    ActionInfo { name: "split_right", label: "Split: new pane on the right", group: "Panes" },
+    ActionInfo { name: "split_down", label: "Split: new pane below", group: "Panes" },
+    ActionInfo { name: "focus_pane_left", label: "Focus the pane on the left", group: "Panes" },
+    ActionInfo { name: "focus_pane_right", label: "Focus the pane on the right", group: "Panes" },
+    ActionInfo { name: "focus_pane_up", label: "Focus the pane above", group: "Panes" },
+    ActionInfo { name: "focus_pane_down", label: "Focus the pane below", group: "Panes" },
+    ActionInfo { name: "resize_pane_left", label: "Move the pane's divider left", group: "Panes" },
+    ActionInfo { name: "resize_pane_right", label: "Move the pane's divider right", group: "Panes" },
+    ActionInfo { name: "resize_pane_up", label: "Move the pane's divider up", group: "Panes" },
+    ActionInfo { name: "resize_pane_down", label: "Move the pane's divider down", group: "Panes" },
+    ActionInfo { name: "toggle_pane_zoom", label: "Zoom the pane (fill the tab) or back", group: "Panes" },
+    ActionInfo { name: "equalize_panes", label: "Make the tab's panes the same size", group: "Panes" },
 ];
 
 pub fn find_action(name: &str) -> Option<&'static ActionInfo> {
@@ -357,6 +362,13 @@ fn ctrl_key_use(key: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_action_has_a_known_group() {
+        for a in ACTIONS {
+            assert!(GROUPS.contains(&a.group), "{}: {}", a.name, a.group);
+        }
+    }
 
     #[test]
     fn defaults_name_real_actions() {

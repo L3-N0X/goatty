@@ -98,8 +98,8 @@ pub enum CursorShape {
 #[serde(default)]
 pub struct TerminalSettings {
     pub renderer: Renderer,
-    /// Padding around the grid in logical pixels.
-    pub padding: f32,
+    /// Space around the grid in logical pixels, per side.
+    pub padding: Padding,
     /// Cursor shape when the application doesn't ask for one.
     pub cursor_shape: CursorShape,
     pub cursor_blink: bool,
@@ -124,7 +124,107 @@ impl TerminalSettings {
 
 impl Default for TerminalSettings {
     fn default() -> Self {
-        Self { renderer: Renderer::Glyphs, padding: 6.0, cursor_shape: CursorShape::Block, cursor_blink: true, opacity: 1.0, blur: false }
+        Self {
+            renderer: Renderer::Glyphs,
+            padding: Padding::all(6.0),
+            cursor_shape: CursorShape::Block,
+            cursor_blink: true,
+            opacity: 1.0,
+            blur: false,
+        }
+    }
+}
+
+/// Space around the terminal grid, per side. Written as one number when
+/// every side is the same (`"padding": 6`), else as an object
+/// (`{"top": 4, "right": 10, "bottom": 4, "left": 10}`; missing sides are 6).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Padding {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+
+impl Padding {
+    pub const DEFAULT: f32 = 6.0;
+
+    pub const fn all(v: f32) -> Self {
+        Self { top: v, right: v, bottom: v, left: v }
+    }
+
+    pub fn is_uniform(&self) -> bool {
+        self.top == self.right && self.right == self.bottom && self.bottom == self.left
+    }
+
+    /// The sides in CSS order (top, right, bottom, left), for editing one by index.
+    pub fn sides_mut(&mut self) -> [&mut f32; 4] {
+        [&mut self.top, &mut self.right, &mut self.bottom, &mut self.left]
+    }
+
+    /// One side by its index in [`Padding::sides`].
+    pub fn side_mut(&mut self, i: usize) -> &mut f32 {
+        match i {
+            0 => &mut self.top,
+            1 => &mut self.right,
+            2 => &mut self.bottom,
+            _ => &mut self.left,
+        }
+    }
+
+    pub fn sides(&self) -> [f32; 4] {
+        [self.top, self.right, self.bottom, self.left]
+    }
+}
+
+impl Default for Padding {
+    fn default() -> Self {
+        Self::all(Self::DEFAULT)
+    }
+}
+
+impl Serialize for Padding {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        if self.is_uniform() {
+            return s.serialize_f32(self.top);
+        }
+        use serde::ser::SerializeStruct;
+        let mut m = s.serialize_struct("Padding", 4)?;
+        m.serialize_field("top", &self.top)?;
+        m.serialize_field("right", &self.right)?;
+        m.serialize_field("bottom", &self.bottom)?;
+        m.serialize_field("left", &self.left)?;
+        m.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Padding {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        fn side() -> f32 {
+            Padding::DEFAULT
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Sides {
+            #[serde(default = "side")]
+            top: f32,
+            #[serde(default = "side")]
+            right: f32,
+            #[serde(default = "side")]
+            bottom: f32,
+            #[serde(default = "side")]
+            left: f32,
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            All(f32),
+            Sides(Sides),
+        }
+        match Either::deserialize(d).map_err(|_| serde::de::Error::custom("expected a number or {top, right, bottom, left}"))? {
+            Either::All(v) => Ok(Padding::all(v)),
+            Either::Sides(s) => Ok(Padding { top: s.top, right: s.right, bottom: s.bottom, left: s.left }),
+        }
     }
 }
 
@@ -475,7 +575,16 @@ impl Document for ClientSettings {
         let f = &mut self.font;
         clamp(&mut f.size, FontSettings::MIN_SIZE, FontSettings::MAX_SIZE, "font.size", &mut issues);
         clamp(&mut f.line_height, FontSettings::MIN_LINE_HEIGHT, FontSettings::MAX_LINE_HEIGHT, "font.line_height", &mut issues);
-        clamp(&mut self.terminal.padding, 0.0, TerminalSettings::MAX_PADDING, "terminal.padding", &mut issues);
+        let pad = &mut self.terminal.padding;
+        if pad.is_uniform() {
+            let mut v = pad.top;
+            clamp(&mut v, 0.0, TerminalSettings::MAX_PADDING, "terminal.padding", &mut issues);
+            *pad = Padding::all(v);
+        } else {
+            for (side, name) in pad.sides_mut().into_iter().zip(["top", "right", "bottom", "left"]) {
+                clamp(side, 0.0, TerminalSettings::MAX_PADDING, &format!("terminal.padding.{name}"), &mut issues);
+            }
+        }
         clamp(&mut self.panes.dim_inactive, 0.0, PaneSettings::MAX_DIM, "panes.dim_inactive", &mut issues);
         clamp(&mut self.terminal.opacity, TerminalSettings::MIN_OPACITY, 1.0, "terminal.opacity", &mut issues);
         // Theme names are checked against the theme library (user themes
@@ -651,16 +760,41 @@ mod tests {
     }
 
     #[test]
+    fn padding_is_a_number_or_per_side() {
+        use crate::store;
+        let parse = |json: &str| store::parse::<ClientSettings>(json);
+        assert_eq!(parse(r#"{"terminal": {"padding": 10}}"#).value.terminal.padding, Padding::all(10.0));
+        let l = parse(r#"{"terminal": {"padding": {"left": 12, "right": 12}}}"#);
+        assert!(l.issues.is_empty(), "{:?}", l.issues);
+        assert_eq!(l.value.terminal.padding, Padding { top: 6.0, right: 12.0, bottom: 6.0, left: 12.0 });
+        // Per side: each one is clamped on its own.
+        let l = parse(r#"{"terminal": {"padding": {"top": 99}}}"#);
+        assert_eq!(l.value.terminal.padding.top, TerminalSettings::MAX_PADDING);
+        assert_eq!(l.issues.iter().map(|i| i.path.as_str()).collect::<Vec<_>>(), ["terminal.padding.top"]);
+        // Garbage falls back to the default.
+        let l = parse(r#"{"terminal": {"padding": "wide"}}"#);
+        assert_eq!(l.value.terminal.padding, Padding::default());
+        assert_eq!(l.issues.len(), 1);
+        // Uniform padding is saved as one number; mixed as an object.
+        let mut s = ClientSettings::default();
+        s.terminal.padding = Padding::all(8.0);
+        assert!(store::to_json(&s, &[]).contains(r#""padding": 8.0"#));
+        s.terminal.padding.left = 20.0;
+        let json = store::to_json(&s, &[]);
+        assert_eq!(parse(&json).value.terminal.padding, s.terminal.padding, "{json}");
+    }
+
+    #[test]
     fn validation_clamps_and_reports() {
         let mut s = ClientSettings::default();
         s.font.size = 400.0;
-        s.terminal.padding = -3.0;
+        s.terminal.padding = Padding::all(-3.0);
         s.terminal.opacity = f32::NAN;
         s.theme.name = "nope".into();
         s.keybindings.insert("ctrl-x".into(), Some("explode".into()));
         let issues = s.validate();
         assert_eq!(s.font.size, FontSettings::MAX_SIZE);
-        assert_eq!(s.terminal.padding, 0.0);
+        assert_eq!(s.terminal.padding, Padding::all(0.0));
         assert_eq!(s.terminal.opacity, TerminalSettings::MIN_OPACITY);
         let paths: Vec<_> = issues.iter().map(|i| i.path.as_str()).collect();
         assert_eq!(paths, ["font.size", "terminal.padding", "terminal.opacity", "keybindings.ctrl-x"]);

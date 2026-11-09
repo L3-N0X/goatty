@@ -4,13 +4,17 @@
 //! right away.
 
 use goatty_config::{OpenIn, SshHost, ssh_host_problem};
-use gpui::{AnyElement, App, Context, Entity, IntoElement, ParentElement, Styled, Subscription, div, prelude::*};
+use gpui::{
+    AnyElement, App, Context, Entity, FontWeight, IntoElement, ParentElement, SharedString, Styled, Subscription, div, prelude::*, px,
+};
 
 use super::SettingsWindow;
+use super::kit::{self, card, divider, field, row, section};
 use crate::hosts::{self, HostEntry, HostList};
 use crate::settings::AppSettings;
-use crate::ui::controls::{ButtonKind, button, note, notice, row, section, segmented, toggle};
-use crate::ui::style::Ui;
+use crate::ui::controls::{ButtonKind, Tone, banner, button_with, icon_button, segmented, toggle, tooltip};
+use crate::ui::icons::Icon;
+use crate::ui::style::{Ui, text};
 use crate::ui::text_input::{TextInput, TextInputEvent};
 
 pub struct HostsPage {
@@ -23,8 +27,8 @@ pub struct HostsPage {
 
 impl HostsPage {
     pub fn new(cx: &mut Context<'_, SettingsWindow>) -> Self {
-        let host = cx.new(|cx| TextInput::new("user@host, or an alias ssh knows", "", cx));
-        let name = cx.new(|cx| TextInput::new("Name to show (optional)", "", cx));
+        let host = cx.new(|cx| TextInput::new("user@host, or a name from ~/.ssh/config", "", cx));
+        let name = cx.new(|cx| TextInput::new("Optional", "", cx));
         let mut subs = vec![cx.observe_global::<HostList>(|_, cx| cx.notify())];
         for input in [&host, &name] {
             subs.push(cx.subscribe(input, |view, _, ev: &TextInputEvent, cx| match ev {
@@ -71,98 +75,151 @@ impl SettingsWindow {
 
     fn host_row(&self, ui: Ui, e: &HostEntry) -> AnyElement {
         let (host, discovered, plain) = (e.host.clone(), e.discovered, e.plain);
-        let mut description: Vec<String> = Vec::new();
+        let gid = SharedString::from(format!("host-row-{}", hash(&e.host)));
+        let mut detail: Vec<String> = Vec::new();
         if e.label != e.host {
-            description.push(e.host.clone());
+            detail.push(e.host.clone());
         }
-        description.extend(e.detail.clone());
+        detail.extend(e.detail.clone());
+        if plain {
+            detail.push("plain SSH".into());
+        }
         let plain_toggle = {
             let host = host.clone();
-            toggle(("host-plain", hash(&e.host)), plain, ui, move |_, cx| {
-                AppSettings::update(cx, |s| s.ssh.edit(&host, !discovered, |h| h.plain = !plain));
-            })
+            div()
+                .id(("host-plain-wrap", hash(&e.host)))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(div().text_size(px(text::SMALL)).text_color(ui.muted).child("Plain SSH"))
+                .child(toggle(("host-plain", hash(&e.host)), plain, ui, move |_, cx| {
+                    AppSettings::update(cx, |s| s.ssh.edit(&host, !discovered, |h| h.plain = !plain));
+                }))
+                .tooltip(tooltip("Run ssh in a local session instead of goattyd on the host: nothing gets installed there"))
         };
         let connect = {
             let host = host.clone();
-            button(("host-connect", hash(&e.host)), "Connect", ButtonKind::Normal, ui, move |_, cx| hosts::connect(cx, &host))
+            button_with(("host-connect", hash(&e.host)), Some(Icon::Terminal), "Connect", ButtonKind::Normal, ui, move |_, cx| {
+                hosts::connect(cx, &host)
+            })
         };
-        let controls = div()
+        div()
+            .id(gid.clone())
+            .group(gid.clone())
             .flex()
             .items_center()
-            .gap_2()
-            .child(div().text_xs().text_color(ui.muted).child("Plain SSH"))
+            .gap(px(14.))
+            .min_h(px(60.))
+            .px(px(16.))
+            .py(px(10.))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .size(px(36.))
+                    .rounded(px(10.))
+                    .bg(ui.field)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(Icon::Server.svg().size(px(17.)).text_color(ui.muted)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_size(px(text::BODY))
+                            .font_weight(FontWeight::MEDIUM)
+                            .truncate()
+                            .child(SharedString::from(e.label.clone())),
+                    )
+                    .when(!detail.is_empty(), |d| {
+                        d.child(
+                            div().text_size(px(text::SMALL)).text_color(ui.muted).truncate().child(SharedString::from(detail.join(" · "))),
+                        )
+                    }),
+            )
             .child(plain_toggle)
             .child(connect)
             .when(!discovered, |d| {
-                d.child(button(("host-remove", hash(&e.host)), "Remove", ButtonKind::Danger, ui, move |_, cx: &mut App| {
+                d.child(icon_button(("host-remove", hash(&e.host)), Icon::Trash, "Remove from the list", ui, move |_, cx: &mut App| {
                     AppSettings::update(cx, |s| s.ssh.hosts.retain(|h| h.host != host));
                 }))
-            });
-        let description = (!description.is_empty()).then(|| description.join(" · "));
-        row(ui, &e.label, description.as_deref(), controls).into_any_element()
+            })
+            .into_any_element()
+    }
+
+    fn host_list(&self, ui: Ui, entries: &[&HostEntry]) -> gpui::Div {
+        let mut c = card(ui);
+        for (i, e) in entries.iter().enumerate() {
+            if i > 0 {
+                c = c.child(divider(ui));
+            }
+            c = c.child(self.host_row(ui, e));
+        }
+        c
     }
 
     pub(super) fn hosts_page(&self, ui: Ui, cx: &Context<'_, Self>) -> AnyElement {
         let settings = &cx.global::<AppSettings>().file.value.ssh;
         let (discover, open_in) = (settings.discover, settings.open_in);
         let entries = hosts::current(cx);
-        let (added, found): (Vec<_>, Vec<_>) = entries.iter().partition(|e| !e.discovered);
-        let mut page = div().flex().flex_col().child(note(
-            ui,
-            "The hosts the command palette offers: Ctrl+Shift+H lists them with their sessions (and connects to any user@host \
-             you type), or type a host's name into Ctrl+Shift+P. A window can hold tabs on several hosts.",
-        ));
-        page = page.child(note(
-            ui,
-            "goatty runs its session daemon, goattyd, on the host, so shells survive disconnects and get goatty's shell setup. \
-             When it isn't installed there, goatty asks before copying it over (to ~/.local/share/goatty, no sudo). Plain SSH \
-             runs ssh in a local session instead and installs nothing.",
-        ));
+        let (added, found): (Vec<&HostEntry>, Vec<&HostEntry>) = entries.iter().partition(|e| !e.discovered);
 
-        page = page.child(section(ui, "Connecting")).child(row(
-            ui,
-            "Open hosts in",
-            Some("Where a host you pick opens. In the session list, Shift+Enter opens it the other way"),
-            segmented("ssh-open-in", &[(OpenIn::Window, "A new window"), (OpenIn::Tab, "A new tab")], &open_in, ui, |v, _, cx| {
-                AppSettings::update(cx, |s| s.ssh.open_in = v)
-            }),
-        ));
+        let connecting = section(ui, "Connecting")
+            .child(row(ui, "Open hosts in").desc("Shift+Enter in the session list opens it the other way").control(segmented(
+                "ssh-open-in",
+                &[(OpenIn::Window, "New window"), (OpenIn::Tab, "New tab")],
+                &open_in,
+                ui,
+                |v, _, cx| AppSettings::update(cx, |s| s.ssh.open_in = v),
+            )))
+            .footer(
+                "Ctrl+Shift+H lists your hosts and their sessions. goatty runs its session daemon on a host so shells survive \
+                 disconnects; it asks before copying it there (to ~/.local/share/goatty, no sudo).",
+            );
 
-        page = page.child(section(ui, "Add a host")).child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .py_2()
-                .child(div().flex_1().child(self.hosts.host.clone()))
-                .child(div().w(gpui::px(200.)).child(self.hosts.name.clone()))
-                .child(button("host-add", "Add", ButtonKind::Primary, ui, self.act(cx, |v, cx| v.add_host(cx)))),
-        );
-        if let Some(e) = &self.hosts.error {
-            page = page.child(notice(ui, ui.danger, vec![e.clone()]));
+        let form = card(ui)
+            .p(px(16.))
+            .gap(px(12.))
+            .child(
+                div()
+                    .flex()
+                    .items_end()
+                    .gap(px(10.))
+                    .child(field(ui, "Host", self.hosts.host.clone()).flex_1())
+                    .child(field(ui, "Name to show", self.hosts.name.clone()).w(px(180.)))
+                    .child(
+                        button_with("host-add", Some(Icon::Plus), "Add", ButtonKind::Primary, ui, self.act(cx, |v, cx| v.add_host(cx)))
+                            .h(px(36.)),
+                    ),
+            )
+            .children(self.hosts.error.clone().map(|e| banner(ui, Tone::Danger, e, Vec::new())));
+        let mut yours = section(ui, "Your hosts").plain().child(form);
+        if !added.is_empty() {
+            yours = yours.child(self.host_list(ui, &added));
         }
 
-        page = page.child(section(ui, "Your hosts"));
-        page = if added.is_empty() {
-            page.child(note(ui, "None added yet."))
-        } else {
-            page.children(added.iter().map(|e| self.host_row(ui, e)))
-        };
-
-        page = page.child(section(ui, "From ~/.ssh/config")).child(row(
-            ui,
-            "List the hosts in ~/.ssh/config",
-            Some("Every Host entry without wildcards, including the files it includes"),
-            toggle("ssh-discover", discover, ui, |_, cx| AppSettings::update(cx, |s| s.ssh.discover = !s.ssh.discover)),
-        ));
+        let mut config = section(ui, "From ~/.ssh/config").child(
+            row(ui, "List these hosts too").desc("Every Host entry without wildcards, with the files it includes").control(toggle(
+                "ssh-discover",
+                discover,
+                ui,
+                |_, cx| AppSettings::update(cx, |s| s.ssh.discover = !s.ssh.discover),
+            )),
+        );
         if discover {
-            page = if found.is_empty() {
-                page.child(note(ui, "No hosts found there."))
+            config = if found.is_empty() {
+                config.child(kit::empty(ui, Icon::Server, "No hosts found", "~/.ssh/config has no Host entries without wildcards."))
             } else {
-                page.children(found.iter().map(|e| self.host_row(ui, e)))
+                config.children(found.iter().map(|e| self.host_row(ui, e)))
             };
         }
-        page.into_any_element()
+        div().flex().flex_col().gap(px(28.)).child(connecting).child(yours).child(config).into_any_element()
     }
 }
 
