@@ -179,6 +179,9 @@ impl SettingsWindow {
                     .when(changed, |d| d.child(div().text_color(if on { ui.on_accent } else { ui.warning }).child("●")))
                     .on_click(click(self.act(cx, move |v, cx| {
                         v.page = page;
+                        if page == Page::Hosts {
+                            crate::hosts::refresh(cx);
+                        }
                         cx.notify();
                     })))
             }))
@@ -1320,6 +1323,7 @@ impl Render for SettingsWindow {
             Page::Plugins => self.plugins_page(ui, cx),
             Page::Shortcuts => self.shortcuts(ui, cx),
             Page::Workspace => self.workspace(ui, cx),
+            Page::Hosts => self.hosts_page(ui, cx),
             Page::Profile => self.profile(ui, cx),
         };
         let title = self.page.title();

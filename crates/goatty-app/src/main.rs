@@ -12,6 +12,7 @@ mod close_confirm;
 mod command_palette;
 mod commands;
 mod connect;
+mod hosts;
 mod paste_confirm;
 mod session;
 mod settings;
@@ -53,7 +54,8 @@ fn main() -> Result<()> {
     // goatty's own crates at info; dependencies (wgpu, zbus, ...) only warn.
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,goatty=info,goatty_client=info,goatty_term=info"))
         .init();
-    let on_launch = goatty_config::load_client().value.workspace.on_launch;
+    let client = goatty_config::load_client().value;
+    let on_launch = client.workspace.on_launch;
 
     // Initial size is a guess; the terminal element resizes on first layout.
     let initial = TermSize::new(100, 30);
@@ -72,14 +74,15 @@ fn main() -> Result<()> {
             log::info!("backend: goattyd via {}", conn.endpoint().label());
             (saved::startup(&conn, initial, mode)?, settings_window::HostLink::Daemon(conn))
         }
-        Some(Endpoint::Ssh(target)) if cli.plain => connect::plain_ssh(&target.host)?,
+        // `--plain`, or the host is set to plain SSH (Settings → Hosts).
+        Some(Endpoint::Ssh(target)) if cli.plain || client.ssh.plain(&target.host) => connect::plain_ssh(&target.host)?,
         Some(mut endpoint) => {
             // Remote: connect in a window that can ask about installing
             // goattyd, with ssh's prompts in dialogs of their own.
             if let Endpoint::Ssh(target) = &mut endpoint {
                 target.askpass = std::env::current_exe().ok();
             }
-            app::run(Start::Connect(ConnectPlan { endpoint, mode, open_settings }));
+            app::run(Start::Connect(ConnectPlan { endpoint, mode, open_settings, plain: false }));
             return Ok(());
         }
     };

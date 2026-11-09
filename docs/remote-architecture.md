@@ -131,7 +131,9 @@ Connecting to a host always means goattyd on that host, unless the user picks pl
 
 **Plain SSH** (`--plain`, or the button) runs `ssh -- host` in a session of the local goattyd (`Run`, v6), falling back to a window-owned PTY if the local daemon is too old. You get exactly what `ssh` in any terminal gives: the user's ssh config, prompts in the terminal, the host's own shell. Nothing is installed, and nothing of goatty runs there (no managed shell, no host settings or plugins; the settings window configures the local host). The session survives closing the window (the ssh process lives in the local daemon), but not a network drop. Typing `ssh host` inside a goatty shell is the same thing and needs no feature at all.
 
-Remembering the choice per host belongs to the host list (#4).
+Remembering the choice per host: the Hosts settings page sets `ssh.hosts[].plain`, and `goatty --ssh host` and the palette then go straight to plain SSH for that host.
+
+**Host list (#115).** The command palette lists the hosts to connect to: the ones added in the settings (`ssh.hosts`) and, with `ssh.discover` (default on), every concrete `Host` in `~/.ssh/config` and the files it `Include`s (`goatty_client::ssh_config`, read off the UI thread into the app's `hosts::HostList`). Ctrl+Shift+H (`connect_to_host`) opens the palette with only the hosts, and offers to connect to any `user@host` typed there. In the full palette (Ctrl+Shift+P) hosts appear once something is typed, or when recently used. Picking one opens the connect window above for a new terminal window, so a missing or old goattyd is handled the same way as with `--ssh`. Each window is a client of one host; the settings window and "reload shells" act on the host of the window they were opened from. OS/RTT per host, a session picker and several hosts in one window's tabs are still #4/#37.
 
 ## 5b. SSH prompts in the GUI (#6) and goattyd as a systemd service (#7)
 
@@ -191,7 +193,7 @@ Echo latency includes the PTY round trip and the benchmark's 0.2 ms polling. On 
 Protocol v2, `goatty-client` crate, multiplexed connections, ack/window flow control with resync, encode-once broadcast, `goattyd proxy`, `--ssh` / `--via`, reconnect with reattach, heartbeat/RTT, socket watchdog, tests for all of it.
 
 ### R1: remote MVP polish (next; tracked in the [R1 milestone](https://github.com/goatty-dev/goatty/milestone/1))
-1. **Host list and switcher UI**: parse `~/.ssh/config` `Host` entries plus "Add host". Show user@host, OS and RTT, plus a sessions-per-host picker (`list_sessions` already exists).
+1. **Host list and switcher UI**: ✅ `~/.ssh/config` `Host` entries plus hosts added in the settings, in the command palette (#115, §5a). Still open: OS and RTT per host, a sessions-per-host picker (`list_sessions` already exists), hosts as tabs of one window (#4).
 2. ✅ **Remote goattyd install and version negotiation**, plus the plain SSH fallback (§4, §5a).
 3. ✅ **SSH prompts in the GUI** through goatty as `SSH_ASKPASS` (§5b).
 4. ✅ **Daemon as systemd user service** (opt-in, socket-activated) with linger guidance (§5b). FDSTORE: #131.

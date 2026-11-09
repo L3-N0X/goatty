@@ -8,6 +8,7 @@
 
 mod aliases;
 mod host;
+mod hosts;
 mod pages;
 mod plugins;
 
@@ -53,12 +54,16 @@ pub fn open_at(cx: &mut App, page: Option<Page>) {
         && handle
             .update(cx, |view, window, cx| {
                 window.activate_window();
+                view.follow_host_link(cx);
                 if let Some(p) = page {
                     view.page = p;
                     cx.notify();
                 }
                 if matches!(page, Some(Page::Plugins | Page::Aliases)) {
                     view.load_plugins(false, cx);
+                }
+                if page == Some(Page::Hosts) {
+                    crate::hosts::refresh(cx);
                 }
             })
             .is_ok()
@@ -100,11 +105,12 @@ pub enum Page {
     Shortcuts,
     Plugins,
     Workspace,
+    Hosts,
     Profile,
 }
 
 impl Page {
-    pub const ALL: [Page; 10] = [
+    pub const ALL: [Page; 11] = [
         Page::Appearance,
         Page::Terminal,
         Page::Shell,
@@ -114,6 +120,7 @@ impl Page {
         Page::Plugins,
         Page::Shortcuts,
         Page::Workspace,
+        Page::Hosts,
         Page::Profile,
     ];
 
@@ -128,6 +135,7 @@ impl Page {
             Page::Plugins => "Plugins",
             Page::Shortcuts => "Shortcuts",
             Page::Workspace => "Workspace",
+            Page::Hosts => "Hosts",
             Page::Profile => "Profile",
         }
     }
@@ -204,6 +212,7 @@ pub struct SettingsWindow {
     shortcut_note: Option<(&'static str, String)>,
     plugins: plugins::PluginsPage,
     aliases: aliases::AliasesPage,
+    hosts: hosts::HostsPage,
     _subs: Vec<Subscription>,
 }
 
@@ -281,12 +290,37 @@ impl SettingsWindow {
             shortcut_note: None,
             plugins: plugins::PluginsPage::default(),
             aliases: aliases::AliasesPage::new(cx),
+            hosts: hosts::HostsPage::new(cx),
             _subs: subs,
         };
         this.load_host(cx);
         this.load_plugins(false, cx);
         this.select_slot(ColorSlot::Background, cx);
+        crate::hosts::refresh(cx);
         this
+    }
+
+    /// Switch to the host of the window the settings were opened from
+    /// (each terminal window is a client of one host), unless there are
+    /// unapplied changes for the current one.
+    fn follow_host_link(&mut self, cx: &mut Context<'_, Self>) {
+        let link = cx.try_global::<HostLinkGlobal>().and_then(|g| g.0.clone());
+        let same = match (&self.link, &link) {
+            (Some(a), Some(b)) => a.same(b),
+            (a, b) => a.is_none() && b.is_none(),
+        };
+        if same || self.draft.is_some() || self.busy {
+            return;
+        }
+        self.link = link;
+        self.host = None;
+        self.host_error = None;
+        self.outcome = None;
+        self.generations.clear();
+        self.plugins = plugins::PluginsPage::default();
+        self.load_host(cx);
+        self.load_plugins(false, cx);
+        cx.notify();
     }
 
     // ---- Themes -----------------------------------------------------------------

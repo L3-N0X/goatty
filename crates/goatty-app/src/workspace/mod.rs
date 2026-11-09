@@ -15,6 +15,10 @@
 //! in the focused pane's directory. Closing a pane ends its shell (after
 //! asking, when a program runs in it); closing the window only detaches
 //! (the daemon keeps the sessions).
+//!
+//! Each window is a client of one host. While a window is active, the
+//! settings window and "reload shells" act on its host
+//! (`settings_window::set_host_link`).
 
 mod icons;
 mod layout;
@@ -34,7 +38,7 @@ use gpui::{
 
 use crate::actions::*;
 use crate::close_confirm::{CloseConfirm, CloseConfirmEvent, Closing};
-use crate::command_palette::{CommandPalette, PaletteEvent};
+use crate::command_palette::{CommandPalette, PaletteEvent, Scope};
 use crate::paste_confirm::{PasteConfirm, PasteConfirmEvent};
 use crate::session::{Session, Spawner};
 use crate::settings::AppSettings;
@@ -160,6 +164,12 @@ impl Workspace {
             this.refresh_icon_font(cx);
             cx.notify();
         });
+        // Settings and "reload shells" act on the active window's host.
+        let activation = cx.observe_window_activation(window, |this: &mut Self, window, cx| {
+            if window.is_window_active() {
+                crate::settings_window::set_host_link(cx, Some(this.spawner.host_link()));
+            }
+        });
         let toasts = cx.new(|cx| ToastLayer::new(window, cx));
         let mut this = Self {
             spawner,
@@ -174,7 +184,7 @@ impl Workspace {
             toasts,
             layout_id: saved::new_id(),
             saved_json: String::new(),
-            _subscriptions: vec![appearance, settings],
+            _subscriptions: vec![appearance, settings, activation],
         };
         this.refresh_icon_font(cx);
         match startup {
@@ -775,7 +785,15 @@ impl Workspace {
             self.close_palette(window, cx);
             return;
         }
-        let palette = cx.new(|cx| CommandPalette::new(window, cx));
+        self.open_palette(Scope::All, window, cx);
+    }
+
+    fn connect_to_host(&mut self, _: &ConnectToHost, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.open_palette(Scope::Hosts, window, cx);
+    }
+
+    fn open_palette(&mut self, scope: Scope, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let palette = cx.new(|cx| CommandPalette::new(scope, window, cx));
         let sub = cx.subscribe_in(&palette, window, |this, _, ev: &PaletteEvent, window, cx| match ev {
             PaletteEvent::Dismissed => this.close_palette(window, cx),
             PaletteEvent::Run(command) => {
@@ -916,6 +934,7 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             .on_action(cx.listener(Self::toggle_palette))
+            .on_action(cx.listener(Self::connect_to_host))
             .on_action(cx.listener(Self::new_tab))
             .on_action(cx.listener(Self::close_pane))
             .on_action(cx.listener(Self::close_tab))

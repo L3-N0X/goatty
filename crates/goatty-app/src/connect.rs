@@ -1,7 +1,8 @@
 //! Connecting to goattyd on another host, in a small window of its own.
 //!
 //! `goatty --ssh host` (and `--via`) opens this window instead of blocking
-//! before the GUI starts. It connects off the UI thread and, when that
+//! before the GUI starts, and so does picking a host in the command palette
+//! (`crate::hosts`). It connects off the UI thread and, when that
 //! works, opens the terminal window and closes itself. When it doesn't, it
 //! explains what's wrong and offers what goatty can do about it:
 //!
@@ -14,8 +15,8 @@
 //!   window, but not the network dropping.
 //!
 //! ssh's own questions (passphrases, host keys) come up as separate windows
-//! from `crate::askpass`. Connecting inside the terminal window itself, with
-//! tabs for several hosts, is #37/#4.
+//! from `crate::askpass`. Each host gets a terminal window of its own;
+//! tabs for several hosts in one window are #37/#4.
 
 use std::sync::Arc;
 
@@ -44,6 +45,9 @@ pub struct ConnectPlan {
     pub mode: AttachMode,
     /// `--settings[=PAGE]`, opened with the terminal window.
     pub open_settings: Option<String>,
+    /// Plain SSH right away (the host is set to it): `ssh host` in a local
+    /// session instead of goattyd on the host.
+    pub plain: bool,
 }
 
 /// The terminal window's first pane size; it resizes on first layout.
@@ -73,7 +77,11 @@ pub fn open(cx: &mut App, plan: ConnectPlan) {
     );
     if let Err(e) = opened {
         log::error!("couldn't open the connect window: {e:#}");
-        cx.quit();
+        // From the command line there's nothing else; from the palette the
+        // other windows stay.
+        if cx.windows().is_empty() {
+            cx.quit();
+        }
     }
 }
 
@@ -294,6 +302,12 @@ impl ConnectView {
     }
 
     fn connect(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if self.plan.plain
+            && let Some(target) = self.ssh_target()
+        {
+            self.work(format!("Opening ssh {}…", target.host), window, cx, move || plain_ssh(&target.host));
+            return;
+        }
         let (endpoint, mode) = (self.plan.endpoint.clone(), self.plan.mode);
         self.work(format!("Connecting to {}…", endpoint.label()), window, cx, move || {
             let conn = Connection::open(endpoint, crate::CLIENT)?;
