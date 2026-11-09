@@ -2032,6 +2032,7 @@ dependencies = [
  "libc",
  "log",
  "parking_lot 0.13.0",
+ "tempfile",
 ]
 
 [[package]]
@@ -2058,6 +2059,7 @@ dependencies = [
  "goatty-proto",
  "goatty-shell",
  "goatty-term",
+ "libc",
  "log",
  "parking_lot 0.13.0",
  "serde_json",

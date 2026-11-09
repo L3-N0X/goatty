@@ -148,7 +148,15 @@ impl Workspace {
             crate::settings::AppSettings::set_system_dark(cx, crate::settings::is_dark(window.appearance()));
         });
         // The terminal font decides which icons can show.
-        let settings = cx.observe_global_in::<AppSettings>(window, |this, _, cx| {
+        // `terminal.opacity` / `terminal.blur`, live.
+        let mut background = background_appearance(&cx.global::<AppSettings>().client.terminal);
+        window.set_background_appearance(background);
+        let settings = cx.observe_global_in::<AppSettings>(window, move |this, window, cx| {
+            let wanted = background_appearance(&cx.global::<AppSettings>().client.terminal);
+            if wanted != background {
+                background = wanted;
+                window.set_background_appearance(wanted);
+            }
             this.refresh_icon_font(cx);
             cx.notify();
         });
@@ -886,6 +894,16 @@ fn dir_label(dir: &Path, home: Option<&Path>) -> String {
         return "~".into();
     }
     dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.to_string_lossy().into_owned())
+}
+
+/// Opaque unless the terminal background is see-through.
+pub fn background_appearance(t: &goatty_config::TerminalSettings) -> gpui::WindowBackgroundAppearance {
+    use gpui::WindowBackgroundAppearance as W;
+    match (t.is_transparent(), t.blur) {
+        (false, _) => W::Opaque,
+        (true, false) => W::Transparent,
+        (true, true) => W::Blurred,
+    }
 }
 
 impl Render for Workspace {

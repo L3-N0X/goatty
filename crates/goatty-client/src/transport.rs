@@ -12,64 +12,78 @@
 //! The daemon socket stays private to its host (0600, 0700 dir), so goatty
 //! never opens a network port.
 
-use std::io::{BufReader, Read, Write};
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStderr, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use goatty_proto::StreamOpts;
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
+
+use crate::remote;
 
 /// Where a goattyd lives and how to reach it.
 #[derive(Debug, Clone)]
 pub enum Endpoint {
     /// The daemon on this machine (auto-started if needed).
     Local,
+    /// goattyd on another host, through the system's `ssh`.
+    Ssh(SshTarget),
     /// `program args…` speaks the protocol on its stdio (normally it ends in
     /// `goattyd proxy`).
     Command { label: String, program: String, args: Vec<String> },
 }
 
-/// Shell snippet run on the remote host. Non-interactive SSH sessions often
-/// lack `~/.cargo/bin` / `~/.local/bin` in PATH, so look there too. Plain
-/// POSIX sh, since the user's login shell may be fish.
-fn remote_proxy_script(remote_daemon: Option<&str>) -> String {
-    let candidates = match remote_daemon {
-        Some(p) => sh_quote(p),
-        None => "goattyd \"$HOME/.local/bin/goattyd\" \"$HOME/.cargo/bin/goattyd\"".into(),
-    };
-    format!(
-        "for d in {candidates}; do command -v \"$d\" >/dev/null 2>&1 && exec \"$d\" proxy; done; \
-         echo 'goatty: goattyd not found on remote host (install it or pass --remote-daemon PATH)' >&2; exit 127"
-    )
+/// A host reached with the system's OpenSSH client.
+#[derive(Debug, Clone)]
+pub struct SshTarget {
+    /// Anything ssh accepts: `user@host`, an alias from `~/.ssh/config`, a
+    /// Tailscale MagicDNS name.
+    pub host: String,
+    /// goattyd's path on the host, instead of searching for it.
+    pub remote_daemon: Option<String>,
+    /// Program for ssh's prompts (passphrases, host keys) instead of a
+    /// terminal: `SSH_ASKPASS` with `SSH_ASKPASS_REQUIRE=force`. The GUI
+    /// passes itself (see [`crate::askpass`]).
+    pub askpass: Option<PathBuf>,
+    /// The ssh client to run (tests substitute a fake).
+    pub program: String,
 }
 
-fn sh_quote(s: &str) -> String {
+impl SshTarget {
+    pub fn new(host: &str) -> Self {
+        Self { host: host.into(), remote_daemon: None, askpass: None, program: "ssh".into() }
+    }
+
+    /// `ssh … host <remote>`: no remote PTY (we carry raw bytes), no `~`
+    /// escapes, keepalives so a dead link is noticed, prompts through the
+    /// askpass program when there is one. `remote` runs in the user's login
+    /// shell on the host, so it must be valid there (we wrap ours in `sh -c`).
+    pub fn command(&self, remote: &str) -> Command {
+        let mut c = Command::new(&self.program);
+        c.args(["-T", "-e", "none", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=10"]);
+        // `--`: a host that starts with `-` is a host, not an option.
+        c.arg("--").arg(&self.host).arg(remote);
+        if let Some(askpass) = &self.askpass {
+            c.env("SSH_ASKPASS", askpass).env("SSH_ASKPASS_REQUIRE", "force").env(crate::askpass::ENV, "1");
+        }
+        c
+    }
+}
+
+pub(crate) fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 impl Endpoint {
-    /// `ssh <host> goattyd proxy`. `host` is anything ssh accepts, including
-    /// `user@host`, an alias from `~/.ssh/config` or a Tailscale MagicDNS name.
+    /// goattyd on `host` via `ssh host … goattyd proxy`.
     pub fn ssh(host: &str, remote_daemon: Option<&str>) -> Self {
-        let args = vec![
-            "-T".into(), // no remote PTY: we carry raw protocol bytes
-            "-e".into(),
-            "none".into(), // no ~ escape processing on a binary stream
-            "-o".into(),
-            "ServerAliveInterval=10".into(),
-            "-o".into(),
-            "ServerAliveCountMax=3".into(),
-            "-o".into(),
-            "ConnectTimeout=10".into(),
-            host.into(),
-            format!("sh -c {}", sh_quote(&remote_proxy_script(remote_daemon))),
-        ];
-        Endpoint::Command { label: host.into(), program: "ssh".into(), args }
+        Endpoint::Ssh(SshTarget { remote_daemon: remote_daemon.map(String::from), ..SshTarget::new(host) })
     }
 
     /// An arbitrary command line, split on whitespace (prototype-grade; use
@@ -87,6 +101,7 @@ impl Endpoint {
     pub fn label(&self) -> &str {
         match self {
             Endpoint::Local => "local",
+            Endpoint::Ssh(t) => &t.host,
             Endpoint::Command { label, .. } => label,
         }
     }
@@ -106,27 +121,97 @@ impl Endpoint {
                     reader: BufReader::with_capacity(256 << 10, Box::new(s)),
                     writer: Box::new(w),
                     closer: Closer(Arc::new(Mutex::new(Some(CloseHandle::Socket(closer))))),
+                    stderr: StderrTail::default(),
                 })
             }
-            Endpoint::Command { program, args, .. } => {
-                let mut child = Command::new(program)
-                    .args(args)
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    // ssh prompts (host key, passphrase) and remote errors
-                    // go to our stderr.
-                    .stderr(Stdio::inherit())
-                    .spawn()
-                    .with_context(|| format!("spawn {program}"))?;
-                let stdin = child.stdin.take().context("child stdin")?;
-                let stdout = child.stdout.take().context("child stdout")?;
-                Ok(Transport {
-                    reader: BufReader::with_capacity(256 << 10, Box::new(stdout)),
-                    writer: Box::new(stdin),
-                    closer: Closer(Arc::new(Mutex::new(Some(CloseHandle::Child(child))))),
-                })
+            Endpoint::Ssh(t) => {
+                let script = remote::proxy_script(t.remote_daemon.as_deref());
+                spawn_stdio(t.command(&format!("sh -c {}", sh_quote(&script))), &t.host)
+            }
+            Endpoint::Command { program, args, label } => {
+                let mut c = Command::new(program);
+                c.args(args);
+                spawn_stdio(c, label)
             }
         }
+    }
+}
+
+/// Run `cmd` with the protocol on its stdin/stdout. Its stderr (ssh errors,
+/// the remote script's messages) is logged and kept for error reports.
+/// ssh asks for passphrases on `/dev/tty` or through askpass, never on
+/// stderr, so capturing it doesn't hide prompts.
+fn spawn_stdio(mut cmd: Command, label: &str) -> Result<Transport> {
+    let program = cmd.get_program().to_string_lossy().into_owned();
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("couldn't run {program}"))?;
+    let stdin = child.stdin.take().context("child stdin")?;
+    let stdout = child.stdout.take().context("child stdout")?;
+    let stderr = child.stderr.take().map(|e| StderrTail::spawn(e, label)).unwrap_or_default();
+    Ok(Transport {
+        reader: BufReader::with_capacity(256 << 10, Box::new(stdout)),
+        writer: Box::new(stdin),
+        closer: Closer(Arc::new(Mutex::new(Some(CloseHandle::Child(child))))),
+        stderr,
+    })
+}
+
+/// The last lines a transport command wrote to stderr.
+#[derive(Clone, Default)]
+pub struct StderrTail(Arc<(Mutex<TailState>, Condvar)>);
+
+#[derive(Default)]
+struct TailState {
+    lines: VecDeque<String>,
+    done: bool,
+}
+
+const TAIL_LINES: usize = 40;
+
+impl StderrTail {
+    fn spawn(stderr: ChildStderr, label: &str) -> Self {
+        let tail = Self::default();
+        let t = tail.clone();
+        let label = label.to_string();
+        let spawned = std::thread::Builder::new().name("transport-stderr".into()).spawn(move || {
+            for line in BufReader::new(stderr).lines() {
+                let Ok(line) = line else { break };
+                log::info!("{label}: {line}");
+                let mut s = t.0.0.lock();
+                if s.lines.len() == TAIL_LINES {
+                    s.lines.pop_front();
+                }
+                s.lines.push_back(line);
+            }
+            t.0.0.lock().done = true;
+            t.0.1.notify_all();
+        });
+        if spawned.is_err() {
+            tail.0.0.lock().done = true;
+        }
+        tail
+    }
+
+    /// The lines so far.
+    pub fn lines(&self) -> Vec<String> {
+        self.0.0.lock().lines.iter().cloned().collect()
+    }
+
+    /// The lines once the command closed stderr (it exited), or after
+    /// `timeout`.
+    pub fn wait(&self, timeout: Duration) -> Vec<String> {
+        let deadline = Instant::now() + timeout;
+        let mut s = self.0.0.lock();
+        while !s.done {
+            if self.0.1.wait_until(&mut s, deadline).timed_out() {
+                break;
+            }
+        }
+        s.lines.iter().cloned().collect()
     }
 }
 
@@ -160,15 +245,50 @@ pub struct Transport {
     pub reader: BufReader<Box<dyn Read + Send>>,
     pub writer: Box<dyn Write + Send>,
     pub closer: Closer,
+    /// What the transport command said on stderr (empty for sockets).
+    pub stderr: StderrTail,
 }
 
-/// Connect to the local goattyd, starting it (detached, in its own session)
-/// if needed. `daemon_exe` defaults to `goattyd` next to the current binary.
+/// Connect to the local goattyd, starting it if needed: through systemd
+/// when its user units are installed ([`crate::service`]), else detached in
+/// its own session. `daemon_exe` defaults to `goattyd` next to the current
+/// binary.
 pub fn connect_or_spawn_daemon(daemon_exe: Option<PathBuf>) -> Result<UnixStream> {
     let path = goatty_proto::socket_path();
     if let Ok(s) = UnixStream::connect(&path) {
         return Ok(s);
     }
+    let dir = goatty_proto::runtime_dir();
+    let log_path = dir.join("goattyd.log");
+    // Only for the socket the units listen on (not a GOATTY_SOCKET sandbox).
+    let via_systemd = crate::service::unit_socket_path().is_some_and(|p| p == path) && crate::service::installed() && {
+        match crate::service::start_socket() {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!("couldn't start goattyd's systemd socket, starting it directly: {e:#}");
+                false
+            }
+        }
+    };
+    if !via_systemd {
+        spawn_daemon(daemon_exe, &dir, &log_path)?;
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Ok(s) = UnixStream::connect(&path) {
+            return Ok(s);
+        }
+        if Instant::now() > deadline {
+            if via_systemd {
+                bail!("goattyd did not come up; see `journalctl --user -u goattyd`");
+            }
+            bail!("goattyd did not come up; see {}", log_path.display());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn spawn_daemon(daemon_exe: Option<PathBuf>, dir: &std::path::Path, log_path: &std::path::Path) -> Result<()> {
     let daemon = match daemon_exe {
         Some(p) => p,
         None => {
@@ -180,9 +300,8 @@ pub fn connect_or_spawn_daemon(daemon_exe: Option<PathBuf>) -> Result<UnixStream
             d
         }
     };
-    let dir = goatty_proto::runtime_dir();
-    std::fs::create_dir_all(&dir)?;
-    let log = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("goattyd.log"))?;
+    std::fs::create_dir_all(dir)?;
+    let log = std::fs::OpenOptions::new().create(true).append(true).open(log_path)?;
     log::info!("starting {}", daemon.display());
     let mut cmd = Command::new(&daemon);
     cmd.arg("serve").stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
@@ -196,16 +315,7 @@ pub fn connect_or_spawn_daemon(daemon_exe: Option<PathBuf>) -> Result<UnixStream
         });
     }
     cmd.spawn().context("spawn goattyd")?;
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        if let Ok(s) = UnixStream::connect(&path) {
-            return Ok(s);
-        }
-        if Instant::now() > deadline {
-            bail!("goattyd did not come up; see {}", dir.join("goattyd.log").display());
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -213,11 +323,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn remote_script_is_posix_and_quoted() {
-        let s = remote_proxy_script(Some("/opt/it's/goattyd"));
-        assert!(s.contains("'/opt/it'\\''s/goattyd'"));
-        let ssh = Endpoint::ssh("box", None);
-        let Endpoint::Command { args, .. } = ssh else { panic!() };
-        assert!(args.last().unwrap().starts_with("sh -c '"));
+    fn ssh_command_is_safe() {
+        let mut t = SshTarget::new("-oProxyCommand=evil");
+        t.askpass = Some("/opt/goatty".into());
+        let c = t.command("true");
+        let args: Vec<_> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let host = args.iter().position(|a| a == "-oProxyCommand=evil").unwrap();
+        assert_eq!(args[host - 1], "--", "the host can't be read as an option");
+        assert_eq!(args.last().unwrap(), "true");
+        let envs: Vec<_> =
+            c.get_envs().map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned()))).collect();
+        assert!(envs.contains(&("SSH_ASKPASS_REQUIRE".into(), Some("force".into()))));
+        assert!(envs.contains(&("SSH_ASKPASS".into(), Some("/opt/goatty".into()))));
+        assert_eq!(sh_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn stderr_tail_keeps_the_last_lines() {
+        let mut child = Command::new("sh")
+            .args(["-c", "i=0; while [ $i -lt 50 ]; do echo line$i >&2; i=$((i+1)); done"])
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let tail = StderrTail::spawn(child.stderr.take().unwrap(), "test");
+        let lines = tail.wait(Duration::from_secs(5));
+        child.wait().unwrap();
+        assert_eq!(lines.len(), TAIL_LINES);
+        assert_eq!(lines.last().unwrap(), "line49");
     }
 }

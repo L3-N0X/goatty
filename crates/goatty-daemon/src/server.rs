@@ -51,18 +51,32 @@ impl Daemon {
         self.sessions.lock().get(&id).cloned()
     }
 
+    /// A session running the user's shell (goatty's managed zsh by default).
     pub(crate) fn create(self: &Arc<Self>, ws: WinSize, cwd: Option<String>) -> Result<Arc<Session>> {
-        let size = to_size(ws);
         let host = self.host.settings();
         for issue in &host.file.issues {
             log::warn!("host settings: {issue}");
         }
         let launch = self.host.launcher.launch(&host);
-        let mut cmd = ShellCommand::new(launch.program, launch.args, launch.env);
+        let managed = launch.managed;
+        self.spawn(ShellCommand::new(launch.program, launch.args, launch.env), managed, ws, cwd)
+    }
+
+    /// A session running `argv` instead of a shell.
+    pub(crate) fn run(self: &Arc<Self>, ws: WinSize, cwd: Option<String>, mut argv: Vec<String>) -> Result<Arc<Session>> {
+        if argv.is_empty() {
+            bail!("nothing to run");
+        }
+        let program = argv.remove(0);
+        self.spawn(ShellCommand::new(program, argv, Vec::new()), false, ws, cwd)
+    }
+
+    fn spawn(self: &Arc<Self>, mut cmd: ShellCommand, managed: bool, ws: WinSize, cwd: Option<String>) -> Result<Arc<Session>> {
+        let size = to_size(ws);
         if let Some(cwd) = cwd.filter(|c| std::path::Path::new(c).is_dir()) {
             cmd.cwd = Some(cwd.into());
         }
-        let (pty, reader) = Pty::spawn(&cmd, size)?;
+        let (pty, reader) = Pty::spawn(&cmd, size).with_context(|| format!("couldn't start {}", cmd.program))?;
         // The daemon's terminal is authoritative and answers queries
         // (DA, DSR, OSC 4/10/11...). Clients run with answering disabled.
         // Over a remote link this also means query replies never pay the RTT.
@@ -81,13 +95,9 @@ impl Daemon {
             log::warn!("session {id}: can't watch the foreground program: {e}");
         }
         let pid = session.pty.lock().pid();
-        log::info!(
-            "session {id}: spawned {}{} (pid {pid:?})",
-            cmd.program,
-            if launch.managed { " with goatty's managed config" } else { "" }
-        );
+        log::info!("session {id}: spawned {}{} (pid {pid:?})", cmd.program, if managed { " with goatty's managed config" } else { "" });
         // Only goatty's zsh handles the reload request.
-        let managed_pid = pid.filter(|_| launch.managed);
+        let managed_pid = pid.filter(|_| managed);
         if let Some(pid) = managed_pid {
             self.host.track_shell(pid);
         }
@@ -193,11 +203,48 @@ fn accept_loop(daemon: Arc<Daemon>, listener: UnixListener) {
     }
 }
 
+/// The listening socket systemd passed us (`goattyd.socket`, see
+/// `goatty_client::service`), per `sd_listen_fds(3)`: `LISTEN_PID` is us and
+/// `LISTEN_FDS` ≥ 1 means fd 3 is it. The variables are removed so the
+/// shells don't inherit them, and the fd is closed on exec.
+fn listener_from_systemd() -> Option<UnixListener> {
+    use std::os::fd::FromRawFd;
+    const SD_LISTEN_FDS_START: i32 = 3;
+    let pid = std::env::var("LISTEN_PID").ok()?;
+    let fds = std::env::var("LISTEN_FDS").ok();
+    // SAFETY: called from `serve` before the daemon starts any thread.
+    unsafe {
+        std::env::remove_var("LISTEN_PID");
+        std::env::remove_var("LISTEN_FDS");
+        std::env::remove_var("LISTEN_FDNAMES");
+    }
+    if pid.parse::<u32>().ok()? != std::process::id() || fds?.parse::<u32>().ok()? < 1 {
+        return None;
+    }
+    // SAFETY: fd 3 is ours: systemd passed it and nothing in this process
+    // has opened or adopted it.
+    unsafe {
+        let flags = libc::fcntl(SD_LISTEN_FDS_START, libc::F_GETFD);
+        if flags < 0 {
+            return None;
+        }
+        libc::fcntl(SD_LISTEN_FDS_START, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+        Some(UnixListener::from_raw_fd(SD_LISTEN_FDS_START))
+    }
+}
+
 /// Run the daemon on the socket at `path` until `goattyd stop`. Never returns
-/// `Ok`; startup errors (socket in use, permissions) are returned.
+/// `Ok`; startup errors (socket in use, permissions) are returned. Under
+/// systemd socket activation it serves the socket it was given.
 pub fn serve(path: &Path) -> Result<()> {
     let path = path.to_path_buf();
-    let (listener, mut ino) = bind(&path)?;
+    let (listener, mut ino) = match listener_from_systemd() {
+        Some(l) => {
+            log::info!("using the socket from systemd");
+            (l, std::fs::metadata(&path).map(|m| m.ino()).unwrap_or(0))
+        }
+        None => bind(&path)?,
+    };
     log::info!("goattyd {} listening on {} (pid {})", env!("CARGO_PKG_VERSION"), path.display(), std::process::id());
 
     let daemon = Arc::new(Daemon::new(path.clone()));
@@ -210,16 +257,27 @@ pub fn serve(path: &Path) -> Result<()> {
     // lingering is enabled). The daemon and its shells survive that, but the
     // socket path vanishes, and the next `ssh host goattyd proxy` would start
     // a second, empty daemon. Re-create the socket when it disappears.
+    let mut taken_over = false;
     loop {
         std::thread::sleep(Duration::from_secs(2));
         let current = std::fs::metadata(&path).ok().map(|m| m.ino());
         if current == Some(ino) {
             continue;
         }
+        // Someone else listens there now (another daemon, or a systemd
+        // socket installed meanwhile): leave it alone, say so once.
+        if current.is_some() && UnixStream::connect(&path).is_ok() {
+            if !taken_over {
+                log::warn!("another listener took over {}; this daemon keeps serving its connected clients", path.display());
+                taken_over = true;
+            }
+            continue;
+        }
         log::warn!("socket {} disappeared; re-binding", path.display());
         match bind(&path) {
             Ok((l, i)) => {
                 ino = i;
+                taken_over = false;
                 let d = daemon.clone();
                 std::thread::Builder::new().name("accept".into()).spawn(move || accept_loop(d, l))?;
             }

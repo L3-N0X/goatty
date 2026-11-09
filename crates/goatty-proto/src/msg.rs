@@ -1,8 +1,51 @@
 //! Message types. Any change here is a wire change: bump [`PROTOCOL_VERSION`].
+//!
+//! # Compatibility
+//!
+//! Peers support a *range* of protocol versions, [`MIN_PROTOCOL_VERSION`]
+//! ..= [`PROTOCOL_VERSION`], and agree on one in the handshake:
+//!
+//! 1. The client sends `Hello { version: its newest }`.
+//! 2. The daemon answers `Hello { version: v }` with
+//!    `v = min(client, daemon newest)` ([`negotiate`]). If `v` is older than
+//!    the daemon supports, it answers with its own newest version instead and
+//!    closes the connection, so the client can tell "daemon too new" from
+//!    "daemon too old".
+//! 3. Both sides then use `v`: neither sends a message newer than `v`.
+//!
+//! That only works if the wire format grows **append-only**: new messages
+//! are new variants at the *end* of [`ClientMsg`]/[`ServerMsg`] (postcard
+//! encodes variants by index), existing variants never change their fields,
+//! and each addition bumps [`PROTOCOL_VERSION`] and notes `vN:` in its doc.
+//! A change that can't be made that way raises [`MIN_PROTOCOL_VERSION`].
+//!
+//! Daemons up to v5 required an exact match and answer any other version
+//! with `Error { message: "protocol mismatch: daemon vN, client vM" }`. The
+//! client recognizes that and reconnects announcing `vN` when it supports it.
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 7;
+/// The newest protocol version this build speaks.
+pub const PROTOCOL_VERSION: u32 = 8;
+
+/// The oldest protocol version this build still speaks.
+pub const MIN_PROTOCOL_VERSION: u32 = 7;
+
+/// v6: `ClientMsg::Run` (a session running a given command).
+pub const RUN_SINCE: u32 = 6;
+
+/// v7: `ServerMsg::Process` and `SessionInfo::process`.
+pub const PROCESS_SINCE: u32 = 7;
+
+/// v8: `SaveLayout` / `ClaimLayout` (saved window layouts).
+pub const LAYOUT_SINCE: u32 = 8;
+
+/// The version to use with a peer whose newest version is `peer`, or
+/// `None` when the ranges don't overlap.
+pub fn negotiate(peer: u32) -> Option<u32> {
+    let v = peer.min(PROTOCOL_VERSION);
+    (v >= MIN_PROTOCOL_VERSION).then_some(v)
+}
 
 pub type SessionId = u64;
 /// Client-chosen correlation id for request/response pairs.
@@ -40,7 +83,8 @@ impl StreamOpts {
 
 /// Compatibility rule: `Hello` stays variant 0 with `version` as its first
 /// field in both enums forever, so peers of any version can detect a
-/// mismatch and report it instead of misparsing.
+/// mismatch and report it instead of misparsing. Everything else is
+/// append-only (see the module docs).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMsg {
     Hello {
@@ -143,7 +187,17 @@ pub enum ClientMsg {
         req: ReqId,
         request: String,
     },
-    /// v7: remember a window's layout (tabs and splits) so a later window
+    /// v6: like `Create`, but the session runs `argv` (looked up in the
+    /// daemon's `PATH`) instead of the user's shell, e.g. `ssh host` for a
+    /// plain SSH session. The session ends when the program exits.
+    Run {
+        req: ReqId,
+        size: WinSize,
+        cwd: Option<String>,
+        argv: Vec<String>,
+        opts: StreamOpts,
+    },
+    /// v8: remember a window's layout (tabs and splits) so a later window
     /// can restore it. `json` is the client's own format, opaque to the
     /// daemon; `sessions` are the sessions it shows. Saving also claims the
     /// layout for this connection. No `sessions`: forget it. No reply.
@@ -152,7 +206,7 @@ pub enum ClientMsg {
         sessions: Vec<SessionId>,
         json: String,
     },
-    /// v7: take over the most recently saved layout that no connection
+    /// v8: take over the most recently saved layout that no connection
     /// holds and that still shows a running session. One window gets it;
     /// the next one gets the next layout or none. Reply: `Layout`.
     ClaimLayout {
@@ -194,7 +248,7 @@ pub struct SessionInfo {
     pub rows: u16,
     pub attached: u32,
     pub created_unix: u64,
-    /// v6: the foreground program (`zsh` at the prompt, `nvim` while that
+    /// v7: the foreground program (`zsh` at the prompt, `nvim` while that
     /// runs), if the host can tell.
     pub process: Option<String>,
 }
@@ -245,12 +299,6 @@ pub enum ServerMsg {
         session: SessionId,
         code: Option<u32>,
     },
-    /// v6: the session's foreground program changed (also sent right after
-    /// `Attached`). Tabs show it as an icon and title fallback.
-    Process {
-        session: SessionId,
-        name: Option<String>,
-    },
     Pong {
         nonce: u64,
     },
@@ -295,7 +343,13 @@ pub enum ServerMsg {
         req: ReqId,
         reply: String,
     },
-    /// v7: reply to `ClaimLayout`.
+    /// v7: the session's foreground program changed (also sent right after
+    /// `Attached`). Tabs show it as an icon and title fallback.
+    Process {
+        session: SessionId,
+        name: Option<String>,
+    },
+    /// v8: reply to `ClaimLayout`.
     Layout {
         req: ReqId,
         layout: Option<LayoutInfo>,
@@ -329,5 +383,40 @@ impl ServerMsg {
             ServerMsg::Output { data, .. } => data.len(),
             _ => 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn negotiation_picks_the_newest_common_version() {
+        assert_eq!(negotiate(PROTOCOL_VERSION), Some(PROTOCOL_VERSION));
+        assert_eq!(negotiate(PROTOCOL_VERSION + 3), Some(PROTOCOL_VERSION));
+        assert_eq!(negotiate(MIN_PROTOCOL_VERSION), Some(MIN_PROTOCOL_VERSION));
+        assert_eq!(negotiate(MIN_PROTOCOL_VERSION - 1), None);
+    }
+
+    #[test]
+    fn hello_layout_is_frozen() {
+        // Variant 0, version first: what a peer of any version decodes.
+        let bytes = postcard::to_allocvec(&ClientMsg::Hello { version: 9, client: "x".into() }).unwrap();
+        assert_eq!(&bytes[..2], &[0, 9]);
+        let bytes = postcard::to_allocvec(&ServerMsg::Hello { version: 9, daemon_pid: 1, host: HostInfo::default() }).unwrap();
+        assert_eq!(&bytes[..2], &[0, 9]);
+    }
+
+    #[test]
+    fn v5_messages_keep_their_variant_index() {
+        // A v5 peer must still decode everything it knows.
+        let bytes = postcard::to_allocvec(&ClientMsg::Plugin { req: 1, request: String::new() }).unwrap();
+        assert_eq!(bytes[0], 18);
+        let bytes = postcard::to_allocvec(&ServerMsg::Plugin { req: 1, reply: String::new() }).unwrap();
+        assert_eq!(bytes[0], 13);
+        // v6 additions come after them.
+        let size = WinSize { cols: 1, rows: 1, cell_width: 1, cell_height: 1 };
+        let run = ClientMsg::Run { req: 1, size, cwd: None, argv: vec![], opts: StreamOpts::LOCAL };
+        assert_eq!(postcard::to_allocvec(&run).unwrap()[0], 19);
     }
 }

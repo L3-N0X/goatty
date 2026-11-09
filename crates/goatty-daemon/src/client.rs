@@ -52,18 +52,26 @@ pub(crate) fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
             };
             match msg {
                 ClientMsg::Hello { version, client } => {
-                    if version != PROTOCOL_VERSION {
-                        reply(ServerMsg::Error {
-                            req: None,
-                            message: format!("protocol mismatch: daemon v{PROTOCOL_VERSION}, client v{version}"),
-                        });
+                    let host = crate::server::host_info();
+                    let daemon_pid = std::process::id();
+                    let Some(agreed) = goatty_proto::negotiate(version) else {
+                        // Our newest version tells the client which side is older.
+                        log::info!("connection {conn}: {client} speaks protocol v{version}, which this goattyd doesn't");
+                        reply(ServerMsg::Hello { version: PROTOCOL_VERSION, daemon_pid, host });
                         return Ok(());
-                    }
-                    log::debug!("connection {conn}: {client}");
-                    reply(ServerMsg::Hello { version: PROTOCOL_VERSION, daemon_pid: std::process::id(), host: crate::server::host_info() });
+                    };
+                    log::debug!("connection {conn}: {client} (protocol v{agreed})");
+                    reply(ServerMsg::Hello { version: agreed, daemon_pid, host });
                 }
                 ClientMsg::ListSessions { req } => reply(ServerMsg::Sessions { req, list: daemon.list() }),
                 ClientMsg::Create { req, size, cwd, opts } => match daemon.create(size, cwd) {
+                    Ok(s) => {
+                        let sub = s.subscribe(conn, req, opts, &tx);
+                        subs.insert(s.id, (s, sub));
+                    }
+                    Err(e) => reply(ServerMsg::Error { req: Some(req), message: format!("{e:#}") }),
+                },
+                ClientMsg::Run { req, size, cwd, argv, opts } => match daemon.run(size, cwd, argv) {
                     Ok(s) => {
                         let sub = s.subscribe(conn, req, opts, &tx);
                         subs.insert(s.id, (s, sub));

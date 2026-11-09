@@ -4,6 +4,7 @@ use gpui::{App, AppContext, Bounds, WindowBounds, WindowOptions, px, size};
 
 use crate::actions::{OpenSettings, ReloadShells};
 use crate::command_palette;
+use crate::connect::ConnectPlan;
 use crate::session::Spawner;
 use crate::settings::AppSettings;
 use crate::settings_window::{self, HostLink};
@@ -11,29 +12,24 @@ use crate::toast::{self, Toast};
 use crate::workspace::Workspace;
 use crate::workspace::saved::Startup;
 
-pub fn run(startup: Startup, spawner: Spawner, link: HostLink, open_settings: Option<String>) {
+/// What the app starts with.
+pub enum Start {
+    /// A session to show right away (local daemon, `--local`, plain SSH).
+    Ready { startup: Startup, link: HostLink, open_settings: Option<String> },
+    /// A remote goattyd to connect to first (`crate::connect`).
+    Connect(ConnectPlan),
+}
+
+pub fn run(start: Start) {
     gpui_platform::application().with_assets(crate::ui::icons::Assets).run(move |cx: &mut App| {
         AppSettings::init(cx);
-        settings_window::set_host_link(cx, Some(link));
         cx.on_action(|_: &OpenSettings, cx| settings_window::open(cx));
         cx.on_action(|_: &ReloadShells, cx| reload_shells(cx));
         command_palette::register_builtins(cx);
 
-        let bounds = Bounds::centered(None, size(px(960.), px(600.)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                app_id: Some("dev.goatty.goatty".into()),
-                ..Default::default()
-            },
-            |window, cx| {
-                window.set_window_title("goatty");
-                cx.new(|cx| Workspace::new(startup, spawner, window, cx))
-            },
-        )
-        .expect("open window");
-        if let Some(page) = open_settings {
-            settings_window::open_at(cx, settings_window::Page::from_name(&page));
+        match start {
+            Start::Ready { startup, link, open_settings } => open_terminal_window(cx, startup, link, open_settings),
+            Start::Connect(plan) => crate::connect::open(cx, plan),
         }
         // Quit with the last window (the settings window may outlive the
         // terminal window briefly, or close first).
@@ -45,6 +41,37 @@ pub fn run(startup: Startup, spawner: Spawner, link: HostLink, open_settings: Op
         .detach();
         cx.activate(true);
     });
+}
+
+/// Open the terminal window for `startup`; `link` is the host its settings
+/// window configures.
+pub fn open_terminal_window(cx: &mut App, startup: Startup, link: HostLink, open_settings: Option<String>) {
+    let spawner = match &link {
+        HostLink::Local(host) => Spawner::Local(host.clone()),
+        HostLink::Daemon(conn) => Spawner::Daemon(conn.clone()),
+    };
+    settings_window::set_host_link(cx, Some(link));
+    let bounds = Bounds::centered(None, size(px(960.), px(600.)), cx);
+    let opened = cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            app_id: Some("dev.goatty.goatty".into()),
+            window_background: crate::workspace::background_appearance(&cx.global::<AppSettings>().client.terminal),
+            ..Default::default()
+        },
+        |window, cx| {
+            window.set_window_title("goatty");
+            cx.new(|cx| Workspace::new(startup, spawner, window, cx))
+        },
+    );
+    if let Err(e) = opened {
+        log::error!("couldn't open the terminal window: {e:#}");
+        cx.quit();
+        return;
+    }
+    if let Some(page) = open_settings {
+        settings_window::open_at(cx, settings_window::Page::from_name(&page));
+    }
 }
 
 /// Ask the host's running managed shells to reload (the command and the

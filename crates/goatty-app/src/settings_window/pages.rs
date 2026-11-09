@@ -2,8 +2,8 @@
 
 use goatty_config::keys::{self, ACTIONS};
 use goatty_config::{
-    ClientSettings, ColorSlot, CursorShape, HostSettings, LinkClick, OnLaunch, PaneSettings, PasteConfirm, PromptStyle, Renderer,
-    TabBarShow, TabStyle, ThemeEntry, ThemeSettings,
+    ClientSettings, ColorSlot, CopyOnSelect, CursorShape, HostSettings, LinkClick, MiddleClick, OnLaunch, PaneSettings, PasteConfirm,
+    PromptStyle, Renderer, TabBarShow, TabStyle, ThemeEntry, ThemeSettings,
 };
 use gpui::{
     AnyElement, App, Context, FontWeight, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled, Window, div, prelude::*,
@@ -540,6 +540,26 @@ impl SettingsWindow {
             ))
             .child(row(
                 ui,
+                "Background opacity",
+                Some("Text and colored cells stay opaque. Needs a compositor to see through"),
+                stepper(
+                    "opacity",
+                    format!("{:.0} %", s.terminal.opacity * 100.0),
+                    ui,
+                    client(|s| s.terminal.opacity = step_opacity(s.terminal.opacity, -1.0)),
+                    client(|s| s.terminal.opacity = step_opacity(s.terminal.opacity, 1.0)),
+                ),
+            ))
+            .when(s.terminal.is_transparent(), |d| {
+                d.child(row(
+                    ui,
+                    "Blur the background",
+                    Some("Where the desktop supports it (KDE Plasma, macOS, Windows)"),
+                    toggle("blur", s.terminal.blur, ui, client(|s| s.terminal.blur = !s.terminal.blur)),
+                ))
+            })
+            .child(row(
+                ui,
                 "Cursor",
                 Some("Programs like vim can still change it"),
                 segmented(
@@ -965,7 +985,50 @@ impl SettingsWindow {
                 ui,
                 "Paths count when the file exists, relative to the shell's directory. On a remote host, clicking copies the path.",
             ))
+            .child(section(ui, "Selection"))
+            .child(row(
+                ui,
+                "Copy selected text",
+                Some(if PRIMARY_SELECTION {
+                    "Selecting with the mouse copies right away. The primary selection is what a middle click pastes in any app"
+                } else {
+                    "Selecting with the mouse copies right away"
+                }),
+                segmented(
+                    "copy-on-select",
+                    // Without a primary selection, `primary` copies nowhere.
+                    if PRIMARY_SELECTION {
+                        &[
+                            (CopyOnSelect::Primary, "To the primary selection"),
+                            (CopyOnSelect::Clipboard, "Also to the clipboard"),
+                            (CopyOnSelect::Off, "No"),
+                        ]
+                    } else {
+                        &[(CopyOnSelect::Clipboard, "To the clipboard"), (CopyOnSelect::Primary, "No")]
+                    },
+                    &s.selection.copy_on_select,
+                    ui,
+                    |v, _, cx| AppSettings::update(cx, |s| s.selection.copy_on_select = v),
+                ),
+            ))
             .child(section(ui, "Pasting"))
+            .child(row(
+                ui,
+                "Middle click pastes",
+                Some("In programs that use the mouse themselves, hold Shift"),
+                segmented(
+                    "middle-click",
+                    // Without a primary selection, `primary` pastes the clipboard.
+                    if PRIMARY_SELECTION {
+                        &[(MiddleClick::Primary, "Primary selection"), (MiddleClick::Clipboard, "Clipboard"), (MiddleClick::Off, "Nothing")]
+                    } else {
+                        &[(MiddleClick::Primary, "Clipboard"), (MiddleClick::Off, "Nothing")]
+                    },
+                    &s.paste.middle_click,
+                    ui,
+                    |v, _, cx| AppSettings::update(cx, |s| s.paste.middle_click = v),
+                ),
+            ))
             .child(row(
                 ui,
                 "Ask before pasting",
@@ -1294,6 +1357,16 @@ impl Render for SettingsWindow {
 }
 
 /// A bool setting's default in a built-in plugin's manifest.
+/// Linux and FreeBSD have a primary selection (select to copy, middle
+/// click to paste); elsewhere those options collapse.
+const PRIMARY_SELECTION: bool = cfg!(any(target_os = "linux", target_os = "freebsd"));
+
+/// Opacity in 5 % steps, between the minimum and opaque.
+fn step_opacity(v: f32, dir: f32) -> f32 {
+    let steps = (v * 20.0).round() + dir;
+    (steps / 20.0).clamp(goatty_config::TerminalSettings::MIN_OPACITY, 1.0)
+}
+
 fn builtin_bool_default(id: &str, key: &str) -> bool {
     goatty_shell::builtins::get(id)
         .and_then(|b| b.manifest().setting(key))
@@ -1311,5 +1384,14 @@ mod tests {
         assert!(looks_monospace("JetBrains Mono"));
         assert!(looks_monospace("Fira Code"));
         assert!(!looks_monospace("Noto Sans"));
+    }
+
+    #[test]
+    fn opacity_steps() {
+        assert_eq!(step_opacity(1.0, 1.0), 1.0);
+        assert_eq!(step_opacity(1.0, -1.0), 0.95);
+        // Off-grid values from the file snap to the grid.
+        assert_eq!(step_opacity(0.87, -1.0), 0.8);
+        assert_eq!(step_opacity(0.1, -1.0), goatty_config::TerminalSettings::MIN_OPACITY);
     }
 }

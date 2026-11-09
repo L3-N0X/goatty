@@ -6,10 +6,12 @@
 
 mod actions;
 mod app;
+mod askpass;
 mod cli;
 mod close_confirm;
 mod command_palette;
 mod commands;
+mod connect;
 mod paste_confirm;
 mod session;
 mod settings;
@@ -23,18 +25,24 @@ use anyhow::Result;
 use clap::Parser;
 use std::sync::Arc;
 
-use goatty_client::Connection;
+use goatty_client::{Connection, Endpoint};
 use goatty_config::OnLaunch;
 use goatty_shell::HostService;
 use goatty_term::TermSize;
 
+use crate::app::Start;
 use crate::cli::Cli;
-use crate::session::{AttachMode, Session};
+use crate::connect::ConnectPlan;
+use crate::session::Session;
 use crate::workspace::saved::{self, Startup};
 
-const CLIENT: &str = concat!("goatty ", env!("CARGO_PKG_VERSION"));
+pub const CLIENT: &str = concat!("goatty ", env!("CARGO_PKG_VERSION"));
 
 fn main() -> Result<()> {
+    // Started by ssh to ask a question (we set SSH_ASKPASS to ourselves).
+    if let Some(req) = goatty_client::askpass::request_from_env() {
+        askpass::run(req);
+    }
     let mut cli = Cli::parse();
     // Subcommands work without a window (and without a display).
     match cli.cmd.take() {
@@ -49,6 +57,8 @@ fn main() -> Result<()> {
 
     // Initial size is a guess; the terminal element resizes on first layout.
     let initial = TermSize::new(100, 30);
+    let mode = cli.attach_mode(on_launch == OnLaunch::New);
+    let open_settings = cli.settings.clone();
     let (startup, link) = match cli.endpoint()? {
         None => {
             // No daemon: this process owns the shell and the host settings.
@@ -57,31 +67,23 @@ fn main() -> Result<()> {
             log::info!("backend: local pty");
             (Startup::Session(Session::local(initial, &host, None)?), settings_window::HostLink::Local(host))
         }
-        Some(endpoint) => {
-            let conn = Connection::open(endpoint, CLIENT)?;
+        Some(Endpoint::Local) => {
+            let conn = Connection::open(Endpoint::Local, CLIENT)?;
             log::info!("backend: goattyd via {}", conn.endpoint().label());
-            let mode = cli.attach_mode(on_launch == OnLaunch::New);
-            // Reattaching brings back the last window's tabs and splits;
-            // without a saved layout, the newest detached session.
-            let restored = match mode {
-                AttachMode::Auto => saved::restore(&conn, initial).unwrap_or_else(|e| {
-                    log::warn!("restoring the last window: {e:#}");
-                    None
-                }),
-                _ => None,
-            };
-            let startup = match restored {
-                Some(r) => Startup::Restore(r),
-                None => Startup::Session(Session::daemon(conn.clone(), initial, mode, None)?),
-            };
-            (startup, settings_window::HostLink::Daemon(conn))
+            (saved::startup(&conn, initial, mode)?, settings_window::HostLink::Daemon(conn))
+        }
+        Some(Endpoint::Ssh(target)) if cli.plain => connect::plain_ssh(&target.host)?,
+        Some(mut endpoint) => {
+            // Remote: connect in a window that can ask about installing
+            // goattyd, with ssh's prompts in dialogs of their own.
+            if let Endpoint::Ssh(target) = &mut endpoint {
+                target.askpass = std::env::current_exe().ok();
+            }
+            app::run(Start::Connect(ConnectPlan { endpoint, mode, open_settings }));
+            return Ok(());
         }
     };
 
-    let spawner = match &link {
-        settings_window::HostLink::Local(host) => session::Spawner::Local(host.clone()),
-        settings_window::HostLink::Daemon(conn) => session::Spawner::Daemon(conn.clone()),
-    };
-    app::run(startup, spawner, link, cli.settings.clone());
+    app::run(Start::Ready { startup, link, open_settings });
     Ok(())
 }

@@ -108,6 +108,23 @@ pub fn prune(saved: SavedWorkspace, alive: &HashSet<SessionId>) -> Option<(Vec<R
 /// Claim the newest saved layout on `conn` and reattach its sessions.
 /// `None` when there is none, or none of its sessions could be attached
 /// (the caller then reattaches a single session as before). Blocks.
+/// What a window attached to `conn` starts with: the last window's saved
+/// layout when attaching automatically, else a single session.
+pub fn startup(conn: &Arc<Connection>, size: TermSize, mode: crate::session::AttachMode) -> Result<Startup> {
+    use crate::session::AttachMode;
+    let restored = match mode {
+        AttachMode::Auto => restore(conn, size).unwrap_or_else(|e| {
+            log::warn!("restoring the last window: {e:#}");
+            None
+        }),
+        _ => None,
+    };
+    Ok(match restored {
+        Some(r) => Startup::Restore(r),
+        None => Startup::Session(Session::daemon(conn.clone(), size, mode, None)?),
+    })
+}
+
 pub fn restore(conn: &Arc<Connection>, size: TermSize) -> Result<Option<Restored>> {
     let Some(info) = conn.claim_layout()? else { return Ok(None) };
     let saved: SavedWorkspace = match serde_json::from_str(&info.json) {
