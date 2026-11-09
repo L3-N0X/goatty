@@ -24,6 +24,7 @@ pub struct ClientSettings {
     pub links: LinkSettings,
     pub paste: PasteSettings,
     pub selection: SelectionSettings,
+    pub ssh: SshSettings,
     pub debug: DebugSettings,
 }
 
@@ -352,6 +353,84 @@ pub struct SelectionSettings {
     pub copy_on_select: CopyOnSelect,
 }
 
+/// The hosts goatty offers to connect to (command palette, settings).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SshSettings {
+    /// Also list the hosts in `~/.ssh/config` (and the files it includes).
+    pub discover: bool,
+    /// Hosts added by hand, and the choices made for hosts from
+    /// `~/.ssh/config` (matched by `host`).
+    pub hosts: Vec<SshHost>,
+}
+
+impl Default for SshSettings {
+    fn default() -> Self {
+        Self { discover: true, hosts: Vec::new() }
+    }
+}
+
+impl SshSettings {
+    pub fn get(&self, host: &str) -> Option<&SshHost> {
+        self.hosts.iter().find(|h| h.host == host)
+    }
+
+    /// Whether `host` connects with plain SSH.
+    pub fn plain(&self, host: &str) -> bool {
+        self.get(host).is_some_and(|h| h.plain)
+    }
+
+    /// Change the entry for `host` (created if missing). An entry left
+    /// without a name or a choice is removed when `keep` is false: hosts
+    /// from `~/.ssh/config` need no entry of their own.
+    pub fn edit(&mut self, host: &str, keep: bool, f: impl FnOnce(&mut SshHost)) {
+        let i = match self.hosts.iter().position(|h| h.host == host) {
+            Some(i) => i,
+            None => {
+                self.hosts.push(SshHost { host: host.into(), ..Default::default() });
+                self.hosts.len() - 1
+            }
+        };
+        f(&mut self.hosts[i]);
+        if !keep && self.hosts[i].name.is_none() && !self.hosts[i].plain {
+            self.hosts.remove(i);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SshHost {
+    /// What ssh is given: an alias from `~/.ssh/config`, `host` or `user@host`.
+    pub host: String,
+    /// Shown instead of `host`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Connect with plain SSH (`ssh host` in a local session) instead of
+    /// goatty's daemon on the host. Nothing is installed there.
+    pub plain: bool,
+}
+
+impl SshHost {
+    /// The name to show.
+    pub fn label(&self) -> &str {
+        self.name.as_deref().unwrap_or(&self.host)
+    }
+}
+
+/// Why `host` can't be given to ssh as a destination, if it can't.
+pub fn ssh_host_problem(host: &str) -> Option<&'static str> {
+    if host.is_empty() {
+        Some("it's empty")
+    } else if host.starts_with('-') {
+        Some("it can't start with -")
+    } else if host.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        Some("it can't contain spaces")
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct DebugSettings {
@@ -391,6 +470,23 @@ impl Document for ClientSettings {
                 self.links.file_opener = None;
             }
         }
+        let mut seen = std::collections::HashSet::new();
+        let mut i = 0;
+        self.ssh.hosts.retain_mut(|h| {
+            let path = format!("ssh.hosts.{i}");
+            i += 1;
+            h.host = h.host.trim().to_string();
+            h.name = h.name.take().map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+            if let Some(why) = ssh_host_problem(&h.host) {
+                issues.push(Issue::new(path, format!("host {:?}: {why}; ignored", h.host)));
+                return false;
+            }
+            if !seen.insert(h.host.clone()) {
+                issues.push(Issue::new(path, format!("{} is listed twice; the first entry counts", h.host)));
+                return false;
+            }
+            true
+        });
         for (key, problem) in keys::canonicalize_overrides(&mut self.keybindings) {
             issues.push(Issue::new(format!("keybindings.{key}"), problem));
         }
@@ -499,6 +595,28 @@ mod tests {
         let issues = s.validate();
         assert_eq!(issues[0].path, "links.file_opener");
         assert_eq!(s.links.file_opener, None);
+    }
+
+    #[test]
+    fn ssh_hosts_are_checked_and_edited() {
+        let mut s = ClientSettings::default();
+        let h = |host: &str, name: Option<&str>| SshHost { host: host.into(), name: name.map(Into::into), plain: false };
+        s.ssh.hosts =
+            vec![h(" box ", Some("  ")), h("-oProxyCommand=x", None), h("a b", None), h("box", Some("Box")), h("pi", Some(" Pi "))];
+        let issues = s.validate();
+        let paths: Vec<_> = issues.iter().map(|i| i.path.as_str()).collect();
+        assert_eq!(paths, ["ssh.hosts.1", "ssh.hosts.2", "ssh.hosts.3"]);
+        assert_eq!(s.ssh.hosts, [h("box", None), h("pi", Some("Pi"))]);
+        assert_eq!(s.ssh.hosts[1].label(), "Pi");
+
+        // A discovered host's choice comes and goes without leaving an empty entry.
+        s.ssh.edit("nas", false, |h| h.plain = true);
+        assert!(s.ssh.plain("nas"));
+        s.ssh.edit("nas", false, |h| h.plain = false);
+        assert!(s.ssh.get("nas").is_none());
+        // A host added by hand stays.
+        s.ssh.edit("box", true, |h| h.plain = false);
+        assert!(s.ssh.get("box").is_some());
     }
 
     #[test]

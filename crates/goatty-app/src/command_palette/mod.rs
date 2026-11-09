@@ -7,6 +7,10 @@
 //! first while the query is empty, and slightly ahead when scores tie), and
 //! emits [`PaletteEvent::Run`] with the chosen command. The workspace then
 //! closes it, focuses the terminal again, and runs the command there.
+//!
+//! The hosts to connect to (`crate::hosts`) are commands too, listed once
+//! something is typed. [`Scope::Hosts`] (Ctrl+Shift+H) lists only them and
+//! offers to connect to a typed `user@host` that isn't one of them.
 
 pub mod fuzzy;
 pub mod registry;
@@ -23,6 +27,7 @@ use gpui::{
 
 pub use registry::{Command, CommandRegistry, register_builtins};
 
+use crate::hosts::{self, HostList};
 use crate::settings::AppSettings;
 use crate::ui::controls::pretty_keys;
 use crate::ui::style::Ui;
@@ -74,6 +79,18 @@ pub fn bindings(toggle_keys: &[String], cx: &App) -> Vec<KeyBinding> {
     v
 }
 
+/// What the palette lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Every command, hosts once something is typed.
+    All,
+    /// Only the hosts to connect to.
+    Hosts,
+}
+
+/// The settings page for hosts, listed last in [`Scope::Hosts`].
+const MANAGE_HOSTS: &str = "settings.hosts";
+
 /// What the palette tells the workspace.
 pub enum PaletteEvent {
     /// Close without running anything.
@@ -100,6 +117,8 @@ pub struct Entry<'a> {
     pub title_start: usize,
     pub keywords: &'a [SharedString],
     pub recent_rank: Option<usize>,
+    /// Left out while the query is empty, unless recently used.
+    pub only_when_searched: bool,
 }
 
 /// Rank `entries` for `query`. An empty query lists recently used commands
@@ -107,7 +126,8 @@ pub struct Entry<'a> {
 pub fn rank(entries: &[Entry<'_>], query: &str) -> Vec<Hit> {
     let words: Vec<&str> = query.split_whitespace().collect();
     if words.is_empty() {
-        let mut idx: Vec<usize> = (0..entries.len()).collect();
+        let mut idx: Vec<usize> =
+            (0..entries.len()).filter(|&i| !entries[i].only_when_searched || entries[i].recent_rank.is_some()).collect();
         idx.sort_by(|&a, &b| {
             let (ea, eb) = (&entries[a], &entries[b]);
             (ea.recent_rank.is_none(), ea.recent_rank, ea.label.to_lowercase()).cmp(&(
@@ -157,6 +177,26 @@ pub fn rank(entries: &[Entry<'_>], query: &str) -> Vec<Hit> {
     scored.into_iter().map(|(_, h)| h).collect()
 }
 
+/// Pretty shortcuts of `c` ("Ctrl+,").
+fn shortcuts(c: &Command, overrides: &std::collections::BTreeMap<String, Option<String>>) -> Vec<SharedString> {
+    c.key_action()
+        .map(|a| {
+            goatty_config::keys::keys_for(a, overrides).iter().take(MAX_SHORTCUTS).map(|k| SharedString::from(pretty_keys(k))).collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The host typed into [`Scope::Hosts`], when it can be one and isn't
+/// listed already (`ids`: the listed commands').
+pub fn typed_host<'a>(query: &str, mut ids: impl Iterator<Item = &'a str>) -> Option<String> {
+    let host = query.trim();
+    if goatty_config::ssh_host_problem(host).is_some() {
+        return None;
+    }
+    let id = format!("ssh.host:{host}");
+    (!ids.any(|i| i == id)).then(|| host.to_string())
+}
+
 /// How part of a label is drawn (the rest is plain text).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Span {
@@ -185,14 +225,18 @@ pub fn label_spans(title_start: usize, matches: &[Range<usize>]) -> Vec<(Range<u
 }
 
 pub struct CommandPalette {
+    scope: Scope,
     input: Entity<TextInput>,
+    /// The listed commands, then (in [`Scope::Hosts`]) the typed host.
     commands: Vec<Rc<Command>>,
+    /// How many of `commands` are listed ones.
+    listed: usize,
     labels: Vec<SharedString>,
     /// Pretty shortcuts per command ("Ctrl+,").
     shortcuts: Vec<Vec<SharedString>>,
     hits: Vec<Hit>,
     selected: usize,
-    query_empty: bool,
+    query: String,
     scroll: UniformListScrollHandle,
     history: CommandHistory,
     history_path: Option<PathBuf>,
@@ -208,60 +252,101 @@ impl Focusable for CommandPalette {
 }
 
 impl CommandPalette {
-    /// A palette over the registered commands, with the user's history.
-    pub fn new(window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
-        Self::with_history(goatty_config::command_history::history_file(), window, cx)
+    /// A palette over `scope`, with the user's history.
+    pub fn new(scope: Scope, window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
+        Self::with_history(scope, goatty_config::command_history::history_file(), window, cx)
     }
 
-    pub fn with_history(history_path: Option<PathBuf>, window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
-        let commands: Vec<Rc<Command>> = cx.try_global::<CommandRegistry>().map(|r| r.commands().to_vec()).unwrap_or_default();
-        let overrides = &cx.global::<AppSettings>().client.keybindings;
-        let labels = commands.iter().map(|c| SharedString::from(c.label())).collect();
-        let shortcuts = commands
-            .iter()
-            .map(|c| {
-                c.key_action()
-                    .map(|a| {
-                        let keys = goatty_config::keys::keys_for(a, overrides);
-                        keys.iter().take(MAX_SHORTCUTS).map(|k| SharedString::from(pretty_keys(k))).collect()
-                    })
-                    .unwrap_or_default()
-            })
-            .collect();
+    pub fn with_history(scope: Scope, history_path: Option<PathBuf>, window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
         // A small file, read once per opening (like the color picker's history).
         let history = history_path.as_deref().map(CommandHistory::load).unwrap_or_default();
-        let input = cx.new(|cx| TextInput::new("Type a command…", "", cx));
+        let placeholder = match scope {
+            Scope::All => "Type a command…",
+            Scope::Hosts => "Connect to… (a host below, or user@host)",
+        };
+        let input = cx.new(|cx| TextInput::new(placeholder, "", cx));
         let sub = cx.subscribe_in(&input, window, |this, _, ev: &TextInputEvent, _window, cx| match ev {
             TextInputEvent::Changed(q) => this.set_query(q, cx),
             TextInputEvent::Submitted(_) => this.confirm(cx),
         });
+        // `~/.ssh/config` is re-read in the background; list what it has now.
+        let hosts_changed = cx.observe_global::<HostList>(|this, cx| {
+            this.load_commands(cx);
+            let q = std::mem::take(&mut this.query);
+            this.set_query(&q, cx);
+        });
+        hosts::refresh(cx);
         input.focus_handle(cx).focus(window, cx);
         let mut this = Self {
+            scope,
             input,
-            commands,
-            labels,
-            shortcuts,
+            commands: Vec::new(),
+            listed: 0,
+            labels: Vec::new(),
+            shortcuts: Vec::new(),
             hits: Vec::new(),
             selected: 0,
-            query_empty: true,
+            query: String::new(),
             scroll: UniformListScrollHandle::new(),
             history,
             history_path,
-            _subscriptions: vec![sub],
+            _subscriptions: vec![sub, hosts_changed],
         };
+        this.load_commands(cx);
         this.set_query("", cx);
         this
     }
 
+    /// The commands to list: the registry's and the hosts, or only the hosts.
+    fn load_commands(&mut self, cx: &mut Context<'_, Self>) {
+        let registry = cx.try_global::<CommandRegistry>().map(|r| r.commands().to_vec()).unwrap_or_default();
+        let hosts = hosts::current(cx).into_iter().map(|e| Rc::new(hosts::command(&e)));
+        self.commands = match self.scope {
+            Scope::All => registry.into_iter().chain(hosts).collect(),
+            Scope::Hosts => hosts.chain(registry.into_iter().filter(|c| c.id == MANAGE_HOSTS)).collect(),
+        };
+        self.listed = self.commands.len();
+        let overrides = &cx.global::<AppSettings>().client.keybindings;
+        self.labels = self.commands.iter().map(|c| SharedString::from(c.label())).collect();
+        self.shortcuts = self.commands.iter().map(|c| shortcuts(c, overrides)).collect();
+    }
+
     fn set_query(&mut self, query: &str, cx: &mut Context<'_, Self>) {
+        self.commands.truncate(self.listed);
+        self.labels.truncate(self.listed);
+        self.shortcuts.truncate(self.listed);
         let entries: Vec<Entry<'_>> = self
             .commands
             .iter()
             .zip(&self.labels)
-            .map(|(c, label)| Entry { label, title_start: c.title_start(), keywords: &c.keywords, recent_rank: self.history.rank(&c.id) })
+            .map(|(c, label)| Entry {
+                label,
+                title_start: c.title_start(),
+                keywords: &c.keywords,
+                recent_rank: self.history.rank(&c.id),
+                only_when_searched: c.only_when_searched && self.scope == Scope::All,
+            })
             .collect();
         self.hits = rank(&entries, query);
-        self.query_empty = query.trim().is_empty();
+        if self.scope == Scope::Hosts {
+            // Adding hosts comes after the hosts.
+            if let Some(i) = self.hits.iter().position(|h| self.commands[h.index].id == MANAGE_HOSTS) {
+                let manage = self.hits.remove(i);
+                self.hits.push(manage);
+            }
+            if let Some(host) = typed_host(query, self.commands.iter().map(|c| c.id.as_ref())) {
+                let c = Rc::new(hosts::typed_command(&host));
+                self.labels.push(c.label().into());
+                self.shortcuts.push(Vec::new());
+                self.commands.push(c);
+                let hit = Hit { index: self.commands.len() - 1, positions: Vec::new(), recent: false };
+                // `user@host` is clearly an address; a bare word may be a
+                // typo of a listed host, which stays first.
+                let first = host.contains('@') || self.hits.iter().all(|h| self.commands[h.index].id == MANAGE_HOSTS);
+                self.hits.insert(if first { 0 } else { self.hits.len() }, hit);
+            }
+        }
+        self.query = query.to_string();
         self.select(0, cx);
     }
 
@@ -345,7 +430,8 @@ impl CommandPalette {
                     )
                 }));
                 let keys = self.shortcuts[hit.index].clone();
-                let recent = hit.recent && self.query_empty;
+                let detail = self.commands[hit.index].detail.clone();
+                let recent = hit.recent && self.query.trim().is_empty();
                 Some(
                     div()
                         .id(ix)
@@ -370,6 +456,7 @@ impl CommandPalette {
                                 .items_center()
                                 .text_xs()
                                 .text_color(ui.muted)
+                                .when_some(detail, |d, text| d.child(text))
                                 .when(recent, |d| d.child("recently used"))
                                 .children(
                                     keys.into_iter()
@@ -389,7 +476,11 @@ impl Render for CommandPalette {
         let ui_font = cx.global::<AppSettings>().ui_font.clone();
         let rows = self.hits.len().min(MAX_VISIBLE_ROWS);
         let list = if self.hits.is_empty() {
-            div().px_4().py_3().text_color(ui.muted).child("No matching commands").into_any_element()
+            let empty = match self.scope {
+                Scope::All => "No matching commands",
+                Scope::Hosts => "No hosts yet: type user@host, or add hosts in Settings → Hosts",
+            };
+            div().px_4().py_3().text_color(ui.muted).child(empty).into_any_element()
         } else {
             let list =
                 uniform_list("commands", self.hits.len(), cx.processor(move |this, range, _window, cx| this.render_rows(range, ui, cx)))
@@ -441,6 +532,7 @@ mod tests {
                 title_start: label.find(": ").map_or(0, |i| i + 2),
                 keywords,
                 recent_rank: *recent_rank,
+                only_when_searched: false,
             })
             .collect()
     }
@@ -491,6 +583,27 @@ mod tests {
     }
 
     #[test]
+    fn hosts_show_once_searched_or_used() {
+        let none: &[SharedString] = &[];
+        let data = [("Tabs: New tab", none, None), ("SSH: Connect to box", none, None), ("SSH: Connect to pi", none, Some(0))];
+        let mut e = entries(&data);
+        e[1].only_when_searched = true;
+        e[2].only_when_searched = true;
+        assert_eq!(labels(&e, &rank(&e, "")), ["SSH: Connect to pi", "Tabs: New tab"]);
+        assert_eq!(labels(&e, &rank(&e, "box")), ["SSH: Connect to box"]);
+    }
+
+    #[test]
+    fn typed_hosts() {
+        let ids = ["ssh.host:box", "settings.hosts"];
+        assert_eq!(typed_host(" pi@10.0.0.5 ", ids.into_iter()).as_deref(), Some("pi@10.0.0.5"));
+        assert_eq!(typed_host("box", ids.into_iter()), None, "listed already");
+        assert_eq!(typed_host("", ids.into_iter()), None);
+        assert_eq!(typed_host("two words", ids.into_iter()), None);
+        assert_eq!(typed_host("-oProxyCommand=x", ids.into_iter()), None);
+    }
+
+    #[test]
     fn category_is_muted_around_matches() {
         use Span::*;
         // "Settings: Open settings", title at 10.
@@ -508,7 +621,13 @@ mod tests {
         let e: Vec<Entry<'_>> = cmds
             .iter()
             .zip(&label_strings)
-            .map(|(c, l)| Entry { label: l, title_start: c.title_start(), keywords: &c.keywords, recent_rank: None })
+            .map(|(c, l)| Entry {
+                label: l,
+                title_start: c.title_start(),
+                keywords: &c.keywords,
+                recent_rank: None,
+                only_when_searched: c.only_when_searched,
+            })
             .collect();
         let top = |q: &str| e[rank(&e, q).first().unwrap_or_else(|| panic!("nothing for {q:?}")).index].label.to_string();
         assert_eq!(top("open settings"), "Settings: Open settings");
@@ -522,6 +641,8 @@ mod tests {
         assert_eq!(top("paste"), "Terminal: Paste");
         assert_eq!(top("theme"), "Themes: Open the themes folder");
         assert_eq!(top("quit"), "goatty: Quit");
+        assert_eq!(top("ssh"), "SSH: Connect to a host…");
+        assert_eq!(top("connect"), "SSH: Connect to a host…");
         assert!(rank(&e, "qqqq").is_empty());
     }
 }

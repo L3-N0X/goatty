@@ -34,6 +34,7 @@ pub static ACTIONS: &[ActionInfo] = &[
     ActionInfo { name: "reset_font_size", label: "Reset text size" },
     ActionInfo { name: "open_settings", label: "Open settings" },
     ActionInfo { name: "command_palette", label: "Show the command palette" },
+    ActionInfo { name: "connect_to_host", label: "Connect to a host (SSH)" },
     ActionInfo { name: "reload_shells", label: "Reload running shells (pick up shell settings)" },
     ActionInfo { name: "new_tab", label: "New tab" },
     ActionInfo { name: "close_pane", label: "Close the pane (the tab with its last pane)" },
@@ -90,6 +91,7 @@ pub static DEFAULT_BINDINGS: &[(&str, &str)] = &[
     ("ctrl-0", "reset_font_size"),
     ("ctrl-,", "open_settings"),
     ("ctrl-shift-p", "command_palette"),
+    ("ctrl-shift-h", "connect_to_host"),
     // Tabs. Alt+digit and Alt+arrows fall through to the shell when there's
     // no such tab or pane, so a single pane loses nothing.
     ("ctrl-shift-t", "new_tab"),

@@ -18,6 +18,7 @@
 //!   prompts for the GUI.
 //! * [`service`] knows about goattyd's systemd user units (starting the
 //!   socket instead of a detached daemon when they're installed).
+//! * [`ssh_config`] lists the hosts in `~/.ssh/config` for the GUI's host list.
 
 pub mod askpass;
 mod connection;
@@ -25,6 +26,7 @@ pub mod control;
 mod handshake;
 pub mod remote;
 pub mod service;
+pub mod ssh_config;
 pub mod transport;
 
 pub use connection::{Connection, HostSettingsApplied, HostSettingsReply};

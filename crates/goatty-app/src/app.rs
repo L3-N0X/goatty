@@ -26,6 +26,8 @@ pub fn run(start: Start) {
         cx.on_action(|_: &OpenSettings, cx| settings_window::open(cx));
         cx.on_action(|_: &ReloadShells, cx| reload_shells(cx));
         command_palette::register_builtins(cx);
+        // `~/.ssh/config`'s hosts, ready for the palette.
+        crate::hosts::refresh(cx);
 
         match start {
             Start::Ready { startup, link, open_settings } => open_terminal_window(cx, startup, link, open_settings),

@@ -85,6 +85,14 @@ pub enum Spawner {
 }
 
 impl Spawner {
+    /// Where this window's host settings live.
+    pub fn host_link(&self) -> crate::settings_window::HostLink {
+        match self {
+            Spawner::Local(host) => crate::settings_window::HostLink::Local(host.clone()),
+            Spawner::Daemon(conn) => crate::settings_window::HostLink::Daemon(conn.clone()),
+        }
+    }
+
     /// A new shell, started in `cwd` when given (a path on the session's
     /// host). Blocks on the daemon's reply: call it off the UI thread.
     pub fn spawn(&self, size: TermSize, cwd: Option<String>) -> Result<Arc<Session>> {

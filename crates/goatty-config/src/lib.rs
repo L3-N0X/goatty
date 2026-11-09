@@ -44,7 +44,8 @@ use std::path::PathBuf;
 
 pub use client::{
     ClientSettings, CopyOnSelect, CursorShape, DebugSettings, FontSettings, LinkClick, LinkSettings, MiddleClick, OnLaunch, PaneSettings,
-    PasteConfirm, PasteSettings, Renderer, SelectionSettings, TabBarShow, TabSettings, TabStyle, TerminalSettings, WorkspaceSettings,
+    PasteConfirm, PasteSettings, Renderer, SelectionSettings, SshHost, SshSettings, TabBarShow, TabSettings, TabStyle, TerminalSettings,
+    WorkspaceSettings, ssh_host_problem,
 };
 pub use color_history::ColorHistory;
 pub use colorspace::ColorFormat;

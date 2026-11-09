@@ -41,6 +41,15 @@ pub struct GenRow {
 }
 
 impl HostLink {
+    /// The same connection (or the same local host).
+    pub fn same(&self, other: &HostLink) -> bool {
+        match (self, other) {
+            (HostLink::Daemon(a), HostLink::Daemon(b)) => Arc::ptr_eq(a, b),
+            (HostLink::Local(a), HostLink::Local(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+
     /// "this computer" or `user@host`.
     pub fn label(&self) -> String {
         match self {

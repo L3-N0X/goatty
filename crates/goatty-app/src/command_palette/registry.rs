@@ -51,6 +51,11 @@ pub struct Command {
     pub title: SharedString,
     /// Other words people might search for ("preferences", "config").
     pub keywords: Vec<SharedString>,
+    /// Shown muted on the right (a host's `user@hostname`).
+    pub detail: Option<SharedString>,
+    /// Listed only once something is typed (or after it was used): the
+    /// hosts, which would otherwise crowd the full list.
+    pub only_when_searched: bool,
     pub source: Source,
     pub run: Run,
 }
@@ -73,6 +78,8 @@ impl Command {
             category: SharedString::from(category.to_owned()),
             title: SharedString::from(title.to_owned()),
             keywords: Vec::new(),
+            detail: None,
+            only_when_searched: false,
             source: Source::Builtin,
             run,
         }
@@ -201,6 +208,7 @@ pub fn builtins() -> Vec<Command> {
             &["launch", "tab bar", "style", "compact", "icons", "split", "dim"],
         ),
         page("settings.profile", "Profile: export and import", Page::Profile, &["backup", "sync"]),
+        page("settings.hosts", "Hosts: add hosts, plain SSH", Page::Hosts, &["ssh", "remote", "servers", "connect"]),
         Command::handler("settings.open_file", "Settings", "Open settings.json in an editor", |_, cx| {
             let Some(path) = goatty_config::client_file() else {
                 toast::show(cx, Toast::error("Can't find settings.json").body("Neither $XDG_CONFIG_HOME nor $HOME is set."));
@@ -231,6 +239,8 @@ pub fn builtins() -> Vec<Command> {
             toast::show(cx, Toast::info("Opening the themes folder").body(dir.display().to_string()).key("themes.open_folder"));
         })
         .keywords(&["directory", "files"]),
+        Command::action("ssh.connect", "SSH", "Connect to a host…", "connect_to_host")
+            .keywords(&["remote", "server", "hosts", "goattyd", "open"]),
         Command::action("shell.reload", "Shell", "Reload running shells", "reload_shells")
             .keywords(&["restart", "refresh", "zsh", "apply", "source"]),
         Command::action("terminal.copy", "Terminal", "Copy the selection", "copy").keywords(&["clipboard"]),

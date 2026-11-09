@@ -31,7 +31,7 @@ Rules:
 - **Client vs host settings** (#14): `ClientSettings` (`settings.json`) is read by the app; `HostSettings` (`host.json`) by goattyd/`HostService` on its own host. The GUI edits host settings through the protocol (`GetHostSettings`, `SetHostSettings`, …), never by writing a remote file. See [`profiles.md`](profiles.md).
 - **`goatty-plugin` knows the format, not the host.** Manifests, settings schema, templates, permissions, zsh rendering, the signed index and the JSON API live there with no knowledge of `Dirs`; `goatty-shell::plugins` decides where things go. The authoring/registry CLI (`goatty-plugin`) depends on nothing else in the workspace, so registry CI builds it quickly. See [`plugins.md`](plugins.md).
 - **Settings come from `goatty-config`.** Don't read `GOATTY_*` variables elsewhere (the exceptions: `GOATTY_SOCKET`, a location, in `goatty_proto::socket_path`; `GOATTY_ASKPASS`, goatty's marker to itself as ssh's askpass, in `goatty_client::askpass`).
-- **Remote hosts** (`goatty-client`): `transport` (endpoints; ssh with captured stderr and askpass), `remote` (the connect script and its `goatty-remote:` probe line, `RemoteProblem`, install/stop over ssh, bundled binaries), `askpass` (decode ssh's question), `service` (systemd user units). The app turns `RemoteProblem`s into questions in `connect.rs`. See [`remote-architecture.md`](remote-architecture.md) §5a/§5b.
+- **Remote hosts** (`goatty-client`): `transport` (endpoints; ssh with captured stderr and askpass), `remote` (the connect script and its `goatty-remote:` probe line, `RemoteProblem`, install/stop over ssh, bundled binaries), `askpass` (decode ssh's question), `service` (systemd user units), `ssh_config` (the hosts in `~/.ssh/config`, for the host list). The app turns `RemoteProblem`s into questions in `connect.rs`. See [`remote-architecture.md`](remote-architecture.md) §5a/§5b.
 
 ## Daemon (`crates/goatty-daemon`)
 
@@ -73,7 +73,7 @@ app.rs         GPUI bootstrap: settings, host link, main window, OpenSettings ha
 settings.rs    AppSettings global: client settings file ⇄ live values, file polling, keybindings
 actions.rs     actions, name → action map, loading user keybindings (Terminal key context)
 command_palette/
-  mod.rs       the Ctrl+Shift+P overlay: ranking (fuzzy + keywords + recently used), list, keys
+  mod.rs       the Ctrl+Shift+P overlay: ranking (fuzzy + keywords + recently used), list, keys; hosts once something is typed; `Scope::Hosts` (Ctrl+Shift+H): only the hosts, plus a typed user@host
   registry.rs  Command (id, category, title, keywords, action or handler), CommandRegistry global, built-ins
   fuzzy.rs     fzf-style matcher: word starts, consecutive runs, gaps; any word order; highlight positions
 settings_window/
@@ -81,6 +81,7 @@ settings_window/
   host.rs      HostLink: the daemon connection or the local HostService
   pages.rs     rendering of every page
 settings_window/plugins.rs  the Plugins page: catalog, install review (plan), schema-driven setting controls
+settings_window/hosts.rs    the Hosts page: add/remove hosts, plain SSH per host, `~/.ssh/config` discovery
 toast/
   mod.rs       Toast (level, title, body, buttons, key, lifetime) and the API: show/show_in/update/dismiss/dismiss_all, routed to a window's layer
   stack.rs     one window's toasts without UI: replace by key, eviction, pausable timers (unit-tested with explicit clocks)
@@ -99,6 +100,7 @@ workspace/
   saved.rs     the window's layout as goattyd keeps it (JSON: tabs, split trees with session ids, names, focus, zoom); `restore` claims and reattaches it
 close_confirm.rs  "Close this pane?" dialog when a program other than the shell still runs (`panes.confirm_close`, "Don't ask again")
 connect.rs     connect window for remote endpoints: connects off the UI thread, turns RemoteProblem into questions (install / update and restart / plain SSH), opens the terminal window
+hosts.rs       hosts to connect to: `ssh.hosts` + `~/.ssh/config` (`HostList` global, read in the background), palette commands, `connect` → connect window
 askpass.rs     goatty as ssh's SSH_ASKPASS: one window per prompt (passphrase, host key, confirm), answer on stdout
 paste_confirm.rs  "Paste this?" dialog: risks, preview with control/invisible chars marked, paste as is / cleaned / as one line
 session.rs     a pane's data: local PTY or goattyd session → mirror Terminal; coalescing waker; foreground program; `Spawner` for new panes
@@ -145,7 +147,7 @@ Input: GPUI dispatches a bound action before the view's raw `on_key_down`. Short
 | New theme import format                | `goatty-config/src/theme_import.rs` (detect + parse to `ThemeColors`) |
 | Settings migration                     | bump `Document::VERSION`, add `(from, fn(&mut Value))` to `migrations()` |
 | FDSTORE / shells across restarts (#131) | `goatty-daemon/src/server.rs` (restore), `goatty-client/src/service.rs` (unit options) |
-| Host list / switcher (#4)              | a GPUI view that builds `ConnectPlan`s for `connect.rs`; per-host "plain SSH" choice in client settings |
+| Host list / switcher (#4)              | the host list is `hosts.rs` (palette) + `settings_window/hosts.rs`; per-host data in `goatty-config` `SshSettings`; `~/.ssh/config` parsing in `goatty-client/src/ssh_config.rs`. OS/RTT and a session picker: `Connection::host()`/`rtt()`/`list_sessions` |
 | A plugin feature (new manifest field)  | `goatty-plugin/src/manifest.rs` (+ validation, permissions if it can run code), rendering in `goatty-plugin/src/zsh.rs`, document it in `docs/plugins.md` and the template |
 | A plugin operation (GUI/CLI)           | `goatty_plugin::api::Request`/`Reply` (no protocol bump), `HostService::plugin_request`, `settings_window/plugins.rs`, `plugins/cmd.rs` |
 | New wire messages                      | `goatty-proto/src/msg.rs`: a new variant at the *end* (append-only), bump `PROTOCOL_VERSION`, mark it `vN:`; handle in `goatty-daemon/src/client.rs` and `goatty-client/src/connection.rs`, which must not send it to a daemon that agreed on an older version (`Connection::protocol_version`) |

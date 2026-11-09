@@ -38,6 +38,8 @@ actions!(
         OpenSettings,
         /// Show the command palette (or close it).
         ToggleCommandPalette,
+        /// The command palette with only the hosts to connect to.
+        ConnectToHost,
         /// Ask the host's running managed shells to reload their configuration.
         ReloadShells,
     ]
@@ -93,6 +95,7 @@ pub fn action_by_name(name: &str) -> Option<Box<dyn Action>> {
         "reset_font_size" => Box::new(ResetFontSize),
         "open_settings" => Box::new(OpenSettings),
         "command_palette" => Box::new(ToggleCommandPalette),
+        "connect_to_host" => Box::new(ConnectToHost),
         "reload_shells" => Box::new(ReloadShells),
         "new_tab" => Box::new(NewTab),
         "close_pane" => Box::new(ClosePane),
