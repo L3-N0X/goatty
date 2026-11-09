@@ -3,13 +3,13 @@
 //! `~/.ssh/config` are client settings (`ssh` in `settings.json`), saved
 //! right away.
 
-use goatty_config::{SshHost, ssh_host_problem};
+use goatty_config::{OpenIn, SshHost, ssh_host_problem};
 use gpui::{AnyElement, App, Context, Entity, IntoElement, ParentElement, Styled, Subscription, div, prelude::*};
 
 use super::SettingsWindow;
 use crate::hosts::{self, HostEntry, HostList};
 use crate::settings::AppSettings;
-use crate::ui::controls::{ButtonKind, button, note, notice, row, section, toggle};
+use crate::ui::controls::{ButtonKind, button, note, notice, row, section, segmented, toggle};
 use crate::ui::style::Ui;
 use crate::ui::text_input::{TextInput, TextInputEvent};
 
@@ -104,19 +104,28 @@ impl SettingsWindow {
 
     pub(super) fn hosts_page(&self, ui: Ui, cx: &Context<'_, Self>) -> AnyElement {
         let settings = &cx.global::<AppSettings>().file.value.ssh;
-        let discover = settings.discover;
+        let (discover, open_in) = (settings.discover, settings.open_in);
         let entries = hosts::current(cx);
         let (added, found): (Vec<_>, Vec<_>) = entries.iter().partition(|e| !e.discovered);
         let mut page = div().flex().flex_col().child(note(
             ui,
-            "The hosts the command palette offers: Ctrl+Shift+H lists them (and connects to any user@host you type), or type a \
-             host's name into Ctrl+Shift+P. Each host opens in a window of its own.",
+            "The hosts the command palette offers: Ctrl+Shift+H lists them with their sessions (and connects to any user@host \
+             you type), or type a host's name into Ctrl+Shift+P. A window can hold tabs on several hosts.",
         ));
         page = page.child(note(
             ui,
             "goatty runs its session daemon, goattyd, on the host, so shells survive disconnects and get goatty's shell setup. \
              When it isn't installed there, goatty asks before copying it over (to ~/.local/share/goatty, no sudo). Plain SSH \
              runs ssh in a local session instead and installs nothing.",
+        ));
+
+        page = page.child(section(ui, "Connecting")).child(row(
+            ui,
+            "Open hosts in",
+            Some("Where a host you pick opens. In the session list, Shift+Enter opens it the other way"),
+            segmented("ssh-open-in", &[(OpenIn::Window, "A new window"), (OpenIn::Tab, "A new tab")], &open_in, ui, |v, _, cx| {
+                AppSettings::update(cx, |s| s.ssh.open_in = v)
+            }),
         ));
 
         page = page.child(section(ui, "Add a host")).child(

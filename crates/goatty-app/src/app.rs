@@ -7,20 +7,21 @@ use crate::command_palette;
 use crate::connect::ConnectPlan;
 use crate::session::Spawner;
 use crate::settings::AppSettings;
-use crate::settings_window::{self, HostLink};
+use crate::settings_window;
 use crate::toast::{self, Toast};
 use crate::workspace::Workspace;
 use crate::workspace::saved::Startup;
 
-/// What the app starts with.
-pub enum Start {
-    /// A session to show right away (local daemon, `--local`, plain SSH).
-    Ready { startup: Startup, link: HostLink, open_settings: Option<String> },
-    /// A remote goattyd to connect to first (`crate::connect`).
+/// What a terminal window starts with.
+pub enum Initial {
+    /// A session to show right away (`--local`).
+    Ready { startup: Startup, spawner: Spawner },
+    /// A goattyd to connect to first: the window opens at once, its tab
+    /// shows the connect screen meanwhile (`crate::connect`, #37).
     Connect(ConnectPlan),
 }
 
-pub fn run(start: Start) {
+pub fn run(initial: Initial, open_settings: Option<String>) {
     gpui_platform::application().with_assets(crate::ui::icons::Assets).run(move |cx: &mut App| {
         AppSettings::init(cx);
         cx.on_action(|_: &OpenSettings, cx| settings_window::open(cx));
@@ -29,10 +30,7 @@ pub fn run(start: Start) {
         // `~/.ssh/config`'s hosts, ready for the palette.
         crate::hosts::refresh(cx);
 
-        match start {
-            Start::Ready { startup, link, open_settings } => open_terminal_window(cx, startup, link, open_settings),
-            Start::Connect(plan) => crate::connect::open(cx, plan),
-        }
+        open_terminal_window(cx, initial, open_settings);
         // Quit with the last window (the settings window may outlive the
         // terminal window briefly, or close first).
         cx.on_window_closed(|cx, _| {
@@ -45,14 +43,17 @@ pub fn run(start: Start) {
     });
 }
 
-/// Open the terminal window for `startup`; `link` is the host its settings
-/// window configures.
-pub fn open_terminal_window(cx: &mut App, startup: Startup, link: HostLink, open_settings: Option<String>) {
-    let spawner = match &link {
-        HostLink::Local(host) => Spawner::Local(host.clone()),
-        HostLink::Daemon(conn) => Spawner::Daemon(conn.clone()),
+/// Open a terminal window starting with `initial`. `open_settings`
+/// (`--settings[=PAGE]`) opens the settings window too, once the window's
+/// host is known.
+pub fn open_terminal_window(cx: &mut App, initial: Initial, open_settings: Option<String>) {
+    let (initial, open_settings) = match initial {
+        Initial::Connect(mut plan) => {
+            plan.open_settings = plan.open_settings.or(open_settings);
+            (Initial::Connect(plan), None)
+        }
+        ready => (ready, open_settings),
     };
-    settings_window::set_host_link(cx, Some(link));
     let bounds = Bounds::centered(None, size(px(960.), px(600.)), cx);
     let opened = cx.open_window(
         WindowOptions {
@@ -63,12 +64,16 @@ pub fn open_terminal_window(cx: &mut App, startup: Startup, link: HostLink, open
         },
         |window, cx| {
             window.set_window_title("goatty");
-            cx.new(|cx| Workspace::new(startup, spawner, window, cx))
+            cx.new(|cx| Workspace::new(initial, window, cx))
         },
     );
     if let Err(e) = opened {
         log::error!("couldn't open the terminal window: {e:#}");
-        cx.quit();
+        // From the command line there's nothing else; from the palette the
+        // other windows stay.
+        if cx.windows().is_empty() {
+            cx.quit();
+        }
         return;
     }
     if let Some(page) = open_settings {

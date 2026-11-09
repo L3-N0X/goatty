@@ -114,6 +114,11 @@ impl TextInput {
         cx.notify();
     }
 
+    pub fn set_placeholder(&mut self, placeholder: impl Into<SharedString>, cx: &mut Context<'_, Self>) {
+        self.placeholder = placeholder.into();
+        cx.notify();
+    }
+
     /// Replace the text without emitting `Changed`.
     pub fn set_text(&mut self, text: impl Into<SharedString>, cx: &mut Context<'_, Self>) {
         self.content = text.into();

@@ -362,11 +362,34 @@ pub struct SshSettings {
     /// Hosts added by hand, and the choices made for hosts from
     /// `~/.ssh/config` (matched by `host`).
     pub hosts: Vec<SshHost>,
+    /// Where a host picked in the palette or the settings opens.
+    pub open_in: OpenIn,
 }
 
 impl Default for SshSettings {
     fn default() -> Self {
-        Self { discover: true, hosts: Vec::new() }
+        Self { discover: true, hosts: Vec::new(), open_in: OpenIn::Window }
+    }
+}
+
+/// Where a connection to another host opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenIn {
+    /// A terminal window of its own.
+    #[default]
+    Window,
+    /// A new tab of the window it was picked from.
+    Tab,
+}
+
+impl OpenIn {
+    /// The other one (Shift+Enter in the session picker).
+    pub fn flip(self) -> Self {
+        match self {
+            OpenIn::Window => OpenIn::Tab,
+            OpenIn::Tab => OpenIn::Window,
+        }
     }
 }
 
@@ -595,6 +618,14 @@ mod tests {
         let issues = s.validate();
         assert_eq!(issues[0].path, "links.file_opener");
         assert_eq!(s.links.file_opener, None);
+    }
+
+    #[test]
+    fn hosts_open_in_a_window_unless_set_to_tabs() {
+        assert_eq!(ClientSettings::default().ssh.open_in, OpenIn::Window);
+        let s: ClientSettings = serde_json::from_str(r#"{"ssh":{"open_in":"tab"}}"#).unwrap();
+        assert_eq!((s.ssh.open_in, s.ssh.discover), (OpenIn::Tab, true));
+        assert_eq!(OpenIn::Tab.flip(), OpenIn::Window);
     }
 
     #[test]
