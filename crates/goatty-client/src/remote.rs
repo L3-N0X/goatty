@@ -211,11 +211,17 @@ pub fn stop_daemon(target: &SshTarget) -> Result<()> {
     Ok(())
 }
 
-/// The last few lines a command printed, for an error message.
+/// The last few lines a command printed, for an error message. A backtrace
+/// (goattyd's errors carry one when the host sets `RUST_BACKTRACE`) is cut
+/// off, so the message itself is what's left.
 fn last_words(stderr: &[u8], stdout: &[u8]) -> String {
     let text = if stderr.iter().any(|b| !b.is_ascii_whitespace()) { stderr } else { stdout };
     let text = String::from_utf8_lossy(text);
-    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let lines: Vec<&str> = text
+        .lines()
+        .take_while(|l| !l.trim_start().to_ascii_lowercase().starts_with("stack backtrace:"))
+        .filter(|l| !l.trim().is_empty())
+        .collect();
     if lines.is_empty() { "no output".into() } else { lines[lines.len().saturating_sub(3)..].join(" / ") }
 }
 
@@ -340,5 +346,7 @@ mod tests {
         assert!(own.this_build && own.path.ends_with("goattyd"));
         assert_eq!(find_bundled_near(dir.path(), "mips-linux"), None);
         assert_eq!(last_words(b"\n", b"a\nb\nc\nd\n"), "b / c / d");
+        let with_backtrace = b"Error: not a goattyd\n\nStack backtrace:\n   0: main\n   1: _start\n";
+        assert_eq!(last_words(with_backtrace, b""), "Error: not a goattyd");
     }
 }

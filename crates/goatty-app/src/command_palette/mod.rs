@@ -9,8 +9,13 @@
 //! closes it, focuses the terminal again, and runs the command there.
 //!
 //! The hosts to connect to (`crate::hosts`) are commands too, listed once
-//! something is typed. [`Scope::Hosts`] (Ctrl+Shift+H) lists only them and
-//! offers to connect to a typed `user@host` that isn't one of them.
+//! something is typed. [`Scope::Hosts`] (Ctrl+Shift+H) is the host
+//! switcher (#4): this computer and the hosts, with user@host, OS and
+//! round-trip time for the ones goatty is connected to, and a typed
+//! `user@host` that isn't one of them. Picking a host lists its sessions
+//! ([`Scope::Sessions`], fetched off the UI thread, connecting first when
+//! needed): Enter opens one, or a new one, where `ssh.open_in` says (a new
+//! tab or window), Shift+Enter the other way. Escape goes back to the hosts.
 
 pub mod fuzzy;
 pub mod registry;
@@ -18,18 +23,23 @@ pub mod registry;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
-use goatty_config::CommandHistory;
+use goatty_client::Connection;
+use goatty_config::{CommandHistory, OpenIn};
+use goatty_proto::SessionInfo;
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, HighlightStyle, KeyBinding, ScrollStrategy, SharedString,
-    StyledText, Subscription, UniformListScrollHandle, Window, actions, div, prelude::*, px, uniform_list,
+    StyledText, Subscription, Task, UniformListScrollHandle, Window, actions, div, prelude::*, px, uniform_list,
 };
 
 pub use registry::{Command, CommandRegistry, register_builtins};
 
-use crate::hosts::{self, HostList};
+use crate::hosts::{self, HostList, HostRef, OpenRequest};
+use crate::session::AttachMode;
 use crate::settings::AppSettings;
 use crate::ui::controls::pretty_keys;
+use crate::ui::icons::Icon;
 use crate::ui::style::Ui;
 use crate::ui::text_input::{TextInput, TextInputEvent};
 
@@ -51,7 +61,7 @@ const RECENT_BONUS: i32 = 8;
 /// specific: "sett" prefers "Settings: Open settings" over "Settings: Shell".
 const TITLE_BONUS: i32 = 10;
 
-actions!(command_palette, [SelectNext, SelectPrevious, SelectFirst, SelectLast, PageDown, PageUp, Dismiss]);
+actions!(command_palette, [SelectNext, SelectPrevious, SelectFirst, SelectLast, PageDown, PageUp, Dismiss, ConfirmOther]);
 
 /// Key bindings inside the palette. `toggle_keys` are the keystrokes bound
 /// to opening it, which close it again.
@@ -69,6 +79,7 @@ pub fn bindings(toggle_keys: &[String], cx: &App) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-home", SelectFirst, c),
         KeyBinding::new("ctrl-end", SelectLast, c),
         KeyBinding::new("escape", Dismiss, c),
+        KeyBinding::new("shift-enter", ConfirmOther, c),
     ];
     for k in toggle_keys {
         match KeyBinding::load(k, Box::new(Dismiss), gpui::KeyBindingContextPredicate::parse(CONTEXT).ok().map(Rc::new), false, None, cx) {
@@ -80,12 +91,64 @@ pub fn bindings(toggle_keys: &[String], cx: &App) -> Vec<KeyBinding> {
 }
 
 /// What the palette lists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
     /// Every command, hosts once something is typed.
     All,
-    /// Only the hosts to connect to.
+    /// Only the hosts to connect to (this computer first).
     Hosts,
+    /// The sessions on a host, and a new one.
+    Sessions(HostRef),
+}
+
+/// The "new session" entry of [`Scope::Sessions`].
+const NEW_SESSION: &str = "session.new";
+
+/// What a session entry's id says to open.
+fn session_choice(id: &str) -> Option<AttachMode> {
+    if id == NEW_SESSION {
+        return Some(AttachMode::New);
+    }
+    id.strip_prefix("session:")?.parse().ok().map(AttachMode::Id)
+}
+
+/// `5 min`, `3 h`, `2 d` since `created` (unix seconds).
+fn age(created: u64, now: u64) -> String {
+    let secs = now.saturating_sub(created);
+    match secs {
+        0..60 => "just now".into(),
+        60..3600 => format!("{} min", secs / 60),
+        3600..86400 => format!("{} h", secs / 3600),
+        _ => format!("{} d", secs / 86400),
+    }
+}
+
+/// The palette entry for a session: its title (else its program), with
+/// the program, directory, whether a window shows it and its age.
+fn session_command(s: &SessionInfo, now: u64) -> Command {
+    let process = s.process.as_deref().filter(|p| !p.is_empty());
+    let title = if !s.title.trim().is_empty() { s.title.trim().to_string() } else { process.unwrap_or("shell").to_string() };
+    let mut c = Command::handler(&format!("session:{}", s.id), "Session", &title, |_, _| {});
+    let mut words: Vec<&str> = Vec::new();
+    words.extend(process);
+    words.extend(s.cwd.as_deref());
+    c = c.keywords(&words);
+    let mut detail: Vec<String> = Vec::new();
+    if let Some(p) = process.filter(|p| !title.contains(p)) {
+        detail.push(p.to_string());
+    }
+    detail.push(if s.attached > 0 { "open".into() } else { "detached".into() });
+    detail.push(age(s.created_unix, now));
+    c.detail = Some(detail.join(" · ").into());
+    c
+}
+
+/// The sessions picker's entries: a new session, then the sessions, newest first.
+fn session_commands(mut list: Vec<SessionInfo>, host: &HostRef, now: u64) -> Vec<Rc<Command>> {
+    list.sort_by(|a, b| b.created_unix.cmp(&a.created_unix).then(b.id.cmp(&a.id)));
+    let mut new = Command::handler(NEW_SESSION, "Session", &format!("New session on {}", host.label()), |_, _| {});
+    new.detail = Some("a fresh shell".into());
+    std::iter::once(new).chain(list.iter().map(|s| session_command(s, now))).map(Rc::new).collect()
 }
 
 /// The settings page for hosts, listed last in [`Scope::Hosts`].
@@ -240,6 +303,12 @@ pub struct CommandPalette {
     scroll: UniformListScrollHandle,
     history: CommandHistory,
     history_path: Option<PathBuf>,
+    /// [`Scope::Sessions`]: the host's connection once made, its entries,
+    /// what's going on (`loading`: with a spinner), the fetch.
+    conn: Option<Arc<Connection>>,
+    sessions: Vec<Rc<Command>>,
+    status: Option<(SharedString, bool)>,
+    _load: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -260,11 +329,7 @@ impl CommandPalette {
     pub fn with_history(scope: Scope, history_path: Option<PathBuf>, window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
         // A small file, read once per opening (like the color picker's history).
         let history = history_path.as_deref().map(CommandHistory::load).unwrap_or_default();
-        let placeholder = match scope {
-            Scope::All => "Type a command…",
-            Scope::Hosts => "Connect to… (a host below, or user@host)",
-        };
-        let input = cx.new(|cx| TextInput::new(placeholder, "", cx));
+        let input = cx.new(|cx| TextInput::new(placeholder(&scope), "", cx));
         let sub = cx.subscribe_in(&input, window, |this, _, ev: &TextInputEvent, _window, cx| match ev {
             TextInputEvent::Changed(q) => this.set_query(q, cx),
             TextInputEvent::Submitted(_) => this.confirm(cx),
@@ -290,6 +355,10 @@ impl CommandPalette {
             scroll: UniformListScrollHandle::new(),
             history,
             history_path,
+            conn: None,
+            sessions: Vec::new(),
+            status: None,
+            _load: None,
             _subscriptions: vec![sub, hosts_changed],
         };
         this.load_commands(cx);
@@ -303,7 +372,11 @@ impl CommandPalette {
         let hosts = hosts::current(cx).into_iter().map(|e| Rc::new(hosts::command(&e)));
         self.commands = match self.scope {
             Scope::All => registry.into_iter().chain(hosts).collect(),
-            Scope::Hosts => hosts.chain(registry.into_iter().filter(|c| c.id == MANAGE_HOSTS)).collect(),
+            Scope::Hosts => std::iter::once(Rc::new(hosts::local_command()))
+                .chain(hosts)
+                .chain(registry.into_iter().filter(|c| c.id == MANAGE_HOSTS))
+                .collect(),
+            Scope::Sessions(_) => self.sessions.clone(),
         };
         self.listed = self.commands.len();
         let overrides = &cx.global::<AppSettings>().client.keybindings;
@@ -386,17 +459,117 @@ impl CommandPalette {
     }
 
     fn dismiss(&mut self, _: &Dismiss, _: &mut Window, cx: &mut Context<'_, Self>) {
+        // From a host's sessions back to the hosts.
+        if matches!(self.scope, Scope::Sessions(_)) {
+            self.show_scope(Scope::Hosts, cx);
+            return;
+        }
         cx.emit(PaletteEvent::Dismissed);
     }
 
     fn confirm(&mut self, cx: &mut Context<'_, Self>) {
-        self.run_hit(self.selected, cx);
+        self.run_hit(self.selected, false, cx);
     }
 
-    fn run_hit(&mut self, ix: usize, cx: &mut Context<'_, Self>) {
+    fn confirm_other(&mut self, _: &ConfirmOther, _: &mut Window, cx: &mut Context<'_, Self>) {
+        self.run_hit(self.selected, true, cx);
+    }
+
+    /// Switch to `scope` with an empty query.
+    fn show_scope(&mut self, scope: Scope, cx: &mut Context<'_, Self>) {
+        self.input.update(cx, |input, cx| {
+            input.set_text("", cx);
+            input.set_placeholder(placeholder(&scope), cx);
+        });
+        self.scope = scope;
+        self.conn = None;
+        self.sessions.clear();
+        self.status = None;
+        self._load = None;
+        self.load_commands(cx);
+        self.set_query("", cx);
+    }
+
+    /// The sessions picker for `host`: a new session right away, the
+    /// host's sessions once fetched (connecting first if no tab is on it).
+    fn show_sessions(&mut self, host: HostRef, cx: &mut Context<'_, Self>) {
+        let now = unix_now();
+        self.show_scope(Scope::Sessions(host.clone()), cx);
+        self.sessions = session_commands(Vec::new(), &host, now);
+        let endpoint = host.endpoint();
+        let label = if hosts::pool::live(&endpoint).is_some() {
+            "Loading sessions…".to_string()
+        } else {
+            format!("Connecting to {}…", host.label())
+        };
+        self.status = Some((label.into(), true));
+        self.load_commands(cx);
+        self.set_query("", cx);
+        self._load = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let conn = hosts::pool::open(endpoint)?;
+                    let list = conn.list_sessions()?;
+                    anyhow::Ok((conn, list))
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.scope != Scope::Sessions(host.clone()) {
+                    return;
+                }
+                match result {
+                    Ok((conn, list)) => {
+                        this.status = list.is_empty().then(|| (format!("No sessions on {} yet", host.label()).into(), false));
+                        this.sessions = session_commands(list, &host, unix_now());
+                        this.conn = Some(conn);
+                    }
+                    Err(e) => {
+                        let first = format!("{e:#}").lines().next().unwrap_or_default().to_string();
+                        let msg = format!("Couldn't list the sessions: {first}. A new session shows what goatty can do about it.");
+                        this.status = Some((msg.into(), false));
+                    }
+                }
+                this.load_commands(cx);
+                let q = std::mem::take(&mut this.query);
+                this.set_query(&q, cx);
+            });
+        }));
+    }
+
+    fn run_hit(&mut self, ix: usize, other_place: bool, cx: &mut Context<'_, Self>) {
         let Some(hit) = self.hits.get(ix) else { return };
         let command = self.commands[hit.index].clone();
-        if self.history.push(&command.id)
+        match &self.scope {
+            Scope::Sessions(host) => {
+                let Some(attach) = session_choice(&command.id) else { return };
+                let open_in = cx.global::<AppSettings>().client.ssh.open_in;
+                let place = if other_place { open_in.flip() } else { open_in };
+                let host = host.clone();
+                hosts::open(cx, OpenRequest { host, attach, conn: self.conn.clone(), place });
+                cx.emit(PaletteEvent::Dismissed);
+                return;
+            }
+            // A host: its sessions next (plain SSH hosts have none to list).
+            Scope::Hosts => {
+                if let Some(host) = HostRef::from_command_id(&command.id) {
+                    let plain = matches!(&host, HostRef::Ssh(h) if cx.global::<AppSettings>().client.ssh.plain(h));
+                    if !plain {
+                        self.remember(&command.id, cx);
+                        self.show_sessions(host, cx);
+                        return;
+                    }
+                }
+            }
+            Scope::All => {}
+        }
+        self.remember(&command.id, cx);
+        cx.emit(PaletteEvent::Run(command));
+    }
+
+    /// Put `id` first in the recently used list.
+    fn remember(&mut self, id: &str, cx: &mut Context<'_, Self>) {
+        if self.history.push(id)
             && let Some(path) = self.history_path.clone()
         {
             let history = self.history.clone();
@@ -407,7 +580,6 @@ impl CommandPalette {
             })
             .detach();
         }
-        cx.emit(PaletteEvent::Run(command));
     }
 
     fn render_rows(&mut self, range: std::ops::Range<usize>, ui: Ui, cx: &mut Context<'_, Self>) -> Vec<gpui::AnyElement> {
@@ -446,7 +618,7 @@ impl CommandPalette {
                         .cursor_pointer()
                         .when(selected, |d| d.bg(ui.surface_hover))
                         .when(!selected, |d| d.hover(|s| s.bg(ui.surface)))
-                        .on_click(cx.listener(move |this, _, _, cx| this.run_hit(ix, cx)))
+                        .on_click(cx.listener(move |this, _, _, cx| this.run_hit(ix, false, cx)))
                         .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().child(text))
                         .child(
                             div()
@@ -479,6 +651,7 @@ impl Render for CommandPalette {
             let empty = match self.scope {
                 Scope::All => "No matching commands",
                 Scope::Hosts => "No hosts yet: type user@host, or add hosts in Settings → Hosts",
+                Scope::Sessions(_) => "No matching sessions",
             };
             div().px_4().py_3().text_color(ui.muted).child(empty).into_any_element()
         } else {
@@ -498,6 +671,7 @@ impl Render for CommandPalette {
             .on_action(cx.listener(Self::page_down))
             .on_action(cx.listener(Self::page_up))
             .on_action(cx.listener(Self::dismiss))
+            .on_action(cx.listener(Self::confirm_other))
             .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(PaletteEvent::Dismissed)))
             .occlude()
             .w(px(WIDTH))
@@ -517,7 +691,42 @@ impl Render for CommandPalette {
             .overflow_hidden()
             .child(div().p_2().child(self.input.clone()))
             .child(list)
+            .when_some(self.status.clone(), |d, (text, loading)| {
+                d.child(
+                    div()
+                        .px_4()
+                        .py_1()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .text_xs()
+                        .text_color(ui.muted)
+                        .when(loading, |d| d.child(Icon::Loader.svg().size(px(12.)).text_color(ui.accent)))
+                        .child(text),
+                )
+            })
+            .when(matches!(self.scope, Scope::Sessions(_)), |d| {
+                let open_in = cx.global::<AppSettings>().client.ssh.open_in;
+                let name = |o: OpenIn| match o {
+                    OpenIn::Tab => "a new tab",
+                    OpenIn::Window => "a new window",
+                };
+                let hint = format!("Enter: open in {} · Shift+Enter: {} · Esc: back to the hosts", name(open_in), name(open_in.flip()));
+                d.child(div().px_4().pt_1().border_t_1().border_color(ui.border).text_xs().text_color(ui.muted).child(hint))
+            })
     }
+}
+
+fn placeholder(scope: &Scope) -> SharedString {
+    match scope {
+        Scope::All => "Type a command…".into(),
+        Scope::Hosts => "Connect to… (a host below, or user@host)".into(),
+        Scope::Sessions(host) => format!("Sessions on {}…", host.label()).into(),
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -591,6 +800,35 @@ mod tests {
         e[2].only_when_searched = true;
         assert_eq!(labels(&e, &rank(&e, "")), ["SSH: Connect to pi", "Tabs: New tab"]);
         assert_eq!(labels(&e, &rank(&e, "box")), ["SSH: Connect to box"]);
+    }
+
+    #[test]
+    fn session_entries() {
+        let info = |id, title: &str, process: Option<&str>, attached, created| SessionInfo {
+            id,
+            pid: None,
+            title: title.into(),
+            cwd: Some("/srv".into()),
+            cols: 80,
+            rows: 24,
+            attached,
+            created_unix: created,
+            process: process.map(Into::into),
+        };
+        let host = HostRef::Ssh("box".into());
+        let list = vec![info(3, "", Some("zsh"), 0, 1_000), info(7, "build", Some("cargo"), 1, 4_000)];
+        let c = session_commands(list, &host, 4_000 + 7_200);
+        let ids: Vec<_> = c.iter().map(|c| c.id.to_string()).collect();
+        assert_eq!(ids, ["session.new", "session:7", "session:3"], "new first, then newest");
+        assert_eq!(c[0].title.as_ref(), "New session on box");
+        assert_eq!((c[1].title.as_ref(), c[1].detail.as_deref()), ("build", Some("cargo · open · 2 h")));
+        assert_eq!((c[2].title.as_ref(), c[2].detail.as_deref()), ("zsh", Some("detached · 2 h")));
+        assert!(matches!(session_choice("session.new"), Some(AttachMode::New)));
+        assert!(matches!(session_choice("session:7"), Some(AttachMode::Id(7))));
+        assert!(session_choice("ssh.host:box").is_none());
+        assert_eq!(age(100, 130), "just now");
+        assert_eq!(age(0, 300), "5 min");
+        assert_eq!(age(0, 3 * 86_400), "3 d");
     }
 
     #[test]

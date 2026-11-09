@@ -1,10 +1,11 @@
-//! Connecting to goattyd on another host, in a small window of its own.
+//! Connecting to a goattyd, shown in the tab that waits for it (#37).
 //!
-//! `goatty --ssh host` (and `--via`) opens this window instead of blocking
-//! before the GUI starts, and so does picking a host in the command palette
-//! (`crate::hosts`). It connects off the UI thread and, when that
-//! works, opens the terminal window and closes itself. When it doesn't, it
-//! explains what's wrong and offers what goatty can do about it:
+//! Every terminal window opens right away. A tab whose session isn't there
+//! yet shows a [`ConnectView`]: it connects off the UI thread (to the local
+//! daemon, or over SSH, which can take seconds and ask questions) and, when
+//! that works, hands the workspace the session or the restored layout
+//! ([`ConnectEvent::Ready`]), which replaces the view in the tab. When it
+//! doesn't, it explains what's wrong and offers what goatty can do about it:
 //!
 //! * goattyd missing → install it (`goatty_client::remote::install`),
 //! * goattyd too old → install this build's goattyd and restart the daemon
@@ -15,8 +16,8 @@
 //!   window, but not the network dropping.
 //!
 //! ssh's own questions (passphrases, host keys) come up as separate windows
-//! from `crate::askpass`. Each host gets a terminal window of its own;
-//! tabs for several hosts in one window are #37/#4.
+//! from `crate::askpass`. Connections come from `crate::hosts::pool`, so a
+//! second tab on a host reuses the first one's link.
 
 use std::sync::Arc;
 
@@ -26,13 +27,13 @@ use goatty_client::{Connection, Endpoint, RemoteProblem, SshTarget};
 use goatty_shell::HostService;
 use goatty_term::TermSize;
 use gpui::{
-    App, AppContext, AsyncWindowContext, Bounds, Context, FocusHandle, Focusable, FontWeight, KeyDownEvent, Render, SharedString,
-    WeakEntity, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
+    App, AsyncWindowContext, Context, EventEmitter, FocusHandle, Focusable, FontWeight, KeyDownEvent, Render, SharedString, WeakEntity,
+    Window, div, prelude::*, px,
 };
 
-use crate::session::{AttachMode, Session};
+use crate::hosts::pool;
+use crate::session::{AttachMode, Session, Spawner, plain_ssh_argv};
 use crate::settings::AppSettings;
-use crate::settings_window::HostLink;
 use crate::ui::controls::{ButtonKind, button};
 use crate::ui::icons::Icon;
 use crate::ui::style::Ui;
@@ -48,41 +49,13 @@ pub struct ConnectPlan {
     /// Plain SSH right away (the host is set to it): `ssh host` in a local
     /// session instead of goattyd on the host.
     pub plain: bool,
+    /// A connection to the endpoint made already (the session picker's).
+    pub conn: Option<Arc<Connection>>,
 }
 
 /// The terminal window's first pane size; it resizes on first layout.
 fn initial_size() -> TermSize {
     TermSize::new(100, 30)
-}
-
-/// Open the connect window and start connecting.
-pub fn open(cx: &mut App, plan: ConnectPlan) {
-    let bounds = Bounds::centered(None, size(px(580.), px(340.)), cx);
-    let label = plan.endpoint.label().to_string();
-    let opened = cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            app_id: Some("dev.goatty.goatty".into()),
-            ..Default::default()
-        },
-        |window, cx| {
-            window.set_window_title(&format!("Connecting to {label} — goatty"));
-            cx.new(|cx| {
-                let mut view = ConnectView { plan, step: Step::Working(String::new()), focus: cx.focus_handle() };
-                view.focus.focus(window, cx);
-                view.connect(window, cx);
-                view
-            })
-        },
-    );
-    if let Err(e) = opened {
-        log::error!("couldn't open the connect window: {e:#}");
-        // From the command line there's nothing else; from the palette the
-        // other windows stay.
-        if cx.windows().is_empty() {
-            cx.quit();
-        }
-    }
 }
 
 enum Step {
@@ -243,11 +216,24 @@ fn failed(label: &str, error: &anyhow::Error, ssh: bool) -> Ask {
     Ask { title: format!("Couldn't connect to {label}"), body: vec![format!("{error:#}")], warning: None, choices, upload: None }
 }
 
-struct ConnectView {
+/// What the connect view tells the tab it sits in.
+pub enum ConnectEvent {
+    /// The session (or layout) is there: take it with [`ConnectView::take_ready`].
+    Ready,
+    /// The user gave up: close the tab.
+    Cancelled,
+    /// What it shows changed (the window title follows it).
+    Changed,
+}
+
+pub struct ConnectView {
     plan: ConnectPlan,
     step: Step,
     focus: FocusHandle,
+    ready: Option<Ready>,
 }
+
+impl EventEmitter<ConnectEvent> for ConnectView {}
 
 impl Focusable for ConnectView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
@@ -255,9 +241,43 @@ impl Focusable for ConnectView {
     }
 }
 
-type Ready = (Startup, HostLink);
+/// A connected tab: what it starts with, and where its next sessions come from.
+pub type Ready = (Startup, Spawner);
 
 impl ConnectView {
+    /// A view connecting for `plan`, started right away.
+    pub fn new(plan: ConnectPlan, window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
+        let mut view = Self { plan, step: Step::Working(String::new()), focus: cx.focus_handle(), ready: None };
+        view.connect(window, cx);
+        view
+    }
+
+    /// The host, for the tab's label.
+    pub fn host_label(&self) -> &str {
+        match &self.plan.endpoint {
+            Endpoint::Local => "local",
+            e => e.label(),
+        }
+    }
+
+    /// The window title while this tab is active.
+    pub fn title(&self) -> String {
+        match &self.step {
+            Step::Working(_) => format!("Connecting to {} — goatty", self.host_label()),
+            Step::Ask(ask) => format!("{} — goatty", ask.title),
+        }
+    }
+
+    /// `--settings`, to open once connected.
+    pub fn take_open_settings(&mut self) -> Option<String> {
+        self.plan.open_settings.take()
+    }
+
+    /// The result after [`ConnectEvent::Ready`].
+    pub fn take_ready(&mut self) -> Option<Ready> {
+        self.ready.take()
+    }
+
     fn ssh_target(&self) -> Option<SshTarget> {
         match &self.plan.endpoint {
             Endpoint::Ssh(t) => Some(t.clone()),
@@ -275,6 +295,7 @@ impl ConnectView {
         job: impl FnOnce() -> Result<Ready> + Send + 'static,
     ) {
         self.step = Step::Working(label);
+        cx.emit(ConnectEvent::Changed);
         cx.notify();
         cx.spawn_in(window, async move |this: WeakEntity<Self>, cx: &mut AsyncWindowContext| {
             let result = cx.background_executor().spawn(async move { job() }).await;
@@ -283,11 +304,11 @@ impl ConnectView {
         .detach();
     }
 
-    fn finish(&mut self, result: Result<Ready>, window: &mut Window, cx: &mut Context<'_, Self>) {
+    fn finish(&mut self, result: Result<Ready>, _window: &mut Window, cx: &mut Context<'_, Self>) {
         match result {
-            Ok((startup, link)) => {
-                crate::app::open_terminal_window(cx, startup, link, self.plan.open_settings.take());
-                window.remove_window();
+            Ok(ready) => {
+                self.ready = Some(ready);
+                cx.emit(ConnectEvent::Ready);
             }
             Err(e) => {
                 log::warn!("connecting to {}: {e:#}", self.plan.endpoint.label());
@@ -296,6 +317,7 @@ impl ConnectView {
                     None => failed(self.plan.endpoint.label(), &e, self.ssh_target().is_some()),
                 };
                 self.step = Step::Ask(ask);
+                cx.emit(ConnectEvent::Changed);
                 cx.notify();
             }
         }
@@ -308,11 +330,15 @@ impl ConnectView {
             self.work(format!("Opening ssh {}…", target.host), window, cx, move || plain_ssh(&target.host));
             return;
         }
-        let (endpoint, mode) = (self.plan.endpoint.clone(), self.plan.mode);
-        self.work(format!("Connecting to {}…", endpoint.label()), window, cx, move || {
-            let conn = Connection::open(endpoint, crate::CLIENT)?;
+        let (endpoint, mode, conn) = (self.plan.endpoint.clone(), self.plan.mode, self.plan.conn.take());
+        let label = if endpoint.is_local() { "Starting a shell…".to_string() } else { format!("Connecting to {}…", endpoint.label()) };
+        self.work(label, window, cx, move || {
+            let conn = match conn {
+                Some(c) => c,
+                None => pool::open(endpoint)?,
+            };
             let startup = saved::startup(&conn, initial_size(), mode)?;
-            Ok((startup, HostLink::Daemon(conn)))
+            Ok((startup, Spawner::Daemon(conn)))
         });
     }
 
@@ -322,7 +348,7 @@ impl ConnectView {
             Step::Working(_) => return,
         };
         match choice {
-            Choice::Cancel => window.remove_window(),
+            Choice::Cancel => cx.emit(ConnectEvent::Cancelled),
             Choice::Retry => self.connect(window, cx),
             Choice::Plain => {
                 let Some(target) = self.ssh_target() else { return };
@@ -345,8 +371,9 @@ impl ConnectView {
                         remote::stop_daemon(&target)?;
                     }
                     let conn = Connection::open(endpoint, crate::CLIENT)?;
+                    pool::add(&conn);
                     let startup = saved::startup(&conn, initial_size(), mode)?;
-                    Ok((startup, HostLink::Daemon(conn)))
+                    Ok((startup, Spawner::Daemon(conn)))
                 });
             }
         }
@@ -368,39 +395,44 @@ impl ConnectView {
 
 /// `ssh host` in a new session of the local goattyd (it survives closing the
 /// window). If the local daemon can't (too old, won't start), in a PTY of
-/// this window instead.
+/// this window instead. New tabs from it run `ssh host` again.
 pub fn plain_ssh(host: &str) -> Result<Ready> {
-    let argv = vec!["ssh".to_string(), "--".into(), host.to_string()];
-    match Connection::open(Endpoint::Local, crate::CLIENT) {
+    let argv = plain_ssh_argv(host);
+    match pool::open(Endpoint::Local) {
         Ok(conn) => match Session::daemon_run(conn.clone(), initial_size(), argv.clone()) {
-            Ok(session) => return Ok((Startup::Session(session), HostLink::Daemon(conn))),
+            Ok(session) => {
+                let spawner = Spawner::Plain { host: host.to_string(), base: Box::new(Spawner::Daemon(conn)) };
+                return Ok((Startup::Session(session), spawner));
+            }
             Err(e) => log::warn!("the local goattyd can't run ssh ({e:#}); running it in this window"),
         },
         Err(e) => log::warn!("no local goattyd ({e:#}); running ssh in this window"),
     }
     let session = Session::local_command(initial_size(), argv).context("couldn't start ssh")?;
     let daemon = std::env::current_exe().ok().map(|e| e.with_file_name("goattyd")).filter(|d| d.exists());
-    Ok((Startup::Session(session), HostLink::Local(Arc::new(HostService::from_env(daemon)))))
+    let base = Spawner::Local(Arc::new(HostService::from_env(daemon)));
+    Ok((Startup::Session(session), Spawner::Plain { host: host.to_string(), base: Box::new(base) }))
 }
 
 impl Render for ConnectView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let ui = Ui::get(cx);
         let ui_font = cx.global::<AppSettings>().ui_font.clone();
-        let root = div()
+        let outer = div()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
             .size_full()
             .flex()
-            .flex_col()
-            .gap_3()
-            .p_5()
+            .items_center()
+            .justify_center()
+            .p_4()
             .bg(ui.bg)
             .font_family(ui_font)
             .text_sm()
             .text_color(ui.text);
-        match &self.step {
-            Step::Working(label) => root.items_center().justify_center().child(
+        let card = div().w(px(560.)).max_w_full().flex().flex_col().gap_3();
+        let card = match &self.step {
+            Step::Working(label) => card.items_center().child(
                 div()
                     .flex()
                     .items_center()
@@ -422,20 +454,25 @@ impl Render for ConnectView {
                     })
                 });
                 let icon = if ask.warning.is_some() { (Icon::TriangleAlert, ui.warning) } else { (Icon::Info, ui.accent) };
-                root.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(icon.0.svg().size(px(18.)).text_color(icon.1))
-                        .child(div().text_base().font_weight(FontWeight::BOLD).child(SharedString::from(ask.title.clone()))),
-                )
-                .children(ask.body.iter().map(|p| div().text_color(ui.text).child(SharedString::from(p.clone()))))
-                .when_some(ask.warning.clone(), |d, w| d.child(div().text_color(ui.warning).font_weight(FontWeight::SEMIBOLD).child(w)))
-                .child(div().flex_1())
-                .child(div().flex().justify_end().gap_2().children(buttons))
+                card.p_5()
+                    .border_1()
+                    .border_color(ui.border)
+                    .rounded_lg()
+                    .bg(ui.surface)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(icon.0.svg().size(px(18.)).text_color(icon.1))
+                            .child(div().text_base().font_weight(FontWeight::BOLD).child(SharedString::from(ask.title.clone()))),
+                    )
+                    .children(ask.body.iter().map(|p| div().text_color(ui.text).child(SharedString::from(p.clone()))))
+                    .when_some(ask.warning.clone(), |d, w| d.child(div().text_color(ui.warning).font_weight(FontWeight::SEMIBOLD).child(w)))
+                    .child(div().flex().justify_end().gap_2().pt_2().children(buttons))
             }
-        }
+        };
+        outer.child(card)
     }
 }
 

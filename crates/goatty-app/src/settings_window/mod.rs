@@ -300,8 +300,8 @@ impl SettingsWindow {
         this
     }
 
-    /// Switch to the host of the window the settings were opened from
-    /// (each terminal window is a client of one host), unless there are
+    /// Switch to the host of the active tab of the window the settings
+    /// were opened from, unless there are
     /// unapplied changes for the current one.
     fn follow_host_link(&mut self, cx: &mut Context<'_, Self>) {
         let link = cx.try_global::<HostLinkGlobal>().and_then(|g| g.0.clone());

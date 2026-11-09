@@ -10,15 +10,22 @@
 //! - `saved`: the layout goattyd keeps for the window, so the next
 //!   `goatty` restores every tab and split (#118).
 //!
-//! New panes are new sessions from the window's [`Spawner`]: another
-//! `create` on the same goattyd connection (or another local PTY), started
-//! in the focused pane's directory. Closing a pane ends its shell (after
-//! asking, when a program runs in it); closing the window only detaches
-//! (the daemon keeps the sessions).
+//! Each tab is on one host, and a window can hold tabs on several (a local
+//! shell next to a few servers). A tab remembers its [`Spawner`]: new
+//! panes and new tabs from it are new sessions there (another `create` on
+//! the same goattyd connection, `ssh host` again for plain SSH, another
+//! local PTY), started in the focused pane's directory. Closing a pane
+//! ends its shell (after asking, when a program runs in it); closing the
+//! window only detaches (the daemons keep the sessions).
 //!
-//! Each window is a client of one host. While a window is active, the
-//! settings window and "reload shells" act on its host
-//! (`settings_window::set_host_link`).
+//! A tab whose session isn't there yet shows the connect screen
+//! (`crate::connect`, #37): the window opens at once, and the tab gets its
+//! panes when the connection is made (`open_connect_tab`).
+//!
+//! Each goattyd the window has tabs on keeps the layout of those tabs, so
+//! `goatty` (or `goatty --ssh host`) brings them back. While a window is
+//! active, the settings window and "reload shells" act on its active tab's
+//! host (`settings_window::set_host_link`).
 
 mod icons;
 mod layout;
@@ -28,6 +35,7 @@ mod tab_bar;
 use std::path::Path;
 use std::sync::Arc;
 
+use goatty_client::Connection;
 use goatty_config::TabBarShow;
 use goatty_proto::LayoutId;
 use goatty_term::TermSize;
@@ -37,9 +45,12 @@ use gpui::{
 };
 
 use crate::actions::*;
+use crate::app::Initial;
 use crate::close_confirm::{CloseConfirm, CloseConfirmEvent, Closing};
 use crate::command_palette::{CommandPalette, PaletteEvent, Scope};
+use crate::connect::{ConnectEvent, ConnectPlan, ConnectView};
 use crate::paste_confirm::{PasteConfirm, PasteConfirmEvent};
+use crate::session::AttachMode;
 use crate::session::{Session, Spawner};
 use crate::settings::AppSettings;
 use crate::terminal::{PasteRequest, TerminalEvent, TerminalView};
@@ -72,6 +83,11 @@ struct Tab {
     zoomed: bool,
     /// Set by renaming; otherwise the focused pane's title.
     name: Option<String>,
+    /// Where its sessions live; `None` while connecting.
+    host: Option<Spawner>,
+    /// The connect screen, until the tab's session is there (its tree is
+    /// then a single placeholder leaf without a pane).
+    connecting: Option<(Entity<ConnectView>, Subscription)>,
 }
 
 impl Tab {
@@ -128,8 +144,28 @@ pub(super) struct DraggedTab {
     label: gpui::SharedString,
 }
 
+/// The layout one goattyd keeps for this window's tabs on it.
+struct HostLayout {
+    conn: Arc<Connection>,
+    id: LayoutId,
+    /// What was last sent.
+    json: String,
+}
+
+/// This window's tabs on one goattyd, as `save_layout` collects them.
+struct LayoutGroup {
+    conn: Arc<Connection>,
+    sessions: Vec<goatty_proto::SessionId>,
+    tabs: Vec<SavedTab>,
+    /// How many of them come before the active tab (the active one's index
+    /// when it's among them).
+    before_active: usize,
+}
+
 pub struct Workspace {
-    spawner: Spawner,
+    /// Where new tabs go when the active tab has no host yet: the first
+    /// host that connected.
+    home: Option<Spawner>,
     tabs: Vec<Tab>,
     active: usize,
     next_id: u64,
@@ -139,14 +175,12 @@ pub struct Workspace {
     paste: Option<(Entity<PasteConfirm>, PaneId, Subscription)>,
     close: Option<(Entity<CloseConfirm>, CloseTarget, Subscription)>,
     toasts: Entity<ToastLayer>,
-    /// The layout goattyd keeps for this window, and what was last sent.
-    layout_id: LayoutId,
-    saved_json: String,
+    layouts: Vec<HostLayout>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Workspace {
-    pub fn new(startup: Startup, spawner: Spawner, window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
+    pub fn new(initial: Initial, window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
         // The desktop's light/dark switch (themes can follow it).
         let appearance = cx.observe_window_appearance(window, |_, window, cx| {
             crate::settings::AppSettings::set_system_dark(cx, crate::settings::is_dark(window.appearance()));
@@ -164,15 +198,17 @@ impl Workspace {
             this.refresh_icon_font(cx);
             cx.notify();
         });
-        // Settings and "reload shells" act on the active window's host.
+        // Settings and "reload shells" act on the active window's host, and
+        // hosts opened in a tab go to the active window.
         let activation = cx.observe_window_activation(window, |this: &mut Self, window, cx| {
             if window.is_window_active() {
-                crate::settings_window::set_host_link(cx, Some(this.spawner.host_link()));
+                this.window_activated(window, cx);
             }
         });
+        cx.set_global(crate::hosts::LastWorkspace(window.window_handle()));
         let toasts = cx.new(|cx| ToastLayer::new(window, cx));
         let mut this = Self {
-            spawner,
+            home: None,
             tabs: Vec::new(),
             active: 0,
             next_id: 1,
@@ -182,21 +218,60 @@ impl Workspace {
             paste: None,
             close: None,
             toasts,
-            layout_id: saved::new_id(),
-            saved_json: String::new(),
+            layouts: Vec::new(),
             _subscriptions: vec![appearance, settings, activation],
         };
         this.refresh_icon_font(cx);
-        match startup {
-            Startup::Session(session) => this.insert_pane(session, Placement::NewTab, window, cx),
-            Startup::Restore(r) => this.restore(r, window, cx),
+        match initial {
+            Initial::Ready { startup, spawner } => {
+                this.home = Some(spawner.clone());
+                match startup {
+                    Startup::Session(session) => this.insert_pane(session, Placement::NewTab, spawner, window, cx),
+                    Startup::Restore(r) => {
+                        let active = this.insert_restored(r, &spawner, 0, window, cx);
+                        this.activate(active, window, cx);
+                    }
+                }
+            }
+            Initial::Connect(plan) => this.open_connect_tab(plan, window, cx),
         }
         this
     }
 
-    /// Rebuild the tabs of a saved layout from its attached sessions.
-    fn restore(&mut self, r: saved::Restored, window: &mut Window, cx: &mut Context<'_, Self>) {
-        self.layout_id = r.id;
+    fn window_activated(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        cx.set_global(crate::hosts::LastWorkspace(window.window_handle()));
+        if let Some(host) = self.active_tab().and_then(|t| t.host.as_ref()) {
+            crate::settings_window::set_host_link(cx, Some(host.host_link()));
+        }
+    }
+
+    /// The layout entry for `conn` (a new one for a host the window had no tabs on).
+    fn layout_for(&mut self, conn: &Arc<Connection>) -> &mut HostLayout {
+        let i = match self.layouts.iter().position(|l| Arc::ptr_eq(&l.conn, conn)) {
+            Some(i) => i,
+            None => {
+                self.layouts.push(HostLayout { conn: conn.clone(), id: saved::new_id(), json: String::new() });
+                self.layouts.len() - 1
+            }
+        };
+        &mut self.layouts[i]
+    }
+
+    /// Rebuild the tabs of a saved layout from its attached sessions,
+    /// inserted at `at`. Returns the index of its active tab.
+    fn insert_restored(
+        &mut self,
+        r: saved::Restored,
+        spawner: &Spawner,
+        at: usize,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> usize {
+        if let Some(conn) = spawner.connection() {
+            self.layout_for(conn).id = r.id;
+        }
+        let mut at = at.min(self.tabs.len());
+        let first = at;
         let mut sessions = r.sessions;
         for t in r.tabs {
             let mut panes = Vec::new();
@@ -212,35 +287,69 @@ impl Workspace {
             let Some(tree) = tree else { continue };
             let focused = pane_of.get(&t.focused).copied().unwrap_or(panes[0].id);
             let id = self.next_id();
-            self.tabs.push(Tab { id, tree, panes, focused, zoomed: t.zoomed, name: t.name });
+            let tab = Tab { id, tree, panes, focused, zoomed: t.zoomed, name: t.name, host: Some(spawner.clone()), connecting: None };
+            self.tabs.insert(at, tab);
+            at += 1;
         }
-        self.activate(r.active.min(self.tabs.len().saturating_sub(1)), window, cx);
+        (first + r.active).min(at.saturating_sub(1))
     }
 
-    /// Tell goattyd what the window looks like now (sent only when it
-    /// changed; local PTYs have nothing to save).
+    /// Tell each goattyd what this window's tabs on it look like now (sent
+    /// only when it changed; local PTYs have nothing to save). A goattyd
+    /// the window has no tabs on any more hears that the layout is gone.
     fn save_layout(&mut self, cx: &mut Context<'_, Self>) {
-        let Spawner::Daemon(conn) = &self.spawner else { return };
-        let mut sessions = Vec::new();
-        let tabs = self
-            .tabs
-            .iter()
-            .filter_map(|t| {
-                let session_of = |id: PaneId| t.pane(id).and_then(|p| p.view.read(cx).session().daemon_id());
-                let tree = t.tree.map_leaves(&mut |id| session_of(id))?;
-                sessions.extend(tree.leaves());
-                let focused = session_of(t.focused).unwrap_or_else(|| tree.leaves()[0]);
-                Some(SavedTab { name: t.name.clone(), tree, focused, zoomed: t.zoomed })
-            })
-            .collect();
-        let saved = SavedWorkspace { version: saved::VERSION, tabs, active: self.active };
-        let json = match serde_json::to_string(&saved) {
-            Ok(j) => j,
-            Err(e) => return log::warn!("saving the layout: {e}"),
-        };
-        if json != self.saved_json {
-            conn.save_layout(self.layout_id, sessions, json.clone());
-            self.saved_json = json;
+        let mut groups: Vec<LayoutGroup> = Vec::new();
+        for (i, t) in self.tabs.iter().enumerate() {
+            let Some(conn) = t.host.as_ref().and_then(Spawner::connection) else { continue };
+            let session_of = |id: PaneId| t.pane(id).and_then(|p| p.view.read(cx).session().daemon_id());
+            let Some(tree) = t.tree.map_leaves(&mut |id| session_of(id)) else { continue };
+            let g = match groups.iter().position(|g| Arc::ptr_eq(&g.conn, conn)) {
+                Some(g) => g,
+                None => {
+                    groups.push(LayoutGroup { conn: conn.clone(), sessions: Vec::new(), tabs: Vec::new(), before_active: 0 });
+                    groups.len() - 1
+                }
+            };
+            let g = &mut groups[g];
+            g.sessions.extend(tree.leaves());
+            let focused = session_of(t.focused).unwrap_or_else(|| tree.leaves()[0]);
+            g.tabs.push(SavedTab { name: t.name.clone(), tree, focused, zoomed: t.zoomed });
+            if i < self.active {
+                g.before_active += 1;
+            }
+        }
+        for g in &groups {
+            self.layout_for(&g.conn);
+        }
+        self.layouts.retain_mut(|layout| {
+            let (sessions, json) = match groups.iter_mut().find(|g| Arc::ptr_eq(&g.conn, &layout.conn)) {
+                Some(g) => {
+                    let active = g.before_active.min(g.tabs.len() - 1);
+                    let saved = SavedWorkspace { version: saved::VERSION, tabs: std::mem::take(&mut g.tabs), active };
+                    match serde_json::to_string(&saved) {
+                        Ok(j) => (std::mem::take(&mut g.sessions), j),
+                        Err(e) => {
+                            log::warn!("saving the layout: {e}");
+                            return true;
+                        }
+                    }
+                }
+                None => (Vec::new(), String::new()),
+            };
+            if json != layout.json {
+                layout.conn.save_layout(layout.id, sessions, json.clone());
+                layout.json = json.clone();
+            }
+            // Done with a host once it heard the layout is gone.
+            !json.is_empty()
+        });
+    }
+
+    /// The window is going away with its last tab: every goattyd forgets
+    /// its layout (sent before the kills, whose replies prove both arrived).
+    fn forget_layouts(&mut self) {
+        for layout in self.layouts.drain(..) {
+            layout.conn.save_layout(layout.id, Vec::new(), String::new());
         }
     }
 
@@ -285,19 +394,28 @@ impl Workspace {
         if let Some(name) = &tab.name {
             return name.clone();
         }
+        if let Some((view, _)) = &tab.connecting {
+            return view.read(cx).host_label().to_string();
+        }
         tab.focused_view().map(|v| pane_label(v.read(cx))).unwrap_or_else(|| "goatty".into())
     }
 
     // ---- focus and titles ---------------------------------------------------
 
     fn focus_active(&self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        if let Some(view) = self.focused_view() {
+        if let Some((view, _)) = self.active_tab().and_then(|t| t.connecting.as_ref()) {
+            view.focus_handle(cx).focus(window, cx);
+        } else if let Some(view) = self.focused_view() {
             view.focus_handle(cx).focus(window, cx);
         }
     }
 
     fn update_window_title(&self, window: &mut Window, cx: &mut Context<'_, Self>) {
         let Some(tab) = self.active_tab() else { return };
+        if let Some((view, _)) = &tab.connecting {
+            window.set_window_title(&view.read(cx).title());
+            return;
+        }
         let Some(view) = tab.focused_view() else { return };
         let label = self.tab_label(tab, cx);
         window.set_window_title(&view.read(cx).session().decorate_title(&label));
@@ -325,14 +443,120 @@ impl Workspace {
         self.active = index;
         self.focus_active(window, cx);
         self.update_window_title(window, cx);
+        if window.is_window_active()
+            && let Some(host) = &self.tabs[index].host
+        {
+            crate::settings_window::set_host_link(cx, Some(host.host_link()));
+        }
         self.save_layout(cx);
         cx.notify();
     }
 
+    // ---- connecting -----------------------------------------------------------
+
+    /// A new tab (after the active one) that connects for `plan` and shows
+    /// the connect screen until its session is there.
+    pub fn open_connect_tab(&mut self, mut plan: ConnectPlan, window: &mut Window, cx: &mut Context<'_, Self>) {
+        // A host this window has tabs on already: its last layout is this
+        // window's, so start a session instead of claiming another one.
+        if matches!(plan.mode, AttachMode::Auto)
+            && let Some(live) = crate::hosts::pool::live(&plan.endpoint)
+            && self.layouts.iter().any(|l| Arc::ptr_eq(&l.conn, &live))
+        {
+            plan.mode = AttachMode::New;
+        }
+        let id = self.next_id();
+        let placeholder = self.next_id();
+        let view = cx.new(|cx| ConnectView::new(plan, window, cx));
+        let sub = cx.subscribe_in(&view, window, move |this, _, ev: &ConnectEvent, window, cx| this.on_connect_event(id, ev, window, cx));
+        let tab = Tab {
+            id,
+            tree: Node::Leaf(placeholder),
+            panes: Vec::new(),
+            focused: placeholder,
+            zoomed: false,
+            name: None,
+            host: None,
+            connecting: Some((view, sub)),
+        };
+        let at = if self.tabs.is_empty() { 0 } else { self.active + 1 };
+        self.tabs.insert(at, tab);
+        self.activate(at, window, cx);
+    }
+
+    fn on_connect_event(&mut self, tab: u64, ev: &ConnectEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let Some(index) = self.tab_index(tab) else { return };
+        match ev {
+            ConnectEvent::Changed => {
+                if index == self.active {
+                    self.update_window_title(window, cx);
+                }
+                cx.notify();
+            }
+            ConnectEvent::Cancelled => self.remove_tab(index, window, cx),
+            ConnectEvent::Ready => {
+                let Some((view, _)) = &self.tabs[index].connecting else { return };
+                let (ready, settings) = view.update(cx, |v, _| (v.take_ready(), v.take_open_settings()));
+                let Some((startup, spawner)) = ready else { return };
+                self.connected(index, startup, spawner, window, cx);
+                if let Some(page) = settings {
+                    crate::settings_window::open_at(cx, crate::settings_window::Page::from_name(&page));
+                }
+            }
+        }
+    }
+
+    /// The connecting tab at `index` got its session: show it there (a
+    /// restored layout replaces the tab with its tabs).
+    fn connected(&mut self, index: usize, startup: Startup, spawner: Spawner, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if self.home.is_none() {
+            self.home = Some(spawner.clone());
+        }
+        let was_active = index == self.active;
+        let show = match startup {
+            Startup::Session(session) => {
+                let pane = self.make_pane(session, window, cx);
+                let tab = &mut self.tabs[index];
+                (tab.tree, tab.focused) = (Node::Leaf(pane.id), pane.id);
+                tab.panes = vec![pane];
+                tab.connecting = None;
+                tab.host = Some(spawner);
+                index
+            }
+            Startup::Restore(r) => {
+                let n = r.tabs.len();
+                self.tabs.remove(index);
+                let active = self.insert_restored(r, &spawner, index, window, cx);
+                if self.active > index {
+                    self.active += n.saturating_sub(1);
+                }
+                active
+            }
+        };
+        if was_active {
+            self.activate(show, window, cx);
+        } else {
+            self.save_layout(cx);
+            cx.notify();
+        }
+    }
+
     // ---- creating and closing panes -----------------------------------------
 
-    /// Start a session in the background and put it at `placement`.
+    /// Start a session in the background and put it at `placement`: on the
+    /// active tab's host (the window's first host while it connects).
     fn spawn(&mut self, placement: Placement, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let host = self.active_tab().and_then(|t| t.host.clone());
+        let host = match placement {
+            Placement::NewTab => host.or_else(|| self.home.clone()),
+            Placement::Split { .. } => host,
+        };
+        let Some(spawner) = host else {
+            let toast =
+                Toast::info("Still connecting").body("New tabs and splits can open once this tab is connected.").key("workspace.spawn");
+            toast::show_in(window, cx, toast);
+            return;
+        };
         // Same size and directory as the focused pane; the new pane resizes
         // itself on its first layout.
         let (size, cwd) = match self.focused_view() {
@@ -343,12 +567,14 @@ impl Workspace {
             }
             None => (TermSize::new(100, 30), None),
         };
-        let spawner = self.spawner.clone();
-        let task = cx.background_executor().spawn(async move { spawner.spawn(size, cwd) });
+        let task = {
+            let spawner = spawner.clone();
+            cx.background_executor().spawn(async move { spawner.spawn(size, cwd) })
+        };
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| match result {
-                Ok(session) => this.insert_pane(session, placement, window, cx),
+                Ok(session) => this.insert_pane(session, placement, spawner, window, cx),
                 Err(e) => {
                     let toast = Toast::error("Couldn't start a shell").body(format!("{e:#}")).key("workspace.spawn");
                     toast::show_in(window, cx, toast);
@@ -368,7 +594,15 @@ impl Workspace {
         Pane { id, view, _subscriptions: [events, focused] }
     }
 
-    fn insert_pane(&mut self, session: Arc<Session>, placement: Placement, window: &mut Window, cx: &mut Context<'_, Self>) {
+    /// Put `session` (from `spawner`) at `placement`.
+    fn insert_pane(
+        &mut self,
+        session: Arc<Session>,
+        placement: Placement,
+        spawner: Spawner,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         let pane = self.make_pane(session, window, cx);
         let id = pane.id;
 
@@ -388,7 +622,16 @@ impl Workspace {
             }
             None => {
                 let tab_id = self.next_id();
-                let tab = Tab { id: tab_id, tree: Node::Leaf(id), panes: vec![pane], focused: id, zoomed: false, name: None };
+                let tab = Tab {
+                    id: tab_id,
+                    tree: Node::Leaf(id),
+                    panes: vec![pane],
+                    focused: id,
+                    zoomed: false,
+                    name: None,
+                    host: Some(spawner),
+                    connecting: None,
+                };
                 // New tabs open after the current one, like browsers.
                 let at = if self.tabs.is_empty() { 0 } else { self.active + 1 };
                 self.tabs.insert(at, tab);
@@ -446,9 +689,7 @@ impl Workspace {
         }
         if self.tabs.is_empty() {
             log::info!("last session ended");
-            if let Spawner::Daemon(conn) = &self.spawner {
-                conn.save_layout(self.layout_id, Vec::new(), String::new());
-            }
+            self.forget_layouts();
             // The last window closing quits the app (see `app::run`).
             window.remove_window();
             return;
@@ -516,9 +757,7 @@ impl Workspace {
         }
         // Closing the window quits the app: let goattyd hear about it first
         // (the layout goes before the kills, whose replies prove both arrived).
-        if let Spawner::Daemon(conn) = &self.spawner {
-            conn.save_layout(self.layout_id, Vec::new(), String::new());
-        }
+        self.forget_layouts();
         cx.spawn_in(window, async move |this, cx| {
             kill.await;
             let _ = this.update_in(cx, |this, window, cx| this.remove_target(target, window, cx));
@@ -830,6 +1069,9 @@ impl Workspace {
             .bg(ui.border)
             .on_drag_move(cx.listener(Self::on_divider_drag));
         let Some(tab) = self.active_tab() else { return area };
+        if let Some((view, _)) = &tab.connecting {
+            return area.child(view.clone());
+        }
         let (leaves, dividers) = if tab.zoomed { (vec![(tab.focused, Rect::FULL)], Vec::new()) } else { tab.tree.layout(Rect::FULL) };
         let split = leaves.len() > 1;
         for (id, r) in leaves {

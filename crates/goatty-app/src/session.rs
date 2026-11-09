@@ -76,20 +76,36 @@ pub struct Session {
     waker: Arc<Waker>,
 }
 
-/// Makes the sessions for new tabs and panes: on the window's goattyd
-/// connection, or as local PTYs (`--local`).
+/// Makes the sessions for new tabs and panes: on a goattyd connection, as
+/// local PTYs (`--local`), or `ssh host` again for plain SSH tabs.
 #[derive(Clone)]
 pub enum Spawner {
     Local(Arc<HostService>),
     Daemon(Arc<Connection>),
+    /// Plain SSH: `ssh host` in a session of `base` (the local goattyd, or a
+    /// local PTY when it can't).
+    Plain {
+        host: String,
+        base: Box<Spawner>,
+    },
 }
 
 impl Spawner {
-    /// Where this window's host settings live.
+    /// Where this tab's host settings live (plain SSH: this computer's).
     pub fn host_link(&self) -> crate::settings_window::HostLink {
         match self {
             Spawner::Local(host) => crate::settings_window::HostLink::Local(host.clone()),
             Spawner::Daemon(conn) => crate::settings_window::HostLink::Daemon(conn.clone()),
+            Spawner::Plain { base, .. } => base.host_link(),
+        }
+    }
+
+    /// The goattyd connection its sessions live on, if any.
+    pub fn connection(&self) -> Option<&Arc<Connection>> {
+        match self {
+            Spawner::Local(_) => None,
+            Spawner::Daemon(conn) => Some(conn),
+            Spawner::Plain { base, .. } => base.connection(),
         }
     }
 
@@ -99,8 +115,20 @@ impl Spawner {
         match self {
             Spawner::Local(host) => Session::local(size, host, cwd),
             Spawner::Daemon(conn) => Session::daemon(conn.clone(), size, AttachMode::New, cwd),
+            Spawner::Plain { host, base } => {
+                let argv = plain_ssh_argv(host);
+                match &**base {
+                    Spawner::Daemon(conn) => Session::daemon_run(conn.clone(), size, argv),
+                    _ => Session::local_command(size, argv),
+                }
+            }
         }
     }
+}
+
+/// `ssh host`, for plain SSH sessions.
+pub fn plain_ssh_argv(host: &str) -> Vec<String> {
+    vec!["ssh".to_string(), "--".into(), host.to_string()]
 }
 
 fn palette_list(p: &Palette) -> Vec<u32> {

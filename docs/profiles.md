@@ -6,7 +6,7 @@ The profile is the source of truth for everything goatty manages. The settings w
 
 | Document | File (`$XDG_CONFIG_HOME/goatty/`) | Lives on | Contains |
 |---|---|---|---|
-| `ClientSettings` | `settings.json` | the machine running the window | font, theme, cursor, padding, background opacity/blur, renderer, keybindings, links, paste, selection (copy on select), workspace (on launch), ssh hosts (added hosts, plain SSH per host, list `~/.ssh/config`), debug |
+| `ClientSettings` | `settings.json` | the machine running the window | font, theme, cursor, padding, background opacity/blur, renderer, keybindings, links, paste, selection (copy on select), workspace (on launch), ssh hosts (added hosts, plain SSH per host, list `~/.ssh/config`, open hosts in a new window or tab), debug |
 | `HostSettings` | `host.json` | each machine running a goattyd | shell program, managed zsh and its features, user dotfiles, prompt, history |
 
 The split follows where a setting takes effect. The window draws text, so fonts and colors are the client's. Shells run on the daemon's host, so their configuration belongs to that host. A remote host keeps its own `host.json`, and the settings window edits it through the protocol. Connecting to a different host shows that host's shell settings.
@@ -75,7 +75,7 @@ Settings travel as JSON documents rather than typed structs, so a schema change 
 | History | size, duplicates, leading space, sharing, Atuin, Atuin on Up | staged |
 | Shortcuts | per action: key chips (× removes), + records a new keystroke, reset; warns when a recorded key took over another action's key, when a key you added is one the shell uses (Ctrl+R, Ctrl+W, Alt+letters, plain typing keys), and when a keystroke doesn't parse | live |
 | Workspace | reattach newest session vs. start new on launch | next launch |
-| Hosts | add hosts (`user@host` or an ssh alias, optional name), plain SSH per host, list the hosts in `~/.ssh/config`, connect | saved immediately |
+| Hosts | open hosts in a new window or a new tab (`ssh.open_in`), add hosts (`user@host` or an ssh alias, optional name), plain SSH per host, list the hosts in `~/.ssh/config`, connect | saved immediately |
 | Profile | file locations, problems, env overrides, export/import, reset, generations with rollback | – |
 
 Host edits collect in a draft. A bar at the bottom offers **Discard**, **Preview** (the host computes the diff of the generated files, shown colored) and **Apply** (a new generation, validated first). When an apply or a rollback changed the shell configuration, the bar offers **Reload running shells** (or **Not now**); see below. Calls to the daemon run off the UI thread. With `--local` there is no daemon, and the window uses `goatty_shell::HostService` in-process: same code path, same files.
