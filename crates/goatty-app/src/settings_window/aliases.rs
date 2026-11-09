@@ -72,12 +72,7 @@ impl AliasesPage {
                 TextInputEvent::Submitted(_) => view.save_alias(cx),
             }));
         }
-        {
-            inputs.name.update(cx, |i, cx| i.set_text("dps", cx));
-            inputs.command.update(cx, |i, cx| i.set_text("docker ps -a", cx));
-            inputs.group.update(cx, |i, cx| i.set_text("Docker", cx));
-            Self { filter, inputs, form: Some(None), form_error: Some("TEMP".into()), collapsed: HashSet::new(), _subs: subs }
-        }
+        Self { filter, inputs, form: None, form_error: None, collapsed: HashSet::new(), _subs: subs }
     }
 }
 
