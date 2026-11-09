@@ -12,8 +12,42 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Static goattyd for remote hosts (any Linux distro, any libc): what
+  # `goatty --ssh` uploads to hosts without goattyd (crates/goatty-client/src/remote.rs).
+  # zig provides the C++ cross compiler rio-vt's simdutf needs.
+  remote-goattyd:
+    name: goattyd ${{ matrix.target }} (static)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, name: x86_64-linux }
+          - { target: aarch64-unknown-linux-musl, name: aarch64-linux }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: mlugg/setup-zig@v2
+      - run: cargo install --locked cargo-zigbuild
+      - run: cargo zigbuild --release --locked -p goatty-daemon --target ${{ matrix.target }}
+      - name: Check it's static
+        run: |
+          f=target/${{ matrix.target }}/release/goattyd
+          file "$f"
+          file "$f" | grep -Eq 'static(ally|-pie) linked'
+          mkdir -p dist && cp "$f" "dist/goattyd-${{ matrix.name }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: goattyd-${{ matrix.name }}
+          path: dist/goattyd-${{ matrix.name }}
+
   linux:
     name: linux x86_64
+    needs: remote-goattyd
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -21,11 +55,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked --workspace
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: goattyd-*
+          path: remote
+          merge-multiple: true
       - name: Package
         run: |
           name="goatty-${GITHUB_REF_NAME}-x86_64-linux"
-          mkdir -p "dist/$name"
+          mkdir -p "dist/$name/remote"
           cp target/release/goatty target/release/goattyd README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
+          install -m 755 remote/goattyd-* "dist/$name/remote/"
+          ls -l "dist/$name/remote"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           sha256sum "dist/$name.tar.gz" > "dist/$name.tar.gz.sha256"
       - name: Publish

@@ -13,15 +13,25 @@
 //!     have gone silent, which triggers the reconnect.
 //! * [`transport`] turns an [`Endpoint`] (local socket, `ssh host`, any
 //!   stdio command) into a byte stream.
+//! * [`remote`] finds, installs and restarts goattyd on SSH hosts and
+//!   explains failed connects ([`RemoteProblem`]); [`askpass`] decodes ssh's
+//!   prompts for the GUI.
+//! * [`service`] knows about goattyd's systemd user units (starting the
+//!   socket instead of a detached daemon when they're installed).
 
+pub mod askpass;
 mod connection;
 pub mod control;
 mod handshake;
+pub mod remote;
+pub mod service;
 pub mod transport;
 
 pub use connection::{Connection, HostSettingsApplied, HostSettingsReply};
 pub use control::Control;
-pub use transport::{Endpoint, connect_or_spawn_daemon};
+pub use handshake::VersionMismatch;
+pub use remote::RemoteProblem;
+pub use transport::{Endpoint, SshTarget, connect_or_spawn_daemon};
 
 /// Receives one session's terminal stream. Called on the connection's
 /// reader thread; keep it fast (feed a VT, wake the UI).

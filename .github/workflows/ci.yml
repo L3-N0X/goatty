@@ -27,6 +27,22 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
+  musl:
+    # The static goattyd that goatty uploads to remote hosts (release.yml).
+    name: goattyd static build (musl)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - uses: mlugg/setup-zig@v2
+      - run: cargo install --locked cargo-zigbuild
+      - run: cargo zigbuild --release --locked -p goatty-daemon --target x86_64-unknown-linux-musl
+      - run: target/x86_64-unknown-linux-musl/release/goattyd --version
+
   check:
     name: clippy + tests (linux)
     runs-on: ubuntu-latest

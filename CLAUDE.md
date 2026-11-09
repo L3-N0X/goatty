@@ -27,13 +27,14 @@ Full plan: `docs/goatty-project-plan.md`. Plugins: `docs/plugins.md`. Code struc
 - **Stage 5 foundations:** `goatty-plugin` crate (TOML manifest, settings schema, templates, derived permissions, zsh rendering, Ed25519-signed registry index, JSON API; bin `goatty-plugin` for authors/maintainers), `goatty-shell::plugins` (registries → verified snapshots, plan with digest → approved install, lock with file checksums, rendering into generations), protocol v5 (`Plugin` JSON request/reply), `goattyd plugin …`, Settings → Plugins page. Sibling repos: `../goatty-registry` = https://github.com/goatty-dev/goatty-registry (official registry: eza, zoxide, bat, docker; index signed offline with the key in `~/.local/share/goatty-registry-keys/`, never committed) and `../goatty-plugin-template` = https://github.com/goatty-dev/goatty-plugin-template (template repo: fd example + Claude skill).
 - **Built-in plugins (#98):** autosuggestions, syntax highlighting, Starship, Atuin and fzf are plugin manifests in `crates/goatty-shell/plugins/<id>/`, compiled in (`goatty_shell::builtins`): always present, turned off via `plugins.<id>.enabled` (host.json v2 migrates the old `shell.zsh.*`/`prompt.starship`/`history.atuin*` keys), packages planned/installed like any plugin (`goattyd shell install`, `goatty-setup`). Manifests gained zsh-plugin packages (`source`, `system_paths`) and load-order slots (`zsh.load`, `zsh.after` → `plugins-<slot>.zsh`). `tools.rs` is gone; `packages.rs` locates packages.
 - **Links and paste safety:** `goatty_term::links` (OSC 8, URLs, paths with `:line:col` on wrapped lines; `Terminal::link_at`), `terminal/links.rs` (resolve/open; remote paths are copied), Ctrl+click by default (`links.open_on`, `links.file_opener`). `goatty_term::paste::check` + `paste_confirm.rs` dialog (`paste.confirm`). Settings → Terminal.
+- **Remote R1 (#5–#7):** protocol v6 with version negotiation (`MIN_PROTOCOL_VERSION`..=`PROTOCOL_VERSION`, append-only enums, legacy v5 retry), `Run` sessions. `goatty --ssh host` opens a connect window (`connect.rs`) that offers to install this build's goattyd on the host (`goatty_client::remote`: `~/.local/share/goatty/bin/goattyd-<ver>-p<proto>`, uploaded over ssh, checked by running it), to update+restart an old daemon (`goattyd stop --force`), or plain SSH (`--plain`: `ssh host` in a local session). goattyd is the default for hosts; plain SSH is the fallback, nothing else. ssh prompts show in GUI windows (goatty is its own `SSH_ASKPASS`, `askpass.rs`). Opt-in systemd user service: `goattyd service install|uninstall|status` (socket activation, linger warning). Release archives carry static musl goattyds in `remote/`.
 - **Next:** Stage 1 (tabs/splits, IME, box drawing, …) in parallel with remote R1, plus the rest of Stages 3/4 (GUI first-run/diagnostics, OSC 133 in the UI, settings polish). See the GitHub issues and milestones.
 
 Roadmap: Stage 1 terminal → Stage 2 daemon/sessions (partly done) → Stage 3 managed Zsh environment → Stage 4 profile engine + settings GUI → Stage 5 plugin system → Stage 6 more shells/OSes → Stage 7 remote/web ecosystem. Remote track R1–R3 runs alongside.
 
 ## Workflow rules
 
-- Repo: https://github.com/goatty-dev/goatty (public). Default branch `main`. Do feature work on branches and open PRs. CI must be green (`.github/workflows/ci.yml`). Releases come from `v*` tags (`release.yml` builds linux x86_64 tarballs). `scripts/ci-deps.sh` installs the GPUI system libraries on Debian/Ubuntu.
+- Repo: https://github.com/goatty-dev/goatty (public). Default branch `main`. Do feature work on branches and open PRs. CI must be green (`.github/workflows/ci.yml`). Releases come from `v*` tags (`release.yml` builds linux x86_64 tarballs that carry static x86_64/aarch64 goattyds in `remote/` for remote installs). `scripts/ci-deps.sh` installs the GPUI system libraries on Debian/Ubuntu.
 
 - **Every open item becomes a GitHub issue** in [goatty-dev/goatty](https://github.com/goatty-dev/goatty/issues). That covers every TODO, known bug, untested path, deferred decision or follow-up you notice, even if it's out of scope for the current task. Don't leave open items only in chat, code comments, or doc prose.
   - Create them with `gh issue create --title … --body-file … --label … --milestone …`. Reference other issues as `#N`.
@@ -49,13 +50,13 @@ Roadmap: Stage 1 terminal → Stage 2 daemon/sessions (partly done) → Stage 3 
 ```
 crates/
   goatty-term/    terminal engine: the ONLY crate that touches rio-vt. Terminal, Frame snapshots, palette, input encoding, paste checks, link detection, PTY, reattach/resync snapshots
-  goatty-proto/   wire protocol v2: msg.rs (types), codec.rs (framing), paths.rs (socket path)
-  goatty-client/  Connection (reconnecting, multiplexed; reader/writer/heartbeat threads), Control (blocking CLI client), transports. No UI deps
+  goatty-proto/   wire protocol (v6, negotiated range): msg.rs (types, compatibility rules), codec.rs (framing), paths.rs (socket path)
+  goatty-client/  Connection (reconnecting, multiplexed; reader/writer/heartbeat threads), Control (blocking CLI client), transports (ssh stderr/askpass), remote (install/probe/RemoteProblem), askpass, service (systemd units). No UI deps
   goatty-config/  profile model: ClientSettings/HostSettings, store (lenient load, migrations, sparse save, backups), themes, keys, profile export/import, GOATTY_* overrides, colorspace (HSV/HSL/Oklch + lenient color parser), color picker history
   goatty-shell/   managed zsh: Launcher, rendering (zsh/*.zsh + settings.zsh/starship.toml/plugins-*.zsh), generations, HostService, built-in plugins (plugins/<id>/ + builtins.rs), packages + installer, doctor, `shell` commands, plugins/ (registry, lock, plans, installs, load order, `plugin` commands)
   goatty-plugin/  plugin format + trust: manifest, schema, template, permissions, zsh, bundle, index + sign, fetch, api; bin goatty-plugin
-  goatty-daemon/  lib (server, client, session, proxy) + bin goattyd: `serve`, `proxy`, `list`, `kill`, `send`, `stop`, `shell …`
-  goatty-app/     GPUI client (bin `goatty`): cli, app, settings (AppSettings global), actions, workspace, session, command_palette/ (registry, fuzzy), toast/ (stack, layer), paste_confirm, terminal/{view,element,glyphs,keys,links,stats}, settings_window/, ui/ (controls, text_input, color_picker, icons)
+  goatty-daemon/  lib (server, client, session, proxy) + bin goattyd: `serve`, `proxy`, `list`, `kill`, `send`, `stop [--force]`, `service …`, `shell …`
+  goatty-app/     GPUI client (bin `goatty`): cli, app, connect (remote connect window), askpass (ssh prompts), settings (AppSettings global), actions, workspace, session, command_palette/ (registry, fuzzy), toast/ (stack, layer), paste_confirm, terminal/{view,element,glyphs,keys,links,stats}, settings_window/, ui/ (controls, text_input, color_picker, icons)
 docs/             plan, architecture, findings, remote architecture, archive/
 .github/          CI (fmt, clippy -D warnings, tests, bench smoke), release on v* tags, dependabot, issue/PR templates
 scripts/          smoke.sh (visual), bench.sh/perf.sh (GUI throughput)
@@ -67,7 +68,10 @@ scripts/          smoke.sh (visual), bench.sh/perf.sh (GUI throughput)
 cargo build --release --workspace
 ./target/release/goatty                 # attach newest detached session (auto-starts goattyd)
 ./target/release/goatty --new | --attach <id> | --local
-./target/release/goatty --ssh <host> [--remote-daemon PATH]
+./target/release/goatty --ssh <host> [--remote-daemon PATH]   # offers to install goattyd there if needed
+./target/release/goatty --ssh <host> --plain     # plain `ssh host` in a local session, nothing installed
+./target/release/goattyd service install|uninstall|status   # opt-in systemd user service (servers: + loginctl enable-linger)
+./target/release/goattyd stop --force            # also stops a goattyd of another protocol version
 ./target/release/goatty --via 'docker exec -i box goattyd proxy'
 ./target/release/goattyd list | stop
 ./target/release/goattyd shell status          # what the managed zsh loads, what's missing, startup ms
@@ -92,7 +96,7 @@ FLOOD=big.txt scripts/bench.sh goatty ./target/release/goatty --local
 Settings live in `~/.config/goatty/settings.json` (client) and `host.json` (host); env vars override them for one run. Env: `GOATTY_SOCKET`, `GOATTY_SHELL`, `GOATTY_SHELL_MANAGED=0` (plain zsh), `GOATTY_ZSH_USER_RC=1` (also source ~/.zshrc), `GOATTY_THEME`, `GOATTY_FONT`, `GOATTY_FONT_SIZE`, `GOATTY_STATS=1`, `GOATTY_RENDER=shaped`, `RUST_LOG`.
 
 - Tests that start a daemon or run the CLIs must use their own `GOATTY_SOCKET` and a sandboxed `HOME`. Tests that run the managed zsh use a sandboxed `$HOME`/XDG dirs (`Dirs::under`), never the real ones. Never touch the user's running daemon at `$XDG_RUNTIME_DIR/goatty/goattyd.sock` (it holds their live sessions).
-- After a protocol change, an old running goattyd can't talk to the new client. Tell the user instead of killing it.
+- After a protocol change, a running goattyd outside the new client's version range can't talk to it. Tell the user instead of killing it.
 - The test build compiles gpui and is slow the first time; run long commands in the background.
 
 ## Architecture conventions
@@ -100,7 +104,8 @@ Settings live in `~/.config/goatty/settings.json` (client) and `host.json` (host
 - **Daemon owns sessions; the GUI is always a client.** The daemon's VT is authoritative and is the only one that answers terminal queries. The client mirrors it by feeding the same bytes into its own `Terminal` (`answer_queries = false`).
 - **Wire = raw VT bytes + VT-byte snapshots**, never rio-vt types. `Attached` snapshots start with RIS; `Resync` snapshots must not reset (the client keeps its scrollback).
 - **Flow control is in the protocol:** clients `Ack` consumed bytes. Past `window`, the daemon skips and later sends `Resync`. Local window 8 MiB (lossless), remote 256 KiB.
-- **Protocol compatibility:** `Hello` stays variant 0 with `version` as its first field in both enums. Bump `PROTOCOL_VERSION` on any wire change.
+- **Protocol compatibility:** `Hello` stays variant 0 with `version` as its first field in both enums. Peers negotiate a version in `MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION`; the enums are append-only (new variants at the end, never change existing ones, bump `PROTOCOL_VERSION`, mark `vN:`), and neither side sends a message newer than the agreed version. Raise `MIN_PROTOCOL_VERSION` only for a change that can't be appended.
+- **Remote hosts:** goattyd is the default, plain SSH the only fallback (no third mode). goatty changes nothing on a host outside `~/.local/share/goatty`, installs only after the user agreed, and never restarts a daemon (ending its sessions) without saying so. `GOATTY_ASKPASS` is internal plumbing (goatty → ssh → goatty), read only in `goatty_client::askpass`.
 - **Never block the UI thread on I/O:** writes go through the client's writer thread; the UI is woken through the coalescing `Waker` (one notify per frame).
 - **Threads, not async** (until a QUIC transport needs tokio). Encode a broadcast frame once and share it via `Arc<[u8]>`.
 - Don't use `std::io::copy` between pipes and Unix sockets: on Linux it uses `splice()`, which stalled the proxy. Use plain read/write loops, and write binary data to stdout through the raw fd.

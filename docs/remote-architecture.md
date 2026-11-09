@@ -1,6 +1,6 @@
 # Remote goattyd: architecture and plan
 
-**Date:** 2026-11-07 · **Status:** R0 implemented in the prototype (protocol v2, SSH/stdio transports, flow control, reconnect). R1 onward is planned.
+**Date:** 2026-11-07, updated 2026-11-09 · **Status:** R0 implemented (protocol v2, SSH/stdio transports, flow control, reconnect). R1 in progress: version negotiation, goattyd auto-install, plain SSH fallback, SSH prompts in the GUI and the systemd user service are done (§5a, §5b).
 
 **Goal:** the GUI connects to *any* goattyd: on this machine, on a home server over Tailscale, on a cloud box over SSH, or in a container. Rendering stays local on the GPU. Sessions live on the host and survive the client. Local performance must not regress, and remote must stay usable on poor links.
 
@@ -18,6 +18,8 @@ This turns the ideas in [`archive/remote-goattyd-plan.md`](archive/remote-goatty
 | D4 | **One connection per host, multiplexing every session** (Stage 0 used one connection per pane). | Each SSH connection costs a handshake (100 ms to 1 s) and a process. Per-pane flow control now comes from per-subscriber windows (D3), not from per-socket backpressure. |
 | D5 | **Remote transport = a stdio command running `goattyd proxy` on the host.** `ssh host` is the default. | goatty contains no SSH code, yet gets `~/.ssh/config`, agent, keys, ProxyJump, ControlMaster, known_hosts and Tailscale SSH for free. The same mechanism works for `docker exec`, `kubectl exec` and `distrobox`. The daemon never listens on a network port. |
 | D6 | **Wire types are goatty-owned** (`goatty-proto`). rio-vt types never cross the wire; snapshots are plain VT byte streams. | Swapping the VT core (rio → alacritty_terminal) doesn't break remote compatibility. |
+| D8 | **Two ways to reach a host: goattyd (default) or plain SSH (fallback). No third mode.** | See §5a. goattyd gives persistence, reconnect, the managed shell, host settings and plugins; goatty installs it with one confirmation. Plain SSH is `ssh host` in a session of the *local* goattyd, for hosts goattyd can't or shouldn't run on. A raw "remote PTY over an ssh channel" mode would fork every feature into two code paths (against D1) for no gain over plain SSH. |
+| D9 | **Peers negotiate a protocol version from a range; the wire grows append-only.** | §4. A GUI update no longer strands the sessions in a running daemon, as long as the ranges overlap. |
 | D7 | **Threads, not async**, still. Per connection: reader + writer thread. Per session: PTY reader + reply thread. | Simple and fast at the scale of "tens of sessions". Revisit only for a QUIC transport (R2), where quinn requires tokio. |
 
 ## 2. Why bytes plus a mirror VT, not structured screen updates
@@ -61,7 +63,8 @@ Crates: `goatty-proto` (wire types, framing), `goatty-client` (transports, `Conn
 
 Framing: `u32` LE length + postcard. Byte payloads use `serde_bytes`, so a 64 KiB chunk carries a ~5-byte header.
 
-- **Handshake:** `Hello{version, client}` → `Hello{version, daemon_pid, host: HostInfo}`. Exact version match for now; a mismatch fails with a clear message.
+- **Handshake and versions (v6):** `Hello{version, client}` → `Hello{version, daemon_pid, host: HostInfo}`. Each build speaks `MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION` (now 5–6). The client announces its newest version; the daemon answers with `min(client, its newest)`, or with its own newest and hangs up when that's below its minimum, so the client can tell "daemon too old" from "daemon too new" (`VersionMismatch`). Afterwards neither side sends a message newer than the agreed version (e.g. `Connection::run` needs v6). This only works because the enums are **append-only**: new messages are new variants at the end, existing ones never change, each addition bumps `PROTOCOL_VERSION` and is marked `vN:` in `msg.rs`; anything else raises `MIN_PROTOCOL_VERSION`. Daemons up to v5 required an exact match and reply `Error("protocol mismatch: daemon vN, …")`; the client parses that once and reconnects announcing `vN`, so a new GUI keeps working with a running v5 daemon.
+- **`Run` (v6):** like `Create`, but the session runs a given `argv` instead of the user's shell (plain SSH uses it).
 - **Requests** carry a client-chosen `ReqId`: `ListSessions`, `Create`, `Attach`, `Kill`, `SendInput`, `Shutdown` → `Sessions | Attached | Ok | Error{req}`.
 - **Streams are keyed by `SessionId`.** The daemon encodes each PTY chunk **once** and shares the same `Arc<[u8]>` frame with every subscriber on every connection.
 - **Stream:** `Attached{snapshot}` (starts with RIS, replays ≤ `history` lines), then `Output{data}`, with optional `Resync{skipped, snapshot}` (does *not* reset, so client scrollback is kept), then `Exited`.
@@ -91,8 +94,10 @@ Covered by `slow_client_is_skipped_forward_with_resync`: an 8 MB flood to a non-
 ### Local
 `$XDG_RUNTIME_DIR/goatty/goattyd.sock`, dir 0700, socket 0600. The client auto-starts `goattyd serve` with `setsid` if it's missing.
 
-### SSH (implemented: `goatty --ssh <host> [--remote-daemon PATH]`)
-Runs `ssh -T -e none -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o ConnectTimeout=10 <host> sh -c '…'`. The remote script finds `goattyd` in `PATH`, `~/.local/bin` or `~/.cargo/bin` (non-interactive SSH often lacks those in PATH), then execs `goattyd proxy`. It is POSIX sh because the login shell may be fish.
+### SSH (implemented: `goatty --ssh <host> [--remote-daemon PATH] [--plain]`)
+`Endpoint::Ssh` runs `ssh -T -e none -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o ConnectTimeout=10 -- <host> sh -c '…'` (`--` so a host can't be read as an option). The remote script prefers this build's installed goattyd (`~/.local/share/goatty/bin/goattyd-<version>-p<protocol>`), then `goattyd` in `PATH`, `~/.local/bin` or `~/.cargo/bin` (non-interactive SSH often lacks those in PATH), and execs `goattyd proxy`. Before that it prints one line to stderr, `goatty-remote: <uname -s> <uname -m> <path or ->`, which tells the client the host's platform and what it found without another round trip. It is POSIX sh because the login shell may be fish.
+
+ssh's stderr is captured (logged, last 40 lines kept): a failed connect shows ssh's own message instead of "no greeting". Prompts are unaffected, since ssh asks on `/dev/tty` or through askpass, never on stderr.
 
 `goattyd proxy` connects to the host's daemon socket, starting the daemon if needed, and relays bytes in both directions. It writes stdout through the raw fd, because std's `Stdout` is line-buffered and would hold binary frames back.
 
@@ -102,7 +107,42 @@ Runs `ssh -T -e none -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o Conne
 E.g. `--via 'docker exec -i devbox goattyd proxy'`. The tests use this with the local `goattyd proxy` to exercise the full remote path, including reconnect, without ssh.
 
 ### Socket watchdog (implemented)
+If another listener has taken over the path (a second daemon, or a systemd socket installed meanwhile), the watchdog leaves it alone and says so once.
+
 On servers, logind deletes `/run/user/$UID` when the last login session ends, unless linger is enabled. The daemon survives, but its socket path disappears, and the next `ssh host goattyd proxy` would silently start a second, empty daemon. goattyd checks the socket's inode every 2 s and re-binds if it changed. (R1 also recommends `loginctl enable-linger` and ships a systemd user unit.)
+
+## 5a. goattyd vs. plain SSH (decided 2026-11-09, #5)
+
+Connecting to a host always means goattyd on that host, unless the user picks plain SSH.
+
+`goatty --ssh host` opens a small connect window (`goatty-app/src/connect.rs`; connecting no longer blocks before the GUI starts). Failures goatty can fix become questions (`RemoteProblem`):
+
+| Situation | Offered |
+|---|---|
+| No goattyd on the host, platform supported | **Install goattyd** · Plain SSH · Cancel |
+| Platform without a goattyd build (macOS, BSD, armv7, …) | Plain SSH · Cancel |
+| Supported, but this goatty carries no binary for it | Retry (after installing by hand) · Plain SSH · Cancel |
+| Running goattyd older than our range | **Update and restart** (says it ends the host's sessions) · Plain SSH · Cancel |
+| This build's goattyd installed, but an older daemon still runs | **Restart goattyd** (same warning) · Plain SSH · Cancel |
+| Running goattyd newer than our range | Plain SSH · Cancel ("update goatty on this computer"); goatty never downgrades a daemon |
+| Anything else (auth, network) | Retry · Plain SSH · Close, with ssh's last words |
+
+**Install** (`remote::install`) streams the binary over the same ssh into `~/.local/share/goatty/bin/.goattyd-….$$`, checks the size, runs `--version` there (catches wrong CPU, too-old libc, `noexec` home), then renames it into place. Nothing else on the host changes: no sudo, no PATH or dotfile edits; `rm -r ~/.local/share/goatty` undoes it. Restarting runs that goattyd's `stop --force`, which stops a daemon of *any* version through its socket (`SO_PEERCRED`, only if the process is a `goattyd`; through systemd when it's the service). The binaries come from the release archive: `remote/goattyd-{x86_64,aarch64}-linux`, static musl builds (`release.yml`; measuring them against glibc: #132). Development builds upload their own `goattyd` when the host has the same CPU, with a note that it may not run on an older libc. Like VS Code's server, versions live side by side; pruning old ones is #129.
+
+**Plain SSH** (`--plain`, or the button) runs `ssh -- host` in a session of the local goattyd (`Run`, v6), falling back to a window-owned PTY if the local daemon is too old. You get exactly what `ssh` in any terminal gives: the user's ssh config, prompts in the terminal, the host's own shell. Nothing is installed, and nothing of goatty runs there (no managed shell, no host settings or plugins; the settings window configures the local host). The session survives closing the window (the ssh process lives in the local daemon), but not a network drop. Typing `ssh host` inside a goatty shell is the same thing and needs no feature at all.
+
+Remembering the choice per host belongs to the host list (#4).
+
+## 5b. SSH prompts in the GUI (#6) and goattyd as a systemd service (#7)
+
+**Prompts.** For `Endpoint::Ssh` the GUI sets `SSH_ASKPASS` to its own binary, `SSH_ASKPASS_REQUIRE=force` (OpenSSH ≥ 8.4; also when started from a terminal) and `GOATTY_ASKPASS=1` (internal marker, not a setting). ssh then runs `goatty "<prompt>"`; `main` sees the marker and shows one small window (`goatty-app/src/askpass.rs`): a masked field for passphrases and passwords, "Trust and connect"/"Cancel" for unknown host keys (answers `yes`/`no`), Yes/No for `SSH_ASKPASS_PROMPT=confirm`, a notice for `none` (security key touch). Answer on stdout, verdict in the exit status. The prompt kind is decoded in `goatty_client::askpass`. Reconnects can prompt again (#130).
+
+**systemd user service** (opt-in: `goattyd service install|uninstall|status`). `goattyd.socket` listens on `%t/goatty/goattyd.sock` (0600, dir 0700); `goattyd.service` runs `goattyd serve`, which takes fd 3 per `sd_listen_fds` and removes `LISTEN_*` so shells don't inherit them. Clients that find the socket missing start the socket unit (`systemctl --user start goattyd.socket`) when it's installed, otherwise a detached daemon as before. Decisions:
+
+- **Opt-in, not the default.** Without lingering, systemd stops user services, and with them every session, when the last login session ends: on a server that is every SSH disconnect. The detached daemon survives that (unless logind's `KillUserProcesses=yes`). `install` reports the linger state and prints `loginctl enable-linger` instead of running it. On desktops, a systemd-started daemon gets the user manager's environment, not the GUI's (`SSH_AUTH_SOCK`, PATH additions), which shells notice.
+- **No `Requires=goattyd.socket`** in the service: stopping or uninstalling the socket never takes sessions with it. `uninstall` leaves a running daemon alone.
+- **Never hijack a running daemon:** `install` only starts the socket when no daemon started the old way is serving the path; otherwise systemd takes over after it stops.
+- **FDSTORE** (shells surviving a daemon restart or upgrade) is designed but not built: #131.
 
 ## 6. Reconnect (implemented)
 
@@ -152,9 +192,9 @@ Protocol v2, `goatty-client` crate, multiplexed connections, ack/window flow con
 
 ### R1: remote MVP polish (next; tracked in the [R1 milestone](https://github.com/goatty-dev/goatty/milestone/1))
 1. **Host list and switcher UI**: parse `~/.ssh/config` `Host` entries plus "Add host". Show user@host, OS and RTT, plus a sessions-per-host picker (`list_sessions` already exists).
-2. **Remote goattyd install and version match**: if `Hello` fails or the version differs, offer to upload the matching static goattyd (`x86_64`/`aarch64` musl) to `~/.local/share/goatty/bin/goattyd-<ver>` over the same ssh and use it. Like VS Code Server, this makes "it just works" possible for new-to-Linux users. Needs version-range negotiation instead of exact match.
-3. **SSH prompts in the GUI**: set `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force` pointing at a tiny goatty askpass helper. Today prompts only work when goatty was launched from a terminal.
-4. **Daemon as systemd user service** plus docs on `loginctl enable-linger` for servers. Integrates with the FDSTORE idea from Stage 0 (shells survive daemon upgrades).
+2. ✅ **Remote goattyd install and version negotiation**, plus the plain SSH fallback (§4, §5a).
+3. ✅ **SSH prompts in the GUI** through goatty as `SSH_ASKPASS` (§5b).
+4. ✅ **Daemon as systemd user service** (opt-in, socket-activated) with linger guidance (§5b). FDSTORE: #131.
 5. **Interactive priority in the daemon writer**: small frames (echo, prompts) jump ahead of bulk frames from flooding panes. This removes most cross-pane head-of-line delay on one link.
 6. **Adaptive window**: measure delivery rate from acks and RTT from pings, then set `window ≈ max(64 KiB, rate × 50 ms)`. A fast LAN streams losslessly, a slow link skips early.
 7. **Lazy history**: `FetchHistory{session, before_line, count}` fills the client's scrollback on demand. It covers both the trimmed attach snapshot and lines skipped by resync. It needs stable line numbering (absolute line index since session start) in the snapshot.
@@ -176,12 +216,12 @@ Mosh-style **local echo prediction** using the client's mirror VT, which we alre
 
 | Risk | Mitigation |
 |---|---|
-| Version skew between GUI and remote daemon | Exact match today, clear error. R1: version range plus auto-upload |
+| Version skew between GUI and remote daemon | Version range negotiation; install/restart from the connect window (§5a) |
 | Head-of-line blocking across panes on one SSH stream | Bounded by Σ windows; R1 interactive priority; R2 QUIC streams |
 | Scrollback gaps after resync | R1 lazy history from the daemon's authoritative scrollback |
 | Security: proxy access = full control of the daemon | Same trust as an SSH shell on that host; the daemon socket stays 0600 and is never exposed |
-| `$XDG_RUNTIME_DIR` removed on logout | Watchdog re-bind (done); systemd user unit + linger (R1) |
-| `goattyd` not in PATH for non-interactive SSH | Script searches common dirs; `--remote-daemon`; R1 auto-install |
+| `$XDG_RUNTIME_DIR` removed on logout | Watchdog re-bind (done); systemd user unit + linger (done, opt-in) |
+| `goattyd` not in PATH for non-interactive SSH | Script searches common dirs; `--remote-daemon`; auto-install (done) |
 | Windows client | `Endpoint::Command` with `ssh.exe` works unchanged; local transport needs named pipes instead of Unix sockets, and process detaching instead of `setsid` |
 | Session size conflicts with two clients | R1 controlling-client policy |
 
@@ -189,9 +229,12 @@ Mosh-style **local echo prediction** using the client's mirror VT, which we alre
 
 ```sh
 cargo build --release --workspace
-# on the server (same version!): cargo install --path crates/goatty-daemon  → ~/.cargo/bin/goattyd
+# goatty offers to install goattyd on the server if it's missing or too old
+# (or install it yourself: cargo install --path crates/goatty-daemon → ~/.cargo/bin/goattyd)
 
 ./target/release/goatty --ssh myserver          # ~/.ssh/config alias, user@host, or a Tailscale name
+./target/release/goatty --ssh myserver --plain  # just `ssh myserver` in a local session
+goattyd service install                         # on a server: systemd user service (+ loginctl enable-linger)
 ./target/release/goatty --ssh myserver --new    # another session on that host
 ./target/release/goatty --via 'docker exec -i devbox goattyd proxy'
 

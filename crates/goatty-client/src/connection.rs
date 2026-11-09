@@ -8,12 +8,17 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
 use goatty_proto::{
-    ClientMsg, FileDiff, Frame, GenerationInfo, HostInfo, ReqId, ServerMsg, SessionId, SessionInfo, StreamOpts, WinSize, encode, read_msg,
+    ClientMsg, FileDiff, Frame, GenerationInfo, HostInfo, PROTOCOL_VERSION, RUN_SINCE, ReqId, ServerMsg, SessionId, SessionInfo,
+    StreamOpts, WinSize, encode, read_msg,
 };
 use parking_lot::Mutex;
 
+use crate::handshake::Outcome;
 use crate::transport::{Closer, Endpoint, Transport};
-use crate::{PaneEvent, PaneSink, handshake};
+use crate::{PaneEvent, PaneSink, handshake, remote};
+
+/// How long to wait for a failed transport command's last words on stderr.
+const STDERR_GRACE: Duration = Duration::from_secs(2);
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// Plugin operations download releases and registries.
@@ -71,6 +76,11 @@ struct Shared {
     pending: Mutex<HashMap<ReqId, Pending>>,
     next_req: AtomicU32,
     host: Mutex<HostInfo>,
+    /// The protocol version we announce: ours, or lower after an old
+    /// exact-match daemon told us its version.
+    announce: AtomicU32,
+    /// The version agreed on the current link.
+    version: AtomicU32,
     connected: AtomicBool,
     closed: AtomicBool,
     closer: Mutex<Option<Closer>>,
@@ -103,17 +113,53 @@ impl Shared {
         }
     }
 
-    fn handshake(&self, mut t: Transport) -> Result<(Reader, HostInfo, u32)> {
-        t.writer.write_all(&handshake::hello(&self.client_name)?)?;
-        t.writer.flush()?;
+    /// Open a transport and shake hands, announcing a lower version once if
+    /// an old daemon asks for it.
+    fn connect(&self) -> Result<(Reader, HostInfo, u32)> {
+        for _ in 0..2 {
+            if let Some(ok) = self.handshake(self.endpoint.connect()?)? {
+                return Ok(ok);
+            }
+        }
+        bail!("goattyd via {} keeps rejecting the handshake", self.endpoint.label())
+    }
+
+    /// `None`: try again with the (now lowered) announced version.
+    fn handshake(&self, mut t: Transport) -> Result<Option<(Reader, HostInfo, u32)>> {
+        let announced = self.announce.load(Ordering::Relaxed);
+        let stderr = t.stderr.clone();
         // A transport that never answers (hung ssh) is torn down by the caller
-        // via the stored closer, which unblocks this read.
+        // via the stored closer, which unblocks the read.
         *self.closer.lock() = Some(t.closer.clone());
-        let (host, pid) = handshake::read_greeting(&mut t.reader, self.endpoint.label())?;
-        let _ = self.out.send(WriterCmd::Replace(t.writer));
-        self.last_rx_us.store(self.now_us(), Ordering::Relaxed);
-        self.connected.store(true, Ordering::Release);
-        Ok((t.reader, host, pid))
+        let greeting = t
+            .writer
+            .write_all(&handshake::hello(&self.client_name, announced)?)
+            .and_then(|()| t.writer.flush())
+            .map_err(anyhow::Error::from)
+            .and_then(|()| handshake::read_greeting(&mut t.reader, self.endpoint.label(), announced));
+        match greeting {
+            Ok(Outcome::Ok(g)) => {
+                let _ = self.out.send(WriterCmd::Replace(t.writer));
+                self.version.store(g.version, Ordering::Relaxed);
+                self.last_rx_us.store(self.now_us(), Ordering::Relaxed);
+                self.connected.store(true, Ordering::Release);
+                Ok(Some((t.reader, g.host, g.pid)))
+            }
+            Ok(Outcome::RetryWith(v)) => {
+                log::info!("goattyd via {} only speaks protocol v{v}; reconnecting with that", self.endpoint.label());
+                self.close_transport();
+                self.announce.store(v, Ordering::Relaxed);
+                Ok(None)
+            }
+            Err(e) => {
+                self.close_transport();
+                let lines = stderr.wait(STDERR_GRACE);
+                Err(match &self.endpoint {
+                    Endpoint::Ssh(target) => remote::diagnose(&target.host, e, &lines),
+                    _ => remote::with_stderr(e, &lines),
+                })
+            }
+        }
     }
 }
 
@@ -136,6 +182,8 @@ impl Connection {
             pending: Mutex::new(HashMap::new()),
             next_req: AtomicU32::new(1),
             host: Mutex::new(HostInfo::default()),
+            announce: AtomicU32::new(PROTOCOL_VERSION),
+            version: AtomicU32::new(0),
             connected: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             closer: Mutex::new(None),
@@ -146,14 +194,14 @@ impl Connection {
 
         std::thread::Builder::new().name("goatty-writer".into()).spawn(move || writer_loop(out_rx))?;
 
-        let transport = shared.endpoint.connect()?;
-        let (reader, host, pid) = shared.handshake(transport)?;
+        let (reader, host, pid) = shared.connect()?;
         log::info!(
-            "connected to goattyd {} on {}@{} (pid {pid}, via {})",
+            "connected to goattyd {} on {}@{} (pid {pid}, via {}, protocol v{})",
             host.daemon_version,
             host.user,
             host.hostname,
-            shared.endpoint.label()
+            shared.endpoint.label(),
+            shared.version.load(Ordering::Relaxed)
         );
         *shared.host.lock() = host;
 
@@ -172,6 +220,11 @@ impl Connection {
 
     pub fn host(&self) -> HostInfo {
         self.shared.host.lock().clone()
+    }
+
+    /// The protocol version agreed with the daemon on the current link.
+    pub fn protocol_version(&self) -> u32 {
+        self.shared.version.load(Ordering::Relaxed)
     }
 
     pub fn is_connected(&self) -> bool {
@@ -228,6 +281,20 @@ impl Connection {
     pub fn create(&self, size: WinSize, cwd: Option<String>, sink: Arc<dyn PaneSink>) -> Result<SessionId> {
         let opts = self.shared.opts;
         match self.request(|tx| Pending::Attach { tx, sink, size }, |req| ClientMsg::Create { req, size, cwd, opts })? {
+            ServerMsg::Attached { session, .. } => Ok(session),
+            other => bail!("unexpected reply {other:?}"),
+        }
+    }
+
+    /// Start `argv` in a new session on the host (not the user's shell) and
+    /// attach `sink` to it. Needs a daemon with protocol v6.
+    pub fn run(&self, size: WinSize, cwd: Option<String>, argv: Vec<String>, sink: Arc<dyn PaneSink>) -> Result<SessionId> {
+        let version = self.protocol_version();
+        if version < RUN_SINCE {
+            bail!("goattyd via {} is too old to run commands in sessions (protocol v{version}); restart it", self.endpoint().label());
+        }
+        let opts = self.shared.opts;
+        match self.request(|tx| Pending::Attach { tx, sink, size }, |req| ClientMsg::Run { req, size, cwd, argv, opts })? {
             ServerMsg::Attached { session, .. } => Ok(session),
             other => bail!("unexpected reply {other:?}"),
         }
@@ -411,7 +478,7 @@ fn reader_main(s: Arc<Shared>, mut reader: Reader) {
                 return;
             }
             std::thread::sleep(Duration::from_millis(backoff.next().unwrap_or(5000)));
-            match s.endpoint.connect().and_then(|t| s.handshake(t)) {
+            match s.connect() {
                 Ok((r, host, pid)) => {
                     log::info!("reconnected to goattyd (pid {pid})");
                     *s.host.lock() = host;

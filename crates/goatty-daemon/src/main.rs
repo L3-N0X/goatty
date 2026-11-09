@@ -25,7 +25,15 @@ enum Cmd {
     /// Type text into a session. `\r`, `\n` and `\e` are unescaped (`\r` = Enter).
     Send { id: SessionId, text: String },
     /// Stop the daemon and all its sessions.
-    Stop,
+    Stop {
+        /// Also stop a daemon this goattyd can't talk to (another protocol
+        /// version), found through its socket.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Run goattyd as a systemd user service (socket-activated).
+    #[command(subcommand)]
+    Service(ServiceCmd),
     /// goatty's managed zsh on this host: status, tool installs.
     #[command(subcommand)]
     Shell(ShellCmd),
@@ -38,6 +46,16 @@ enum Cmd {
     /// Aliases in goatty's shells on this host: yours and the ones plugins bring.
     #[command(subcommand)]
     Alias(AliasCmd),
+}
+
+#[derive(Subcommand)]
+enum ServiceCmd {
+    /// Install and enable goattyd.socket + goattyd.service in ~/.config/systemd/user.
+    Install,
+    /// Disable and remove the units (a running daemon keeps its sessions).
+    Uninstall,
+    /// Whether the units are installed and running, and whether lingering is on.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -257,7 +275,12 @@ fn main() -> Result<()> {
             let data = text.replace("\\r", "\r").replace("\\n", "\n").replace("\\e", "\x1b").into_bytes();
             Control::connect_local(CLIENT)?.send_input(id, data)
         }
-        Cmd::Stop => Control::connect_local(CLIENT)?.shutdown(),
+        Cmd::Stop { force } => stop(force),
+        Cmd::Service(cmd) => match cmd {
+            ServiceCmd::Install => service_install(),
+            ServiceCmd::Uninstall => service_uninstall(),
+            ServiceCmd::Status => service_status(),
+        },
         Cmd::Settings(cmd) => {
             use goatty_shell::cmd;
             let svc = goatty_shell::HostService::from_env(std::env::current_exe().ok());
@@ -328,6 +351,108 @@ fn main() -> Result<()> {
             }
         }
     }
+}
+
+/// `goattyd stop`: ask the daemon to shut down; with `force`, stop one that
+/// doesn't speak our protocol too (old versions, after an upgrade).
+fn stop(force: bool) -> Result<()> {
+    let err = match Control::connect_local(CLIENT).and_then(|mut c| c.shutdown()) {
+        Ok(()) => return Ok(()),
+        Err(e) if force => e,
+        Err(e) => return Err(e),
+    };
+    let path = goatty_proto::socket_path();
+    // Nothing listening: nothing to stop (remote updates run this blindly).
+    if std::os::unix::net::UnixStream::connect(&path).is_err() {
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+        eprintln!("goattyd isn't running");
+        return Ok(());
+    }
+    eprintln!("goattyd: {err:#}");
+    if goatty_client::service::status().service_active {
+        eprintln!("stopping goattyd.service");
+        let ok = std::process::Command::new("systemctl").args(["--user", "stop", goatty_client::service::SERVICE_UNIT]).status()?.success();
+        anyhow::ensure!(ok, "systemctl --user stop goattyd.service failed");
+        return Ok(());
+    }
+    let pid = goatty_client::control::socket_owner(&path)?;
+    // Under socket activation the listener belongs to systemd, never kill that.
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+    anyhow::ensure!(comm.starts_with("goattyd"), "{} belongs to pid {pid} ({}), not a goattyd", path.display(), comm.trim());
+    eprintln!("stopping pid {pid}");
+    let alive = || std::path::Path::new(&format!("/proc/{pid}")).exists();
+    // SAFETY: plain syscalls on a pid we just checked is our goattyd.
+    unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while alive() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if alive() {
+        // SAFETY: as above.
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    }
+    // The old daemon didn't get to remove its socket.
+    if goatty_client::control::socket_owner(&path).is_err() {
+        let _ = std::fs::remove_file(&path);
+    }
+    Ok(())
+}
+
+fn service_install() -> Result<()> {
+    use goatty_client::service;
+    let exe = std::env::current_exe()?;
+    let done = service::install(&exe, &goatty_proto::socket_path())?;
+    println!("installed {} and {} in {}", service::SOCKET_UNIT, service::SERVICE_UNIT, done.unit_dir.display());
+    if done.started {
+        println!("goattyd now starts through systemd on the first connection (logs: journalctl --user -u goattyd)");
+    } else {
+        println!(
+            "a goattyd started outside systemd is still running; systemd takes over once it stops\n\
+             (`goattyd stop` ends its sessions now, or it happens at your next login)"
+        );
+    }
+    print_linger(done.linger);
+    Ok(())
+}
+
+fn print_linger(linger: Option<bool>) {
+    match linger {
+        Some(true) => println!("lingering is on: goattyd and its sessions keep running after you log out"),
+        Some(false) => println!(
+            "lingering is off: systemd stops goattyd, and every session in it, when your last login session ends.\n\
+             On a server, keep them with `loginctl enable-linger` (may ask for your password)."
+        ),
+        None => println!("couldn't check lingering (`loginctl show-user $USER -p Linger`)"),
+    }
+}
+
+fn service_uninstall() -> Result<()> {
+    if goatty_client::service::uninstall()? {
+        println!("removed goattyd's systemd units; a running goattyd keeps its sessions until `goattyd stop`");
+    } else {
+        println!("goattyd's systemd units aren't installed");
+    }
+    Ok(())
+}
+
+fn service_status() -> Result<()> {
+    let s = goatty_client::service::status();
+    let dir = s.unit_dir.as_ref().map(|d| d.display().to_string()).unwrap_or_else(|| "?".into());
+    if !s.installed {
+        println!("not installed (units would go to {dir}); `goattyd service install` sets them up");
+        return Ok(());
+    }
+    println!("installed in {dir}");
+    if let Some(exec) = &s.exec_start {
+        println!("runs      {exec}");
+    }
+    let state = |on: bool| if on { "active" } else { "inactive" };
+    println!("socket    {}", state(s.socket_active));
+    println!("service   {}", state(s.service_active));
+    print_linger(s.linger);
+    Ok(())
 }
 
 #[cfg(test)]

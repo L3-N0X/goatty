@@ -28,7 +28,7 @@ cargo build --release --workspace
 ./target/release/goatty            # attach to newest detached session (auto-starts goattyd)
 ./target/release/goatty --new      # new session
 ./target/release/goatty --local    # no daemon, PTY owned by the window
-./target/release/goatty --ssh host # goattyd on another machine (needs goattyd installed there)
+./target/release/goatty --ssh host # goattyd on another machine (goatty offers to install it there)
 ./target/release/goatty --via 'docker exec -i box goattyd proxy'
 ./target/release/goatty --help
 

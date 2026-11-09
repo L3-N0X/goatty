@@ -7,7 +7,7 @@ use std::io::Read;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use goatty_client::{Connection, PaneEvent, PaneSink};
 use goatty_proto::WinSize;
 use goatty_shell::HostService;
@@ -132,9 +132,22 @@ impl Session {
     /// with the window. Same shell choice and managed zsh as goattyd.
     pub fn local(size: TermSize, host: &HostService) -> Result<Arc<Self>> {
         let launch = host.launcher.launch(&host.settings());
-        let (pty, reader) = Pty::spawn(&ShellCommand::new(launch.program, launch.args, launch.env), size)?;
-        let managed_pid = pty.pid().filter(|_| launch.managed);
-        if let Some(pid) = managed_pid {
+        Self::local_pty(size, ShellCommand::new(launch.program, launch.args, launch.env), launch.managed.then_some(host))
+    }
+
+    /// `argv` in a PTY owned by this process (when no daemon can run it).
+    pub fn local_command(size: TermSize, mut argv: Vec<String>) -> Result<Arc<Self>> {
+        anyhow::ensure!(!argv.is_empty(), "nothing to run");
+        let program = argv.remove(0);
+        Self::local_pty(size, ShellCommand::new(program, argv, Vec::new()), None)
+    }
+
+    /// `managed`: goatty's zsh, tracked by `host` for reloads.
+    fn local_pty(size: TermSize, cmd: ShellCommand, managed: Option<&HostService>) -> Result<Arc<Self>> {
+        let (pty, reader) = Pty::spawn(&cmd, size).with_context(|| format!("couldn't start {}", cmd.program))?;
+        let managed_pid = pty.pid().filter(|_| managed.is_some());
+        let host = managed.cloned();
+        if let (Some(pid), Some(host)) = (managed_pid, &host) {
             host.track_shell(pid);
         }
         let (terminal, chans) = Terminal::new(size, true, Arc::new(Palette::default()));
@@ -147,7 +160,6 @@ impl Session {
             }
         })?;
         let s2 = s.clone();
-        let host = host.clone();
         std::thread::Builder::new().name("pty-reader".into()).spawn(move || {
             let mut reader = reader;
             let mut buf = vec![0u8; 64 * 1024];
@@ -157,7 +169,7 @@ impl Session {
                     Ok(n) => s2.ingest(&buf[..n]),
                 }
             }
-            if let Some(pid) = managed_pid {
+            if let (Some(pid), Some(host)) = (managed_pid, &host) {
                 host.untrack_shell(pid);
             }
             s2.exited.store(true, Ordering::Release);
@@ -194,6 +206,21 @@ impl Session {
             }
         };
         log::info!("attached to session {id}");
+        if let Backend::Daemon { id: slot, .. } = &s.backend {
+            slot.store(id, Ordering::Relaxed);
+        }
+        Ok(s)
+    }
+
+    /// Run `argv` in a new session on the daemon behind `conn` (plain SSH:
+    /// `ssh host` in a session of the local daemon).
+    pub fn daemon_run(conn: Arc<Connection>, size: TermSize, argv: Vec<String>) -> Result<Arc<Self>> {
+        let (terminal, chans) = Terminal::new(size, false, Arc::new(Palette::default()));
+        let s = Arc::new(Self::new(terminal, chans.ui, Backend::Daemon { conn: conn.clone(), id: AtomicU64::new(0) }, None));
+        let sink = Arc::new(Sink(Arc::downgrade(&s)));
+        let cwd = conn.endpoint().is_local().then(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned())).flatten();
+        let id = conn.run(win(size), cwd, argv, sink)?;
+        log::info!("running in session {id}");
         if let Backend::Daemon { id: slot, .. } = &s.backend {
             slot.store(id, Ordering::Relaxed);
         }
