@@ -53,6 +53,7 @@ pub fn open_terminal_window(cx: &mut App, session: Arc<Session>, link: HostLink,
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             app_id: Some("dev.goatty.goatty".into()),
+            window_background: crate::workspace::background_appearance(&cx.global::<AppSettings>().client.terminal),
             ..Default::default()
         },
         |window, cx| {

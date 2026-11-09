@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use goatty_config::{ClientSettings, CursorShape, FontSettings, LinkClick, PasteConfirm, Renderer};
+use goatty_config::{ClientSettings, CopyOnSelect, CursorShape, FontSettings, LinkClick, MiddleClick, PasteConfirm, Renderer};
 use goatty_term::input::{Key, Mods, MouseAction, MouseButton, encode_key, encode_mouse, encode_paste};
 use goatty_term::paste::{self, PasteRisk};
 use goatty_term::{CursorKind, Frame, Link, SelectKind, TermMode, UiEvent};
@@ -96,6 +96,8 @@ pub struct TerminalView {
     zoom: f32,
     line_height: f32,
     padding: Pixels,
+    /// Background opacity (`terminal.opacity`).
+    opacity: f32,
     glyph_mode: bool,
     cursor_blink: bool,
     // Interaction state.
@@ -202,6 +204,7 @@ impl TerminalView {
             zoom: 0.0,
             line_height: settings.font.line_height,
             padding: px(settings.terminal.padding),
+            opacity: settings.terminal.opacity,
             glyph_mode: true,
             cursor_blink: true,
             selecting: false,
@@ -234,6 +237,7 @@ impl TerminalView {
         self.font_size = px((s.font.size + self.zoom).clamp(FontSettings::MIN_SIZE, FontSettings::MAX_SIZE));
         self.line_height = s.font.line_height;
         self.padding = px(s.terminal.padding);
+        self.opacity = s.terminal.opacity;
         self.glyph_mode = s.terminal.renderer == Renderer::Glyphs;
         self.cursor_blink = s.terminal.cursor_blink;
         if !self.cursor_blink {
@@ -309,6 +313,21 @@ impl TerminalView {
         }
     }
 
+    /// A finished mouse selection goes to the primary selection and/or the
+    /// clipboard (`selection.copy_on_select`).
+    fn copy_on_select(&mut self, cx: &mut Context<'_, Self>) {
+        let mode = cx.global::<AppSettings>().client.selection.copy_on_select;
+        if mode == CopyOnSelect::Off {
+            return;
+        }
+        let Some(text) = self.session.terminal.selection_text().filter(|t| !t.is_empty()) else { return };
+        let item = ClipboardItem::new_string(text);
+        if mode == CopyOnSelect::Clipboard {
+            cx.write_to_clipboard(item.clone());
+        }
+        write_primary(cx, item);
+    }
+
     /// The explicit copy action (menu, palette, Ctrl+Shift+C) says what it
     /// did; Ctrl+C with a selection (`copy_or_interrupt`) stays quiet.
     fn copy(&mut self, _: &Copy, window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -334,18 +353,28 @@ impl TerminalView {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<'_, Self>) {
-        if !self.paste_clipboard(cx) {
+        let text = cx.read_from_clipboard().and_then(|c| c.text());
+        if !self.paste_checked(text, cx) {
             toast::show_in(window, cx, Toast::info("Nothing to paste").body("The clipboard has no text.").key("terminal.paste"));
         }
     }
 
-    /// Returns false if the clipboard had no text. Pastes that need a
-    /// second look go to the workspace as [`TerminalEvent::ConfirmPaste`].
-    fn paste_clipboard(&mut self, cx: &mut Context<'_, Self>) -> bool {
-        let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else { return false };
-        if text.is_empty() {
-            return false;
-        }
+    /// Middle click: the primary selection or the clipboard
+    /// (`paste.middle_click`). Nothing there pastes nothing, quietly.
+    fn paste_middle_click(&mut self, cx: &mut Context<'_, Self>) {
+        let text = match cx.global::<AppSettings>().client.paste.middle_click {
+            MiddleClick::Off => return,
+            MiddleClick::Clipboard => cx.read_from_clipboard(),
+            MiddleClick::Primary => read_primary(cx),
+        };
+        self.paste_checked(text.and_then(|c| c.text()), cx);
+    }
+
+    /// Paste `text` through the paste check. Returns false if there was no
+    /// text. Pastes that need a second look go to the workspace as
+    /// [`TerminalEvent::ConfirmPaste`].
+    fn paste_checked(&mut self, text: Option<String>, cx: &mut Context<'_, Self>) -> bool {
+        let Some(text) = text.filter(|t| !t.is_empty()) else { return false };
         let risks = paste::check(&text, self.session.terminal.mode());
         if needs_confirmation(cx.global::<AppSettings>().client.paste.confirm, &risks) {
             cx.emit(TerminalEvent::ConfirmPaste(PasteRequest { text, risks }));
@@ -569,9 +598,7 @@ impl TerminalView {
                 self.selecting = true;
                 cx.notify();
             }
-            GMouseButton::Middle => {
-                self.paste_clipboard(cx);
-            }
+            GMouseButton::Middle => self.paste_middle_click(cx),
             _ => {}
         }
     }
@@ -585,7 +612,9 @@ impl TerminalView {
         }
         if self.selecting {
             self.selecting = false;
-            if !self.session.terminal.has_selection() {
+            if self.session.terminal.has_selection() {
+                self.copy_on_select(cx);
+            } else {
                 self.session.terminal.selection_clear();
             }
             cx.notify();
@@ -658,6 +687,22 @@ impl TerminalView {
     }
 }
 
+/// The primary selection; the clipboard where there's none.
+fn read_primary(cx: &App) -> Option<ClipboardItem> {
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    return cx.read_from_primary();
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+    return cx.read_from_clipboard();
+}
+
+/// Set the primary selection where there is one.
+fn write_primary(cx: &App, item: ClipboardItem) {
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    cx.write_to_primary(item);
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+    let _ = (cx, item);
+}
+
 fn mouse_button(b: Option<GMouseButton>) -> Option<MouseButton> {
     match b? {
         GMouseButton::Left => Some(MouseButton::Left),
@@ -669,7 +714,9 @@ fn mouse_button(b: Option<GMouseButton>) -> Option<MouseButton> {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
-        let bg = hsla(self.session.terminal.palette().background);
+        // Only the default background is see-through; colored cells and
+        // text stay opaque (the window is transparent, see `Workspace`).
+        let bg = hsla(self.session.terminal.palette().background).opacity(self.opacity);
         let focused = self.focus.is_focused(window);
         let hint = self.hovered_target().map(|t| {
             let how = match self.link_click {

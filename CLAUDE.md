@@ -10,6 +10,7 @@ Read the relevant doc before larger work: `docs/architecture.md` (crate rules an
 - Keep this file and `.claude/rules/*` current when conventions change. Don't add status or progress notes.
 - Back performance claims with measurements and record the numbers in the relevant doc: `cargo run --release -p goatty-term --example vtbench` (VT parsing), `cargo run --release -p goatty-daemon --example netbench [proxy | slow 2m | ssh HOST]` (latency, flood), `FLOOD=big.txt scripts/bench.sh goatty ./target/release/goatty --local` (GUI throughput).
 - The test build compiles gpui and is slow the first time, so run long cargo commands in the background. `scripts/ci-deps.sh` installs the GPUI system libraries on Debian/Ubuntu.
+Dev environment: `nix develop` (or direnv, `.envrc` is `use flake`) gives the Rust toolchain, `just` and the GPUI system libraries from `flake.nix`; without nix, install them with `scripts/ci-deps.sh` and rustup. The `justfile` wraps the commands below (`just` lists the recipes; `just ci` runs what CI checks). Keep `flake.nix` in sync with `scripts/ci-deps.sh`.
 
 ## GitHub issues
 

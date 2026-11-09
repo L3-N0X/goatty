@@ -9,12 +9,17 @@
 
 use std::sync::Arc;
 
-use gpui::{AppContext, Context, Entity, Focusable, IntoElement, ParentElement, Render, Styled, Subscription, Window, div, prelude::*, px};
+use goatty_config::TerminalSettings;
+use gpui::{
+    AppContext, Context, Entity, Focusable, IntoElement, ParentElement, Render, Styled, Subscription, Window, WindowBackgroundAppearance,
+    div, prelude::*, px,
+};
 
 use crate::actions::ToggleCommandPalette;
 use crate::command_palette::{CommandPalette, PaletteEvent};
 use crate::paste_confirm::{PasteConfirm, PasteConfirmEvent};
 use crate::session::Session;
+use crate::settings::AppSettings;
 use crate::terminal::{PasteRequest, TerminalEvent, TerminalView};
 use crate::toast::ToastLayer;
 
@@ -34,8 +39,18 @@ impl Workspace {
         let appearance = cx.observe_window_appearance(window, |_, window, cx| {
             crate::settings::AppSettings::set_system_dark(cx, crate::settings::is_dark(window.appearance()));
         });
+        // `terminal.opacity` / `terminal.blur`, live.
+        let mut background = background_appearance(&cx.global::<AppSettings>().client.terminal);
+        window.set_background_appearance(background);
+        let settings = cx.observe_global_in::<AppSettings>(window, move |_, window, cx| {
+            let wanted = background_appearance(&cx.global::<AppSettings>().client.terminal);
+            if wanted != background {
+                background = wanted;
+                window.set_background_appearance(wanted);
+            }
+        });
         let toasts = cx.new(|cx| ToastLayer::new(window, cx));
-        Self { pane, palette: None, paste: None, toasts, _subscriptions: vec![sub, appearance] }
+        Self { pane, palette: None, paste: None, toasts, _subscriptions: vec![sub, appearance, settings] }
     }
 
     fn on_terminal_event(&mut self, pane: &Entity<TerminalView>, ev: &TerminalEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -91,6 +106,15 @@ impl Workspace {
             self.pane.focus_handle(cx).focus(window, cx);
             cx.notify();
         }
+    }
+}
+
+/// Opaque unless the terminal background is see-through.
+pub fn background_appearance(t: &TerminalSettings) -> WindowBackgroundAppearance {
+    match (t.is_transparent(), t.blur) {
+        (false, _) => WindowBackgroundAppearance::Opaque,
+        (true, false) => WindowBackgroundAppearance::Transparent,
+        (true, true) => WindowBackgroundAppearance::Blurred,
     }
 }
 

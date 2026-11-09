@@ -21,6 +21,7 @@ pub struct ClientSettings {
     pub workspace: WorkspaceSettings,
     pub links: LinkSettings,
     pub paste: PasteSettings,
+    pub selection: SelectionSettings,
     pub debug: DebugSettings,
 }
 
@@ -99,15 +100,28 @@ pub struct TerminalSettings {
     /// Cursor shape when the application doesn't ask for one.
     pub cursor_shape: CursorShape,
     pub cursor_blink: bool,
+    /// Opacity of the terminal background (0.1–1.0). Text and colored
+    /// cell backgrounds stay opaque. Below 1 the window is transparent,
+    /// which needs a compositor.
+    pub opacity: f32,
+    /// Blur what shows through a transparent background, where the
+    /// desktop supports it (KDE, macOS, Windows).
+    pub blur: bool,
 }
 
 impl TerminalSettings {
     pub const MAX_PADDING: f32 = 48.0;
+    pub const MIN_OPACITY: f32 = 0.1;
+
+    /// Whether the window needs to be transparent.
+    pub fn is_transparent(&self) -> bool {
+        self.opacity < 1.0
+    }
 }
 
 impl Default for TerminalSettings {
     fn default() -> Self {
-        Self { renderer: Renderer::Glyphs, padding: 6.0, cursor_shape: CursorShape::Block, cursor_blink: true }
+        Self { renderer: Renderer::Glyphs, padding: 6.0, cursor_shape: CursorShape::Block, cursor_blink: true, opacity: 1.0, blur: false }
     }
 }
 
@@ -236,10 +250,46 @@ pub enum PasteConfirm {
     Multiline,
 }
 
+/// What a middle click pastes (in programs without mouse reporting, or
+/// with Shift held).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MiddleClick {
+    /// The primary selection: the text last selected in any app (Linux).
+    /// Where there's no primary selection, the clipboard.
+    #[default]
+    Primary,
+    /// The clipboard.
+    Clipboard,
+    /// Nothing.
+    Off,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct PasteSettings {
     pub confirm: PasteConfirm,
+    pub middle_click: MiddleClick,
+}
+
+/// Where text selected with the mouse goes by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CopyOnSelect {
+    /// The primary selection (Linux), for middle-click pasting anywhere.
+    /// Elsewhere nothing.
+    #[default]
+    Primary,
+    /// The clipboard too (and the primary selection on Linux).
+    Clipboard,
+    /// Nowhere; copy explicitly.
+    Off,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SelectionSettings {
+    pub copy_on_select: CopyOnSelect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -264,6 +314,7 @@ impl Document for ClientSettings {
         clamp(&mut f.size, FontSettings::MIN_SIZE, FontSettings::MAX_SIZE, "font.size", &mut issues);
         clamp(&mut f.line_height, FontSettings::MIN_LINE_HEIGHT, FontSettings::MAX_LINE_HEIGHT, "font.line_height", &mut issues);
         clamp(&mut self.terminal.padding, 0.0, TerminalSettings::MAX_PADDING, "terminal.padding", &mut issues);
+        clamp(&mut self.terminal.opacity, TerminalSettings::MIN_OPACITY, 1.0, "terminal.opacity", &mut issues);
         // Theme names are checked against the theme library (user themes
         // live in their own files): `ThemeLibrary::resolve`.
         if self.theme.overrides.ansi.len() > 16 {
@@ -394,13 +445,15 @@ mod tests {
         let mut s = ClientSettings::default();
         s.font.size = 400.0;
         s.terminal.padding = -3.0;
+        s.terminal.opacity = f32::NAN;
         s.theme.name = "nope".into();
         s.keybindings.insert("ctrl-x".into(), Some("explode".into()));
         let issues = s.validate();
         assert_eq!(s.font.size, FontSettings::MAX_SIZE);
         assert_eq!(s.terminal.padding, 0.0);
+        assert_eq!(s.terminal.opacity, TerminalSettings::MIN_OPACITY);
         let paths: Vec<_> = issues.iter().map(|i| i.path.as_str()).collect();
-        assert_eq!(paths, ["font.size", "terminal.padding", "keybindings.ctrl-x"]);
+        assert_eq!(paths, ["font.size", "terminal.padding", "terminal.opacity", "keybindings.ctrl-x"]);
         assert!(ClientSettings::default().validate().is_empty());
     }
 }

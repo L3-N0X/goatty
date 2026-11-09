@@ -6,7 +6,7 @@ The profile is the source of truth for everything goatty manages. The settings w
 
 | Document | File (`$XDG_CONFIG_HOME/goatty/`) | Lives on | Contains |
 |---|---|---|---|
-| `ClientSettings` | `settings.json` | the machine running the window | font, theme, cursor, padding, renderer, keybindings, workspace (on launch), debug |
+| `ClientSettings` | `settings.json` | the machine running the window | font, theme, cursor, padding, background opacity/blur, renderer, keybindings, links, paste, selection (copy on select), workspace (on launch), debug |
 | `HostSettings` | `host.json` | each machine running a goattyd | shell program, managed zsh and its features, user dotfiles, prompt, history |
 
 The split follows where a setting takes effect. The window draws text, so fonts and colors are the client's. Shells run on the daemon's host, so their configuration belongs to that host. A remote host keeps its own `host.json`, and the settings window edits it through the protocol. Connecting to a different host shows that host's shell settings.
@@ -18,7 +18,7 @@ The split follows where a setting takes effect. The window draws text, so fonts 
 - **Lenient load.** A missing file means defaults. Invalid JSON means defaults plus an issue, and the file is left as it is. An invalid value (`"size": "big"`, an unknown enum variant, a negative `u32`) reverts *that value* to its default and becomes an `Issue { path: "font.size", message }`. Every other value is kept. This uses `serde_path_to_error` in a loop: deserialize, find the failing path, put the default back there, retry.
 - **Unknown keys** (for example, written by a newer goatty) are reported and kept. Saving puts them back. Maps with user-chosen keys (`keybindings`) are exempt (`Document::OPEN_MAPS`).
 - **Versions and migrations.** Each document has a `"version"`. Older versions run through `Document::migrations()`, a list of `(from_version, fn(&mut Value))`. A newer version is read as well as possible and flagged.
-- **Validation.** `Document::validate` clamps ranges (font size 6–48, line height 1–2, padding 0–48, history 100–10M), reports unknown theme and action names, and drops empty values.
+- **Validation.** `Document::validate` clamps ranges (font size 6–48, line height 1–2, padding 0–48, opacity 0.1–1, history 100–10M), reports unknown theme and action names, and drops empty values.
 - **Sparse save.** Only values that differ from the defaults are written, so improved defaults reach everyone who never changed that setting. The previous file goes to `backups/<name>-<unix time>.json` (newest 20 kept), and the new one replaces it atomically (temp file + rename). Unchanged content isn't rewritten.
 - **Environment overrides.** `GOATTY_*` variables (table in `goatty-config/src/lib.rs`) apply on top for one run and are never saved. The settings window edits the file value and lists the overrides that are active.
 
@@ -68,7 +68,8 @@ Settings travel as JSON documents rather than typed structs, so a schema change 
 
 | Page | Edits | Applies |
 |---|---|---|
-| Appearance | theme gallery, bold-is-bright, font size/line height/renderer, font family (filterable list), padding, cursor shape/blink | live, saved immediately |
+| Appearance | theme gallery, bold-is-bright, font size/line height/renderer, font family (filterable list), padding, background opacity (+ blur when below 100 %), cursor shape/blink | live, saved immediately |
+| Terminal | how links open, file opener command, copy on select (primary selection / clipboard / off), what a middle click pastes (primary selection / clipboard / nothing), when to ask before pasting | live |
 | Shell | program, managed zsh, user dotfiles, autosuggestions/highlighting/fzf/integration | staged → preview → apply |
 | Prompt | Starship, rich/minimal style, two-line, blank line, duration threshold, prefer own starship.toml | staged |
 | History | size, duplicates, leading space, sharing, Atuin, Atuin on Up | staged |
