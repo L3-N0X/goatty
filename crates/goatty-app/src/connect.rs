@@ -15,13 +15,23 @@
 //!   and nothing of goatty runs there; the session survives closing the
 //!   window, but not the network dropping.
 //!
+//! The local daemon gets the same treatment: one that speaks no protocol
+//! this goatty does, or that runs an older build than the installed goattyd
+//! (after an update or a `cargo build`), is restarted with the installed
+//! one. Right away when it holds no sessions (nothing is lost), else only
+//! after asking; "Keep it running" is remembered for that daemon
+//! (`goatty_client::local`).
+//!
 //! ssh's own questions (passphrases, host keys) come up as separate windows
 //! from `crate::askpass`. Connections come from `crate::hosts::pool`, so a
 //! second tab on a host reuses the first one's link.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
+use goatty_client::local::{self, LocalProblem, Outdated};
 use goatty_client::remote::{self, Bundled, Platform, Probe};
 use goatty_client::{Connection, Endpoint, RemoteProblem, SshTarget};
 use goatty_shell::HostService;
@@ -34,6 +44,7 @@ use gpui::{
 use crate::hosts::pool;
 use crate::session::{AttachMode, Session, Spawner, plain_ssh_argv};
 use crate::settings::AppSettings;
+use crate::toast::{self, Toast};
 use crate::ui::controls::{ButtonKind, button};
 use crate::ui::icons::Icon;
 use crate::ui::style::Ui;
@@ -68,8 +79,11 @@ enum Step {
 pub enum Choice {
     /// Upload goattyd, then connect.
     Install,
-    /// Upload goattyd if needed, stop the running (incompatible) daemon, connect.
+    /// Upload goattyd if needed, stop the running (incompatible or outdated)
+    /// daemon, connect.
     Restart,
+    /// Use the outdated local daemon anyway (and don't ask again for it).
+    Keep,
     Plain,
     Retry,
     Cancel,
@@ -216,6 +230,90 @@ fn failed(label: &str, error: &anyhow::Error, ssh: bool) -> Ask {
     Ask { title: format!("Couldn't connect to {label}"), body: vec![format!("{error:#}")], warning: None, choices, upload: None }
 }
 
+/// Turn a problem with the local daemon into a question. `installed`: the
+/// goattyd a restart starts.
+pub fn describe_local(problem: &LocalProblem, installed: Option<&std::path::Path>) -> Ask {
+    let close = (Choice::Cancel, "Close".to_string());
+    let restart = (Choice::Restart, "Restart goattyd".to_string());
+    let starts = match installed {
+        Some(p) => format!("Restarting stops it and starts {}.", p.display()),
+        None => "Restarting stops it and starts goattyd again.".into(),
+    };
+    match problem {
+        LocalProblem::Outdated { outdated, sessions } => {
+            let n = match sessions {
+                1 => "1 session".to_string(),
+                n => format!("{n} sessions"),
+            };
+            Ask {
+                title: "Restart goattyd with the new build?".into(),
+                body: vec![
+                    format!(
+                        "goattyd, which keeps your sessions, is still running an older build ({}, pid {}). {starts}",
+                        outdated.running.display(),
+                        outdated.pid
+                    ),
+                    "Keeping it works, but without what changed since. goatty won't ask again until it restarts.".into(),
+                ],
+                warning: Some(format!("Restarting goattyd ends the {n} running in it.")),
+                choices: vec![(Choice::Keep, "Keep it running".into()), restart],
+                upload: None,
+            }
+        }
+        LocalProblem::Incompatible(mismatch) => {
+            let daemon = match (&mismatch.daemon_version, mismatch.daemon_protocol) {
+                (Some(v), Some(p)) => format!("goattyd {v} (protocol v{p})"),
+                (None, Some(p)) => format!("a goattyd with protocol v{p}"),
+                _ => "a goattyd".into(),
+            };
+            let (min, max) = (goatty_proto::MIN_PROTOCOL_VERSION, goatty_proto::PROTOCOL_VERSION);
+            let age = if mismatch.daemon_is_newer { "newer" } else { "older" };
+            Ask {
+                title: "Restart goattyd?".into(),
+                body: vec![format!("The running {daemon} is {age} than this goatty can talk to (protocol v{min}–v{max}). {starts}")],
+                warning: Some("Restarting goattyd ends the sessions running in it.".into()),
+                choices: vec![close, (Choice::Retry, "Retry".into()), restart],
+                upload: None,
+            }
+        }
+    }
+}
+
+/// Stop the local daemon, then connect to the one that starts (the installed
+/// build). A connection to it that's in use (`conn`, else the pooled one)
+/// reconnects by itself; wait for that rather than racing it to start one.
+fn restart_local(conn: Option<Arc<Connection>>) -> Result<Arc<Connection>> {
+    let conn = conn.or_else(|| pool::live(&Endpoint::Local));
+    let old = conn.as_ref().map(|c| c.daemon_pid());
+    local::stop_daemon(true).context("couldn't stop the running goattyd")?;
+    let Some(conn) = conn else { return pool::open(Endpoint::Local) };
+    conn.reconnect();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !(conn.is_connected() && Some(conn.daemon_pid()) != old) {
+        anyhow::ensure!(Instant::now() < deadline, "the new goattyd didn't come up");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Ok(conn)
+}
+
+/// Check the local daemon is the installed build: restart it right away
+/// when it holds no sessions, else ask ([`LocalProblem::Outdated`]).
+/// `restarted` is set when it was restarted.
+fn check_local(conn: Arc<Connection>, restarted: &AtomicBool) -> Result<Arc<Connection>> {
+    let Some(outdated) = local::outdated(conn.daemon_pid()) else { return Ok(conn) };
+    if local::declined(&outdated) {
+        return Ok(conn);
+    }
+    let sessions = conn.list_sessions()?.len();
+    if sessions > 0 {
+        return Err(LocalProblem::Outdated { outdated, sessions }.into());
+    }
+    log::info!("restarting goattyd (no sessions): {} replaces {}", outdated.installed.display(), outdated.running.display());
+    let conn = restart_local(Some(conn))?;
+    restarted.store(true, Ordering::Relaxed);
+    Ok(conn)
+}
+
 /// What the connect view tells the tab it sits in.
 pub enum ConnectEvent {
     /// The session (or layout) is there: take it with [`ConnectView::take_ready`].
@@ -231,6 +329,13 @@ pub struct ConnectView {
     step: Step,
     focus: FocusHandle,
     ready: Option<Ready>,
+    /// Check that the local daemon is the installed build (off once the
+    /// user chose, or it was restarted).
+    check_local: bool,
+    /// The outdated local daemon being asked about.
+    outdated: Option<Outdated>,
+    /// The local daemon was restarted on the way (tell the user).
+    restarted: Arc<AtomicBool>,
 }
 
 impl EventEmitter<ConnectEvent> for ConnectView {}
@@ -247,7 +352,15 @@ pub type Ready = (Startup, Spawner);
 impl ConnectView {
     /// A view connecting for `plan`, started right away.
     pub fn new(plan: ConnectPlan, window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
-        let mut view = Self { plan, step: Step::Working(String::new()), focus: cx.focus_handle(), ready: None };
+        let mut view = Self {
+            plan,
+            step: Step::Working(String::new()),
+            focus: cx.focus_handle(),
+            ready: None,
+            check_local: true,
+            outdated: None,
+            restarted: Arc::default(),
+        };
         view.connect(window, cx);
         view
     }
@@ -307,14 +420,27 @@ impl ConnectView {
     fn finish(&mut self, result: Result<Ready>, _window: &mut Window, cx: &mut Context<'_, Self>) {
         match result {
             Ok(ready) => {
+                if self.restarted.swap(false, Ordering::Relaxed) {
+                    toast::show(
+                        cx,
+                        Toast::success("Restarted goattyd").body("It was an older build and had no sessions.").key("goattyd-restarted"),
+                    );
+                }
                 self.ready = Some(ready);
                 cx.emit(ConnectEvent::Ready);
             }
             Err(e) => {
                 log::warn!("connecting to {}: {e:#}", self.plan.endpoint.label());
-                let ask = match e.downcast_ref::<RemoteProblem>() {
-                    Some(problem) => describe(problem, remote::find_bundled),
-                    None => failed(self.plan.endpoint.label(), &e, self.ssh_target().is_some()),
+                self.outdated = None;
+                let ask = if let Some(problem) = e.downcast_ref::<RemoteProblem>() {
+                    describe(problem, remote::find_bundled)
+                } else if let Some(problem) = e.downcast_ref::<LocalProblem>() {
+                    if let LocalProblem::Outdated { outdated, .. } = problem {
+                        self.outdated = Some(outdated.clone());
+                    }
+                    describe_local(problem, local::installed_daemon().as_deref())
+                } else {
+                    failed(self.plan.endpoint.label(), &e, self.ssh_target().is_some())
                 };
                 self.step = Step::Ask(ask);
                 cx.emit(ConnectEvent::Changed);
@@ -332,11 +458,16 @@ impl ConnectView {
         }
         let (endpoint, mode, conn) = (self.plan.endpoint.clone(), self.plan.mode, self.plan.conn.take());
         let label = if endpoint.is_local() { "Starting a shell…".to_string() } else { format!("Connecting to {}…", endpoint.label()) };
+        let check = endpoint.is_local() && self.check_local;
+        let restarted = self.restarted.clone();
         self.work(label, window, cx, move || {
-            let conn = match conn {
+            let mut conn = match conn {
                 Some(c) => c,
                 None => pool::open(endpoint)?,
             };
+            if check {
+                conn = check_local(conn, &restarted)?;
+            }
             let startup = saved::startup(&conn, initial_size(), mode)?;
             Ok((startup, Spawner::Daemon(conn)))
         });
@@ -350,6 +481,23 @@ impl ConnectView {
         match choice {
             Choice::Cancel => cx.emit(ConnectEvent::Cancelled),
             Choice::Retry => self.connect(window, cx),
+            Choice::Keep => {
+                self.check_local = false;
+                if let Some(o) = self.outdated.take() {
+                    cx.background_executor().spawn(async move { local::decline(&o) }).detach();
+                }
+                self.connect(window, cx);
+            }
+            Choice::Restart if self.plan.endpoint.is_local() => {
+                self.check_local = false;
+                self.outdated = None;
+                let mode = self.plan.mode;
+                self.work("Restarting goattyd…".into(), window, cx, move || {
+                    let conn = restart_local(None)?;
+                    let startup = saved::startup(&conn, initial_size(), mode)?;
+                    Ok((startup, Spawner::Daemon(conn)))
+                });
+            }
             Choice::Plain => {
                 let Some(target) = self.ssh_target() else { return };
                 self.work(format!("Opening ssh {}…", target.host), window, cx, move || plain_ssh(&target.host));
@@ -528,5 +676,14 @@ mod tests {
         let newer = VersionMismatch { daemon_protocol: Some(99), daemon_version: None, daemon_is_newer: true };
         let p = RemoteProblem::Incompatible { host: "box".into(), mismatch: newer, probe: None };
         assert_eq!(choices(&describe(&p, bundle(false))), [Choice::Cancel, Choice::Plain]);
+    }
+
+    #[test]
+    fn local_daemon_problems_offer_a_restart() {
+        let older = VersionMismatch { daemon_protocol: Some(3), daemon_version: Some("0.0.0".into()), daemon_is_newer: false };
+        let a = describe_local(&LocalProblem::Incompatible(older), Some(std::path::Path::new("/x/goattyd")));
+        assert_eq!(choices(&a), [Choice::Cancel, Choice::Retry, Choice::Restart]);
+        assert!(a.body[0].contains("older") && a.body[0].contains("/x/goattyd"), "{:?}", a.body);
+        assert!(a.warning.unwrap().contains("ends the sessions"));
     }
 }

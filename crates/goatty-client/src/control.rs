@@ -14,6 +14,7 @@ use crate::handshake::{self, Outcome};
 pub struct Control {
     stream: UnixStream,
     host: HostInfo,
+    pid: u32,
     next_req: ReqId,
 }
 
@@ -48,7 +49,7 @@ impl Control {
                 UnixStream::connect(path).with_context(|| format!("goattyd is not running (no socket at {})", path.display()))?;
             stream.write_all(&handshake::hello(client, announce)?)?;
             match handshake::read_greeting(&mut stream, &path.display().to_string(), announce)? {
-                Outcome::Ok(g) => return Ok(Self { stream, host: g.host, next_req: 1 }),
+                Outcome::Ok(g) => return Ok(Self { stream, host: g.host, pid: g.pid, next_req: 1 }),
                 // An old exact-match daemon: speak its version (only ever lower).
                 Outcome::RetryWith(v) => announce = v,
             }
@@ -62,6 +63,11 @@ impl Control {
 
     pub fn host(&self) -> &HostInfo {
         &self.host
+    }
+
+    /// The daemon's pid.
+    pub fn pid(&self) -> u32 {
+        self.pid
     }
 
     /// Send one request and wait for its reply. A daemon `Error` becomes `Err`.

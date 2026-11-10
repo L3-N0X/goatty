@@ -31,7 +31,7 @@ Rules:
 - **Client vs host settings** (#14): `ClientSettings` (`settings.json`) is read by the app; `HostSettings` (`host.json`) by goattyd/`HostService` on its own host. The GUI edits host settings through the protocol (`GetHostSettings`, `SetHostSettings`, …), never by writing a remote file. See [`profiles.md`](profiles.md).
 - **`goatty-plugin` knows the format, not the host.** Manifests, settings schema, templates, permissions, zsh rendering, the signed index and the JSON API live there with no knowledge of `Dirs`; `goatty-shell::plugins` decides where things go. The authoring/registry CLI (`goatty-plugin`) depends on nothing else in the workspace, so registry CI builds it quickly. See [`plugins.md`](plugins.md).
 - **Settings come from `goatty-config`.** Don't read `GOATTY_*` variables elsewhere (the exceptions: `GOATTY_SOCKET`, a location, in `goatty_proto::socket_path`; `GOATTY_ASKPASS`, goatty's marker to itself as ssh's askpass, in `goatty_client::askpass`).
-- **Remote hosts** (`goatty-client`): `transport` (endpoints; ssh with captured stderr and askpass), `remote` (the connect script and its `goatty-remote:` probe line, `RemoteProblem`, install/stop over ssh, bundled binaries), `askpass` (decode ssh's question), `service` (systemd user units), `ssh_config` (the hosts in `~/.ssh/config`, for the host list). The app turns `RemoteProblem`s into questions in `connect.rs`. See [`remote-architecture.md`](remote-architecture.md) §5a/§5b.
+- **Remote hosts** (`goatty-client`): `transport` (endpoints; ssh with captured stderr and askpass), `remote` (the connect script and its `goatty-remote:` probe line, `RemoteProblem`, install/stop over ssh, bundled binaries), `askpass` (decode ssh's question), `service` (systemd user units), `ssh_config` (the hosts in `~/.ssh/config`, for the host list). The app turns `RemoteProblem`s into questions in `connect.rs`. `local` does the same for this computer's goattyd: `outdated` (the running daemon's `/proc/<pid>/exe` is another, older file than the goattyd a restart would start: next to `goatty`, or the systemd unit's), `stop_daemon` (any protocol version; `goattyd stop --force` uses it too), `LocalProblem`. See [`remote-architecture.md`](remote-architecture.md) §5a/§5b.
 
 ## Daemon (`crates/goatty-daemon`)
 
@@ -41,7 +41,7 @@ Rules:
 | `client`     | one connection: decode requests, its subscriptions, the writer thread    |
 | `session`    | PTY + authoritative `Terminal` + subscribers with flow control, the output pump |
 | `proxy`      | `goattyd proxy`: stdio ⇄ socket relay for remote transports              |
-| `main.rs`    | clap CLI; control commands go through `goatty_client::Control`; `stop --force` (any protocol version, via `SO_PEERCRED`), `service install|uninstall|status` |
+| `main.rs`    | clap CLI; control commands go through `goatty_client::Control`; `stop --force` (any protocol version, `goatty_client::local::stop_daemon`), `service install|uninstall|status` |
 
 Threads per session: `s{id}-reader` (PTY → terminal → subscribers) and `s{id}-replies` (query answers → PTY). Per connection: a reader (the accept thread's spawn) and `c{conn}-writer`.
 
@@ -110,7 +110,7 @@ workspace/
   icons.rs     process name → Nerd Font glyph + theme color; finds a font that really has the glyphs (terminal font, then Symbols Nerd Font)
   saved.rs     the window's layout as goattyd keeps it (JSON: tabs, split trees with session ids, names, focus, zoom); `restore` claims and reattaches it
 close_confirm.rs  "Close this pane?" dialog when a program other than the shell still runs (`panes.confirm_close`, "Don't ask again")
-connect.rs     ConnectView, the connect screen in a tab: connects off the UI thread (local daemon or remote), turns RemoteProblem into questions (install / update and restart / plain SSH), hands the tab its session or restored layout
+connect.rs     ConnectView, the connect screen in a tab: connects off the UI thread (local daemon or remote), turns RemoteProblem into questions (install / update and restart / plain SSH) and LocalProblem too (a local goattyd that's incompatible or an older build than the installed one: restarted right away without sessions, else asked), hands the tab its session or restored layout
 hosts.rs       hosts to connect to: `ssh.hosts` + `~/.ssh/config` (`HostList` global, read in the background), palette commands, `pool` (one shared Connection per host), `open` → a connecting tab of the last active window or a new window (`ssh.open_in`)
 shell_setup.rs installing a host's built-in tools with progress (`install`), the per-host install offer toast after a tab connects (`offer`)
 welcome.rs     the welcome window (first-run setup): theme and text size, the host's tools and prompt style, shortcuts

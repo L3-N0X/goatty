@@ -357,46 +357,12 @@ fn main() -> Result<()> {
 /// `goattyd stop`: ask the daemon to shut down; with `force`, stop one that
 /// doesn't speak our protocol too (old versions, after an upgrade).
 fn stop(force: bool) -> Result<()> {
-    let err = match Control::connect_local(CLIENT).and_then(|mut c| c.shutdown()) {
-        Ok(()) => return Ok(()),
-        Err(e) if force => e,
-        Err(e) => return Err(e),
-    };
-    let path = goatty_proto::socket_path();
-    // Nothing listening: nothing to stop (remote updates run this blindly).
-    if std::os::unix::net::UnixStream::connect(&path).is_err() {
-        if path.exists() {
-            let _ = std::fs::remove_file(&path);
-        }
-        eprintln!("goattyd isn't running");
-        return Ok(());
-    }
-    eprintln!("goattyd: {err:#}");
-    if goatty_client::service::status().service_active {
-        eprintln!("stopping goattyd.service");
-        let ok = std::process::Command::new("systemctl").args(["--user", "stop", goatty_client::service::SERVICE_UNIT]).status()?.success();
-        anyhow::ensure!(ok, "systemctl --user stop goattyd.service failed");
-        return Ok(());
-    }
-    let pid = goatty_client::control::socket_owner(&path)?;
-    // Under socket activation the listener belongs to systemd, never kill that.
-    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
-    anyhow::ensure!(comm.starts_with("goattyd"), "{} belongs to pid {pid} ({}), not a goattyd", path.display(), comm.trim());
-    eprintln!("stopping pid {pid}");
-    let alive = || std::path::Path::new(&format!("/proc/{pid}")).exists();
-    // SAFETY: plain syscalls on a pid we just checked is our goattyd.
-    unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while alive() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    if alive() {
-        // SAFETY: as above.
-        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
-    }
-    // The old daemon didn't get to remove its socket.
-    if goatty_client::control::socket_owner(&path).is_err() {
-        let _ = std::fs::remove_file(&path);
+    use goatty_client::local::{Stopped, stop_daemon};
+    match stop_daemon(force)? {
+        Stopped::NotRunning => eprintln!("goattyd isn't running"),
+        Stopped::Asked => {}
+        Stopped::Service { why } => eprintln!("goattyd: {why}\nstopped {}", goatty_client::service::SERVICE_UNIT),
+        Stopped::Killed { pid, why } => eprintln!("goattyd: {why}\nstopped pid {pid}"),
     }
     Ok(())
 }

@@ -16,6 +16,8 @@
 //! * [`remote`] finds, installs and restarts goattyd on SSH hosts and
 //!   explains failed connects ([`RemoteProblem`]); [`askpass`] decodes ssh's
 //!   prompts for the GUI.
+//! * [`local`] tells whether the local goattyd is an older build than the
+//!   installed one, and stops it (any protocol version) to restart it.
 //! * [`service`] knows about goattyd's systemd user units (starting the
 //!   socket instead of a detached daemon when they're installed).
 //! * [`ssh_config`] lists the hosts in `~/.ssh/config` for the GUI's host list.
@@ -24,6 +26,7 @@ pub mod askpass;
 mod connection;
 pub mod control;
 mod handshake;
+pub mod local;
 pub mod remote;
 pub mod service;
 pub mod ssh_config;
@@ -32,6 +35,7 @@ pub mod transport;
 pub use connection::{Connection, HostSettingsApplied, HostSettingsReply};
 pub use control::Control;
 pub use handshake::VersionMismatch;
+pub use local::LocalProblem;
 pub use remote::RemoteProblem;
 pub use transport::{Endpoint, SshTarget, connect_or_spawn_daemon};
 
