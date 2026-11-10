@@ -50,6 +50,8 @@ pub enum AttachMode {
 pub enum LinkStatus {
     Connected,
     Reconnecting,
+    /// Automatic reconnects stopped: ssh needs the user (Enter reconnects).
+    NeedsReconnect,
     Lost(String),
 }
 
@@ -160,6 +162,12 @@ impl PaneSink for Sink {
                 // Shown locally only: the reattach snapshot starts with RIS
                 // and wipes this line again.
                 s.terminal.feed(format!("\r\n\x1b[0;2m[goatty: connection lost ({why}); reconnecting…]\x1b[0m").as_bytes());
+            }
+            PaneEvent::NeedsReconnect(why) => {
+                *s.status.lock() = LinkStatus::NeedsReconnect;
+                s.terminal.feed(
+                    format!("\r\n\x1b[0;33m[goatty: can't reconnect without asking ({why}); press Enter to reconnect]\x1b[0m").as_bytes(),
+                );
             }
             PaneEvent::Reconnected => *s.status.lock() = LinkStatus::Connected,
             PaneEvent::Lost(why) => {
@@ -339,7 +347,18 @@ impl Session {
                     fg.poke();
                 }
             }
-            Backend::Daemon { conn, id } => conn.input(id.load(Ordering::Relaxed), bytes),
+            Backend::Daemon { conn, id } => {
+                if *self.status.lock() == LinkStatus::NeedsReconnect {
+                    // The link is down: input has nowhere to go. Enter asks ssh
+                    // to reconnect, with prompts.
+                    if bytes.contains(&b'\r') {
+                        *self.status.lock() = LinkStatus::Reconnecting;
+                        conn.reconnect();
+                    }
+                    return;
+                }
+                conn.input(id.load(Ordering::Relaxed), bytes)
+            }
         }
     }
 
@@ -393,6 +412,7 @@ impl Session {
         match &*self.status.lock() {
             LinkStatus::Connected => t,
             LinkStatus::Reconnecting => format!("{t} (reconnecting…)"),
+            LinkStatus::NeedsReconnect => format!("{t} (disconnected — press Enter)"),
             LinkStatus::Lost(_) => format!("{t} (disconnected)"),
         }
     }

@@ -90,6 +90,9 @@ struct Shared {
     epoch: Instant,
     last_rx_us: AtomicU64,
     rtt_us: AtomicU64,
+    /// [`Connection::reconnect`]: try now, and let ssh prompt.
+    reconnect_tx: flume::Sender<()>,
+    reconnect_rx: flume::Receiver<()>,
 }
 
 impl Shared {
@@ -177,6 +180,7 @@ impl Connection {
     pub fn open(endpoint: Endpoint, client_name: &str) -> Result<Arc<Self>> {
         let opts = endpoint.default_opts();
         let (out, out_rx) = flume::unbounded();
+        let (reconnect_tx, reconnect_rx) = flume::bounded(1);
         let shared = Arc::new(Shared {
             endpoint,
             opts,
@@ -195,6 +199,8 @@ impl Connection {
             epoch: Instant::now(),
             last_rx_us: AtomicU64::new(0),
             rtt_us: AtomicU64::new(0),
+            reconnect_tx,
+            reconnect_rx,
         });
 
         std::thread::Builder::new().name("goatty-writer".into()).spawn(move || writer_loop(out_rx))?;
@@ -425,6 +431,12 @@ impl Connection {
         }
     }
 
+    /// Reconnect now, with prompts (password, passphrase) if ssh needs them.
+    /// Automatic retries never prompt; this is the explicit way to.
+    pub fn reconnect(&self) {
+        let _ = self.shared.reconnect_tx.try_send(());
+    }
+
     /// Drop the current link as if the network failed (debugging/tests).
     pub fn force_disconnect(&self) {
         self.shared.close_transport();
@@ -498,12 +510,30 @@ fn reader_main(s: Arc<Shared>, mut reader: Reader) {
         for sink in &sinks {
             sink.event(PaneEvent::Disconnected(err.to_string()));
         }
+        let mut needs_user = false;
         loop {
             if s.closed.load(Ordering::Acquire) {
                 return;
             }
-            std::thread::sleep(Duration::from_millis(backoff.next().unwrap_or(5000)));
-            match s.connect(false) {
+            // Waiting for the backoff; an explicit request cuts it short and
+            // allows prompts. After an auth failure, wait for one instead of
+            // retrying (every retry would fail the same way).
+            let interactive = if needs_user {
+                loop {
+                    if s.closed.load(Ordering::Acquire) {
+                        return;
+                    }
+                    if s.reconnect_rx.recv_timeout(Duration::from_secs(1)).is_ok() {
+                        break true;
+                    }
+                }
+            } else {
+                s.reconnect_rx.recv_timeout(Duration::from_millis(backoff.next().unwrap_or(5000))).is_ok()
+            };
+            if s.closed.load(Ordering::Acquire) {
+                return;
+            }
+            match s.connect(interactive) {
                 Ok((r, host, pid)) => {
                     log::info!("reconnected to goattyd (pid {pid})");
                     *s.host.lock() = host;
@@ -523,10 +553,25 @@ fn reader_main(s: Arc<Shared>, mut reader: Reader) {
                 Err(e) => {
                     s.close_transport();
                     log::info!("reconnect failed: {e:#}");
+                    if !interactive && needs_user_input(&e) {
+                        needs_user = true;
+                        for sink in &sinks {
+                            sink.event(PaneEvent::NeedsReconnect(format!("{e:#}")));
+                        }
+                    } else if interactive {
+                        needs_user = false;
+                    }
                 }
             }
         }
     }
+}
+
+/// Did ssh fail where only the user can help (no key/agent worked, or the
+/// host key is unknown or changed)?
+fn needs_user_input(e: &anyhow::Error) -> bool {
+    let text = format!("{e:#}");
+    text.contains("Permission denied") || text.contains("Host key verification failed")
 }
 
 fn read_loop(s: &Shared, reader: &mut Reader) -> anyhow::Error {
@@ -646,5 +691,18 @@ fn dispatch(s: &Shared, msg: ServerMsg) {
         }
         ServerMsg::Error { req: None, message } => log::error!("goattyd: {message}"),
         ServerMsg::Hello { .. } => log::warn!("unexpected second Hello"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_auth_failures_wait_for_the_user() {
+        let denied = anyhow::anyhow!("no valid greeting").context("user@box: Permission denied (publickey,password).");
+        assert!(needs_user_input(&denied));
+        assert!(needs_user_input(&anyhow::anyhow!("Host key verification failed.")));
+        assert!(!needs_user_input(&anyhow::anyhow!("ssh: connect to host box port 22: Network is unreachable")));
     }
 }

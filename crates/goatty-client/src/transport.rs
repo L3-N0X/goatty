@@ -347,8 +347,7 @@ mod tests {
         assert!(envs.contains(&("SSH_ASKPASS_REQUIRE".into(), Some("force".into()))));
         assert!(envs.contains(&("SSH_ASKPASS".into(), Some("/opt/goatty".into()))));
         assert!(!args.contains(&"BatchMode=yes".to_string()));
-        let batch: Vec<_> =
-            t.command_with("true", false).get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let batch: Vec<_> = t.command_with("true", false).get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         assert!(batch.contains(&"BatchMode=yes".to_string()));
         assert_eq!(sh_quote("it's"), "'it'\\''s'");
     }
