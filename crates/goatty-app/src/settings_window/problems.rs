@@ -122,7 +122,7 @@ impl SettingsWindow {
         let n = rows.len();
         Some(
             section(ui, if n == 1 { "1 problem".to_string() } else { format!("{n} problems") })
-                .desc("goatty used a fallback for each of these")
+                .desc("goatty couldn't use these settings as written")
                 .action(self.copy_button(ui, "problems-copy", "Copy all", self.problems_report(cx), cx))
                 .children(rows)
                 .into_any_element(),

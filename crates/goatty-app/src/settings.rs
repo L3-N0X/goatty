@@ -37,6 +37,8 @@ pub struct AppSettings {
     pub key_errors: Vec<String>,
     /// The last save failed (read-only config dir, ...).
     pub save_error: Option<String>,
+    /// The toast showing `save_error`, dismissed once a save works again.
+    save_toast: Option<toast::ToastId>,
     /// Built-in plus user themes (`themes/*.json`).
     pub themes: Arc<ThemeLibrary>,
     themes_stamp: Vec<(PathBuf, FileStamp)>,
@@ -93,6 +95,7 @@ impl AppSettings {
             ui_font,
             key_errors: Vec::new(),
             save_error: None,
+            save_toast: None,
         };
         s.recompute();
         log::info!(
@@ -155,6 +158,11 @@ impl AppSettings {
         let mut s = cx.global::<Self>().clone();
         let old_keys = s.client.keybindings.clone();
         s.file = file;
+        if save_error.is_none()
+            && let Some(id) = s.save_toast.take()
+        {
+            toast::dismiss(cx, id);
+        }
         s.save_error = save_error;
         s.stamp = s.path.as_deref().map(FileStamp::of).unwrap_or_default();
         s.recompute();
@@ -193,16 +201,22 @@ impl AppSettings {
             }
             e
         };
-        if let Some(e) = save_error.as_ref().filter(|e| cx.global::<Self>().save_error.as_ref() != Some(*e)) {
+        // Every failed save says so, even with the same text as the last one:
+        // the user may have dismissed that toast. A preview doesn't save, so
+        // it stays quiet.
+        let save_toast = save_error.as_ref().filter(|_| save).map(|e| {
             let copy = e.clone();
             toast::show(
                 cx,
-                Toast::error("Couldn't save the settings").body(e.clone()).key(TOAST_KEY).action("Copy", move |_, cx| {
+                Toast::error("Couldn't save the settings").body(e.clone()).key(SAVE_TOAST_KEY).action("Copy", move |_, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
                 }),
-            );
-        }
+            )
+        });
         Self::replace(cx, file, save_error);
+        if save_toast.is_some() {
+            cx.global_mut::<Self>().save_toast = save_toast;
+        }
     }
 
     /// Replace everything (profile import, reset). Same as [`update`](Self::update).
@@ -303,6 +317,9 @@ impl AppSettings {
 
 /// Problem toasts replace each other.
 const TOAST_KEY: &str = "settings.issues";
+
+/// Save errors get their own key, so a theme reload's warning can't replace them.
+const SAVE_TOAST_KEY: &str = "settings.save";
 
 /// Whether `program` (a path or a name on PATH) exists.
 pub(crate) fn has_program(program: &str) -> bool {

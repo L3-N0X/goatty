@@ -224,7 +224,6 @@ impl Global for ToastCenter {}
 enum Op {
     Show(ToastId, Toast),
     Update(ToastId, Toast),
-    #[expect(dead_code, reason = "toast API for upcoming features")]
     Dismiss(ToastId),
     DismissAll,
 }
@@ -247,7 +246,6 @@ pub fn update(cx: &mut App, id: ToastId, toast: Toast) {
 }
 
 /// Dismiss toast `id` (no-op if it's gone).
-#[expect(dead_code, reason = "toast API for upcoming features")]
 pub fn dismiss(cx: &mut App, id: ToastId) {
     deliver(cx, None, Op::Dismiss(id));
 }
