@@ -32,10 +32,14 @@ if [ -d "$archive_dir/remote" ]; then
     done
 fi
 
-# Desktop Entry quoting: quote the executable path and escape characters that
-# have special meaning inside a quoted Exec argument.
-desktop_exec=$(printf '%s' "$bin_dir/goatty" | sed 's/\\/\\\\/g; s/"/\\"/g; s/`/\\`/g; s/\$/\\$/g')
-cat > "$data_home/applications/goatty.desktop" <<EOF
+# Desktop Entry quoting has two layers. First the Exec argument is quoted
+# (", `, $ and \ get a backslash; a literal % becomes %%). Then the whole value
+# goes through the string-escape layer, which halves every backslash again, so
+# each backslash is doubled.
+desktop_exec=$(printf '%s' "$bin_dir/goatty" |
+    sed -e 's/%/%%/g' -e 's/[\\"`$]/\\&/g' -e 's/\\/\\\\/g')
+desktop_file="$data_home/applications/dev.goatty.goatty.desktop"
+cat > "$desktop_file" <<EOF
 [Desktop Entry]
 Version=1.0
 Type=Application
@@ -48,7 +52,7 @@ Categories=System;TerminalEmulator;
 StartupWMClass=dev.goatty.goatty
 EOF
 
-echo "Installed Goatty. The launcher is at $data_home/applications/goatty.desktop"
+echo "Installed Goatty. The launcher is at $desktop_file"
 if ! printf '%s' ":${PATH:-}:" | grep -Fq ":$bin_dir:"; then
     echo "Add $bin_dir to PATH to launch goatty from a terminal."
 fi
