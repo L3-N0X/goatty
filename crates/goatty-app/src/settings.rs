@@ -210,6 +210,7 @@ impl AppSettings {
                 cx,
                 Toast::error("Couldn't save the settings").body(e.clone()).key(SAVE_TOAST_KEY).action("Copy", move |_, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                    toast::show(cx, Toast::success("Copied the error"));
                 }),
             )
         });
@@ -279,7 +280,7 @@ impl AppSettings {
         let t = Toast::warning(title)
             .body(body)
             .key(TOAST_KEY)
-            .action("Show", move |_, cx| crate::settings_window::open_issue(cx, &path))
+            .action("Show", move |_, cx| crate::settings_window::open_issue(cx, false, &path))
             .action("Copy", |_, cx| {
                 let report = cx.global::<Self>().report();
                 cx.write_to_clipboard(ClipboardItem::new_string(report));
@@ -316,7 +317,7 @@ impl AppSettings {
 }
 
 /// Problem toasts replace each other.
-const TOAST_KEY: &str = "settings.issues";
+pub(crate) const TOAST_KEY: &str = "settings.issues";
 
 /// Save errors get their own key, so a theme reload's warning can't replace them.
 const SAVE_TOAST_KEY: &str = "settings.save";

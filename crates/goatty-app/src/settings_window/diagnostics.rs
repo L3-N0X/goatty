@@ -126,8 +126,7 @@ impl SettingsWindow {
                 );
             }
         }
-        let host = if self.host.is_some() { self.host_issues().len() } else { s.settings_issues.len() };
-        let problems = cx.global::<crate::settings::AppSettings>().issues().len() + host;
+        let problems = cx.global::<crate::settings::AppSettings>().issues().len() + self.host_issues().len();
         if problems > 0 || !s.env_overrides.is_empty() {
             let mut sec = section(ui, "Settings");
             if problems > 0 {

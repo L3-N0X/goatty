@@ -6,12 +6,13 @@
 use std::collections::HashMap;
 
 use goatty_config::{ClientSettings, HostSettings, Issue, store};
-use gpui::{AnyElement, App, Context, IntoElement, SharedString};
+use gpui::{AnyElement, App, ClipboardItem, Context, IntoElement, SharedString};
 
 use super::kit::{RowNote, row, section};
 use super::search::{self, Hit, INDEX};
 use super::{Page, SettingsWindow};
 use crate::settings::AppSettings;
+use crate::toast::{self, Toast};
 use crate::ui::controls::{ButtonKind, button_with};
 use crate::ui::icons::Icon;
 use crate::ui::style::Ui;
@@ -23,7 +24,11 @@ impl SettingsWindow {
     /// The host's problems with its settings. One about a value changed in
     /// the draft is left out: the edit is the fix, applied or not.
     pub(super) fn host_issues(&self) -> Vec<Issue> {
-        let Some(h) = &self.host else { return Vec::new() };
+        let Some(h) = &self.host else {
+            // No snapshot (yet, or it failed): the shell status carries the
+            // host file's problems, so Diagnostics and Profile agree.
+            return self.diag.status.iter().flat_map(|s| &s.settings_issues).map(|i| Issue::parse(i)).collect();
+        };
         h.issues
             .iter()
             .map(|i| Issue::parse(i))
@@ -32,6 +37,38 @@ impl SettingsWindow {
                 _ => true,
             })
             .collect()
+    }
+
+    /// Tell the user about host problems that weren't in the snapshot
+    /// before (#85), like [`AppSettings`] does for this computer's: the
+    /// same keyed warning toast, with buttons to see the setting and to
+    /// copy the problems.
+    pub(super) fn announce_host_issues(&self, before: &[String], cx: &mut App) {
+        let Some(host) = &self.host else { return };
+        let issues: Vec<Issue> = host.issues.iter().map(|i| Issue::parse(i)).collect();
+        let new: Vec<&Issue> = host.issues.iter().zip(&issues).filter(|(raw, _)| !before.contains(raw)).map(|(_, i)| i).collect();
+        let Some(first) = new.first() else { return };
+        let title = match issues.len() {
+            1 => "A host setting couldn't be used".to_string(),
+            n => format!("{n} host settings couldn't be used"),
+        };
+        let mut body = first.to_string();
+        if new.len() > 1 {
+            body.push_str(&format!(" (and {} more)", new.len() - 1));
+        }
+        let path = first.path.clone();
+        let report = store::report([(format!("host.json on {}", self.host_label()).as_str(), issues.as_slice())]);
+        toast::show(
+            cx,
+            Toast::warning(title)
+                .body(body)
+                .key(crate::settings::TOAST_KEY)
+                .action("Show", move |_, cx| super::open_issue(cx, true, &path))
+                .action("Copy", move |_, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(report.clone()));
+                    toast::show(cx, Toast::success("Copied the problems").key(crate::settings::TOAST_KEY));
+                }),
+        );
     }
 
     fn host_overrides(&self) -> Overrides {

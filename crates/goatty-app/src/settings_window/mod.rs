@@ -63,8 +63,8 @@ pub fn open(cx: &mut App) {
 /// Open the settings window where the client setting `path` is edited,
 /// highlighting its row; the Profile page (which lists every problem) when
 /// no row edits it. For "Show" on a problem toast.
-pub fn open_issue(cx: &mut App, path: &str) {
-    let entry = search::entry_for(false, path);
+pub fn open_issue(cx: &mut App, is_host: bool, path: &str) {
+    let entry = search::entry_for(is_host, path);
     open_at(cx, Some(entry.map_or(Page::Profile, |e| e.page)));
     if let Some(e) = entry
         && let Some(handle) = cx.try_global::<OpenWindow>().and_then(|w| w.0)
@@ -710,7 +710,11 @@ impl SettingsWindow {
                         }
                         let program = loaded.value.shell.program.clone().unwrap_or_default();
                         view.shell_path.update(cx, |input, cx| input.set_text(program, cx));
+                        let before = view.host.as_ref().map(|h| h.issues.clone());
                         view.host = Some(HostView { loaded, issues, env_overrides: snap.env_overrides, generation: snap.generation });
+                        if let Some(before) = before {
+                            view.announce_host_issues(&before, cx);
+                        }
                         view.generations = gens;
                         view.host_error = None;
                     }

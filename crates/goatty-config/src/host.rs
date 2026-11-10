@@ -334,8 +334,18 @@ impl HostSettings {
         }
     }
 
+    /// Names of the `GOATTY_*` variables [`apply_env`](Self::apply_env)
+    /// accepts: one it ignores (an empty `GOATTY_SHELL`, a
+    /// `GOATTY_SHELL_MANAGED` that isn't a boolean) overrides nothing.
     pub fn env_overrides(var: impl Fn(&str) -> Option<String>) -> Vec<&'static str> {
-        Self::ENV_KEYS.iter().map(|(name, _)| *name).filter(|k| var(k).is_some()).collect()
+        let accepted = |name: &str| {
+            let v = var(name);
+            match name {
+                "GOATTY_SHELL" => v.is_some_and(|s| !s.is_empty()),
+                _ => v.as_deref().and_then(parse_bool).is_some(),
+            }
+        };
+        Self::ENV_KEYS.iter().map(|(name, _)| *name).filter(|k| accepted(k)).collect()
     }
 
     /// Each `GOATTY_*` variable [`apply_env`](Self::apply_env) reads, with
@@ -388,6 +398,14 @@ mod tests {
         }
         assert_eq!(HostSettings::env_keys("GOATTY_SHELL"), ["shell.program"]);
         assert!(HostSettings::env_keys("GOATTY_NOPE").is_empty());
+    }
+
+    #[test]
+    fn env_overrides_are_the_variables_apply_env_accepts() {
+        let vars = [("GOATTY_SHELL", ""), ("GOATTY_SHELL_MANAGED", "maybe"), ("GOATTY_ZSH_USER_RC", "off")];
+        let var = |k: &str| vars.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string());
+        assert_eq!(HostSettings::env_overrides(var), ["GOATTY_ZSH_USER_RC"]);
+        assert_eq!(HostSettings::env_overrides(|k| (k == "GOATTY_SHELL").then(|| "/bin/sh".to_string())), ["GOATTY_SHELL"]);
     }
 
     #[test]
