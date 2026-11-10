@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use goatty_config::{ClientSettings, Document, FileStamp, Issue, Loaded, ThemeColors, ThemeLibrary, store};
 use goatty_term::Palette;
-use gpui::{App, Global, WindowAppearance};
+use gpui::{App, ClipboardItem, Global, WindowAppearance};
+
+use crate::toast::{self, Toast};
 
 /// Preferred UI fonts, first installed wins.
 const UI_FONTS: &[&str] = &["Inter", "Cantarell", "Noto Sans", "Ubuntu", "Open Sans", "DejaVu Sans", "Liberation Sans"];
@@ -43,8 +45,11 @@ pub struct AppSettings {
     pub system_dark: bool,
     /// The active theme's colors with overrides: what everything renders with.
     pub colors: ThemeColors,
-    /// The configured theme doesn't exist.
-    pub theme_issue: Option<Issue>,
+    /// Themes the settings name that don't exist.
+    pub theme_issues: Vec<Issue>,
+    /// Settings that parse but don't work on this machine (a font that
+    /// isn't installed, a file opener that isn't on PATH).
+    pub env_issues: Vec<Issue>,
 }
 
 pub fn is_dark(a: WindowAppearance) -> bool {
@@ -77,7 +82,8 @@ impl AppSettings {
             themes_stamp,
             system_dark: is_dark(cx.window_appearance()),
             colors: goatty_config::ThemeSettings::default().colors(),
-            theme_issue: None,
+            theme_issues: Vec::new(),
+            env_issues: Vec::new(),
             client: Arc::new(ClientSettings::default()),
             file,
             env_overrides: ClientSettings::env_overrides(|k| std::env::var(k).ok()),
@@ -97,7 +103,10 @@ impl AppSettings {
             if s.client.theme.follow_system { " (following the system)" } else { "" }
         );
         s.key_errors = crate::actions::apply_keybindings(&s.client.keybindings, cx);
+        let issues = s.issues();
         cx.set_global(s);
+        // A file broken before goatty started: say so once a window is up.
+        Self::announce(cx, &[], issues);
 
         cx.spawn(async move |cx| {
             loop {
@@ -111,10 +120,11 @@ impl AppSettings {
     fn recompute(&mut self) {
         let mut v = self.file.value.clone();
         v.apply_env(|k| std::env::var(k).ok());
+        self.env_issues = v.check_environment(&self.fonts, has_program);
         v.font.family = Some(v.font.resolve_family(&self.fonts));
-        let (colors, issue) = self.themes.resolve(&v.theme, self.system_dark);
+        let (colors, _) = self.themes.resolve(&v.theme, self.system_dark);
         self.colors = colors;
-        self.theme_issue = issue;
+        self.theme_issues = self.themes.check(&v.theme);
         self.client = Arc::new(v);
     }
 
@@ -183,6 +193,15 @@ impl AppSettings {
             }
             e
         };
+        if let Some(e) = save_error.as_ref().filter(|e| cx.global::<Self>().save_error.as_ref() != Some(*e)) {
+            let copy = e.clone();
+            toast::show(
+                cx,
+                Toast::error("Couldn't save the settings").body(e.clone()).key(TOAST_KEY).action("Copy", move |_, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                }),
+            );
+        }
         Self::replace(cx, file, save_error);
     }
 
@@ -195,34 +214,103 @@ impl AppSettings {
     /// theme dropped into themes/).
     fn reload_if_changed(cx: &mut App) {
         let s = cx.global::<Self>();
+        let before = s.issues();
         if let Some(dir) = s.themes.dir.as_deref()
             && ThemeLibrary::stamp(dir) != s.themes_stamp
         {
             log::info!("themes changed on disk; reloading");
             Self::reload_themes(cx);
+            for issue in &cx.global::<Self>().themes.issues {
+                log::warn!("themes: {issue}");
+            }
         }
         let s = cx.global::<Self>();
-        let Some(path) = s.path.clone() else { return };
-        if FileStamp::of(&path) == s.stamp {
-            return;
+        if let Some(path) = s.path.clone()
+            && FileStamp::of(&path) != s.stamp
+        {
+            let file: Loaded<ClientSettings> = store::load(&path);
+            log::info!("settings changed on disk; reloading");
+            for issue in &file.issues {
+                log::warn!("settings: {issue}");
+            }
+            Self::replace(cx, file, None);
         }
-        let file: Loaded<ClientSettings> = store::load(&path);
-        log::info!("settings changed on disk; reloading");
-        for issue in &file.issues {
-            log::warn!("settings: {issue}");
+        let after = cx.global::<Self>().issues();
+        if after != before {
+            Self::announce(cx, &before, after);
         }
-        Self::replace(cx, file, None);
     }
 
-    /// All problems to show: file issues, key binding errors, save errors.
-    pub fn problems(&self) -> Vec<String> {
-        let mut v: Vec<String> = self.file.issues.iter().map(ToString::to_string).collect();
-        v.extend(self.theme_issue.iter().map(ToString::to_string));
-        v.extend(self.themes.issues.iter().map(ToString::to_string));
-        v.extend(self.key_errors.iter().cloned());
-        v.extend(self.save_error.iter().cloned());
+    /// Tell the user about problems that weren't there `before` (#85): a
+    /// warning toast that replaces itself on every reload, with buttons to
+    /// see the setting and to copy the problems. When an edit fixed the
+    /// last problem, the warning turns into an all-clear.
+    fn announce(cx: &mut App, before: &[Issue], after: Vec<Issue>) {
+        let new: Vec<&Issue> = after.iter().filter(|i| !before.contains(i)).collect();
+        let Some(first) = new.first() else {
+            if after.is_empty() && !before.is_empty() {
+                toast::show(cx, Toast::success("The settings are fine again").key(TOAST_KEY));
+            }
+            return;
+        };
+        let title = match after.len() {
+            1 => "A setting couldn't be used".to_string(),
+            n => format!("{n} settings couldn't be used"),
+        };
+        let mut body = first.to_string();
+        if new.len() > 1 {
+            body.push_str(&format!(" (and {} more)", new.len() - 1));
+        }
+        let path = first.path.clone();
+        let t = Toast::warning(title)
+            .body(body)
+            .key(TOAST_KEY)
+            .action("Show", move |_, cx| crate::settings_window::open_issue(cx, &path))
+            .action("Copy", |_, cx| {
+                let report = cx.global::<Self>().report();
+                cx.write_to_clipboard(ClipboardItem::new_string(report));
+                toast::show(cx, Toast::success("Copied the problems").key(TOAST_KEY));
+            });
+        toast::show(cx, t);
+    }
+
+    /// Every problem with this computer's settings, deduplicated: the
+    /// file, its themes, key bindings, the last save.
+    pub fn issues(&self) -> Vec<Issue> {
+        let mut v: Vec<Issue> = Vec::new();
+        let all = self.file.issues.iter().chain(&self.env_issues).chain(&self.theme_issues).chain(&self.themes.issues).cloned();
+        let keys = self.key_errors.iter().map(|e| Issue::parse(e));
+        let save = self.save_error.iter().map(|e| Issue::new("", e.clone()));
+        for i in all.chain(keys).chain(save) {
+            if !v.contains(&i) {
+                v.push(i);
+            }
+        }
         v
     }
+
+    /// The problems as text for a bug report or a chat.
+    pub fn report(&self) -> String {
+        let file = self.path.as_ref().map_or_else(|| "settings.json".to_string(), |p| p.display().to_string());
+        let issues = self.issues();
+        let mut text = store::report([(file.as_str(), issues.as_slice())]);
+        if !self.env_overrides.is_empty() {
+            text.push_str(&format!("overridden by: {}\n", self.env_overrides.join(", ")));
+        }
+        text
+    }
+}
+
+/// Problem toasts replace each other.
+const TOAST_KEY: &str = "settings.issues";
+
+/// Whether `program` (a path or a name on PATH) exists.
+pub(crate) fn has_program(program: &str) -> bool {
+    if program.contains('/') {
+        let p = std::path::Path::new(program);
+        return p.is_file();
+    }
+    std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|d| d.join(program).is_file()))
 }
 
 /// The terminal palette for a theme.

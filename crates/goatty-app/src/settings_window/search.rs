@@ -23,55 +23,77 @@ pub struct Entry {
     pub section: &'static str,
     /// Other words people search for.
     pub keywords: &'static str,
+    /// The settings the row edits (dotted paths in `settings.json` or
+    /// `host.json`, by the page): problems with them and `GOATTY_*`
+    /// overrides of them show on the row.
+    pub keys: &'static [&'static str],
 }
 
 const fn e(page: Page, section: &'static str, label: &'static str, keywords: &'static str) -> Entry {
-    Entry { page, label, section, keywords }
+    Entry { page, label, section, keywords, keys: &[] }
+}
+
+impl Entry {
+    const fn keys(mut self, keys: &'static [&'static str]) -> Self {
+        self.keys = keys;
+        self
+    }
+}
+
+/// The row on a page that edits `key` (or a setting inside it), if there is one.
+pub fn entry_for(host: bool, key: &str) -> Option<&'static Entry> {
+    let issue = goatty_config::Issue::new(key, "");
+    INDEX.iter().find(|e| e.page.is_host() == host && e.keys.iter().any(|k| issue.concerns(k)))
 }
 
 pub const INDEX: &[Entry] = &[
-    e(Page::Appearance, "Theme", "Follow the system", "theme light dark mode color scheme"),
-    e(Page::Appearance, "Theme", "Customize colors", "palette color editor ansi background foreground cursor"),
-    e(Page::Appearance, "Text", "Font", "family typeface monospace nerd"),
-    e(Page::Appearance, "Text", "Size", "font size zoom bigger smaller"),
-    e(Page::Appearance, "Text", "Line height", "spacing leading"),
-    e(Page::Appearance, "Text", "Ligatures", "renderer shaping"),
-    e(Page::Appearance, "Text", "Bold text in bright colors", "bold bright xterm"),
-    e(Page::Appearance, "Cursor", "Shape", "cursor block bar beam underline caret"),
-    e(Page::Appearance, "Cursor", "Blinking", "cursor blink"),
-    e(Page::Appearance, "Window", "Padding", "margin spacing border inset"),
-    e(Page::Appearance, "Window", "Background opacity", "transparency transparent alpha see through"),
-    e(Page::Appearance, "Window", "Blur behind the window", "blur frosted glass"),
-    e(Page::Terminal, "Links", "Open links", "url hyperlink click osc 8"),
-    e(Page::Terminal, "Links", "Open files with", "editor file opener path vscode"),
-    e(Page::Terminal, "Selection", "Copy selected text", "copy on select primary clipboard"),
-    e(Page::Terminal, "Pasting", "Middle click pastes", "middle mouse button paste"),
-    e(Page::Terminal, "Pasting", "Ask before pasting", "paste confirm protection bracketed multiline"),
-    e(Page::Workspace, "Startup", "When goatty starts", "restore reattach session launch open"),
-    e(Page::Workspace, "Tabs", "Style", "tab style modern compact"),
-    e(Page::Workspace, "Tabs", "Show the tab bar", "hide tabs"),
-    e(Page::Workspace, "Tabs", "Program icons", "nerd font icon tab"),
-    e(Page::Workspace, "Panes", "Fade inactive panes", "dim split focus"),
-    e(Page::Workspace, "Panes", "Ask before closing a running program", "confirm close quit"),
-    e(Page::Hosts, "Connecting", "Open hosts in", "ssh window tab remote"),
-    e(Page::Hosts, "From ~/.ssh/config", "List these hosts too", "ssh config discover"),
-    e(Page::Shell, "", "goatty's managed zsh", "zsh managed dotfiles"),
-    e(Page::Shell, "Program", "Shell", "program bash fish login shell"),
-    e(Page::Shell, "Your dotfiles", "Use ~/.zshenv and ~/.zprofile", "dotfiles environment path"),
-    e(Page::Shell, "Your dotfiles", "Also use ~/.zshrc", "zshrc dotfiles"),
-    e(Page::Shell, "Integration", "Shell integration", "osc 133 osc 7 prompt marks directory"),
-    e(Page::Prompt, "Prompt", "Starship", "prompt git"),
-    e(Page::Prompt, "Prompt", "Style", "rich minimal nerd font symbols"),
-    e(Page::Prompt, "Prompt", "Use my own starship.toml", "starship config"),
-    e(Page::Prompt, "Layout", "Input on its own line", "two line newline"),
-    e(Page::Prompt, "Layout", "Empty line before each prompt", "newline blank space"),
-    e(Page::Prompt, "Layout", "Show how long commands took", "duration time took"),
-    e(Page::History, "Saving", "Commands to keep", "size length histsize"),
-    e(Page::History, "Saving", "Skip duplicates", "dedupe repeat"),
-    e(Page::History, "Saving", "Skip commands starting with a space", "secret ignore space private"),
-    e(Page::History, "Saving", "Share between running shells", "sync share tabs"),
-    e(Page::History, "Search", "Atuin", "ctrl+r history search"),
-    e(Page::History, "Search", "Atuin on the Up arrow", "up arrow"),
+    e(Page::Appearance, "Theme", "Follow the system", "theme light dark mode color scheme").keys(&[
+        "theme.follow_system",
+        "theme.name",
+        "theme.light",
+        "theme.dark",
+    ]),
+    e(Page::Appearance, "Theme", "Customize colors", "palette color editor ansi background foreground cursor").keys(&["theme.overrides"]),
+    e(Page::Appearance, "Text", "Font", "family typeface monospace nerd").keys(&["font.family", "font.fallbacks"]),
+    e(Page::Appearance, "Text", "Size", "font size zoom bigger smaller").keys(&["font.size"]),
+    e(Page::Appearance, "Text", "Line height", "spacing leading").keys(&["font.line_height"]),
+    e(Page::Appearance, "Text", "Ligatures", "renderer shaping").keys(&["terminal.renderer"]),
+    e(Page::Appearance, "Text", "Bold text in bright colors", "bold bright xterm").keys(&["theme.bold_is_bright"]),
+    e(Page::Appearance, "Cursor", "Shape", "cursor block bar beam underline caret").keys(&["terminal.cursor_shape"]),
+    e(Page::Appearance, "Cursor", "Blinking", "cursor blink").keys(&["terminal.cursor_blink"]),
+    e(Page::Appearance, "Window", "Padding", "margin spacing border inset").keys(&["terminal.padding"]),
+    e(Page::Appearance, "Window", "Background opacity", "transparency transparent alpha see through").keys(&["terminal.opacity"]),
+    e(Page::Appearance, "Window", "Blur behind the window", "blur frosted glass").keys(&["terminal.blur"]),
+    e(Page::Terminal, "Links", "Open links", "url hyperlink click osc 8").keys(&["links.open_on"]),
+    e(Page::Terminal, "Links", "Open files with", "editor file opener path vscode").keys(&["links.file_opener"]),
+    e(Page::Terminal, "Selection", "Copy selected text", "copy on select primary clipboard").keys(&["selection.copy_on_select"]),
+    e(Page::Terminal, "Pasting", "Middle click pastes", "middle mouse button paste").keys(&["paste.middle_click"]),
+    e(Page::Terminal, "Pasting", "Ask before pasting", "paste confirm protection bracketed multiline").keys(&["paste.confirm"]),
+    e(Page::Workspace, "Startup", "When goatty starts", "restore reattach session launch open").keys(&["workspace.on_launch"]),
+    e(Page::Workspace, "Tabs", "Style", "tab style modern compact").keys(&["tabs.style"]),
+    e(Page::Workspace, "Tabs", "Show the tab bar", "hide tabs").keys(&["tabs.show"]),
+    e(Page::Workspace, "Tabs", "Program icons", "nerd font icon tab").keys(&["tabs.icons"]),
+    e(Page::Workspace, "Panes", "Fade inactive panes", "dim split focus").keys(&["panes.dim_inactive"]),
+    e(Page::Workspace, "Panes", "Ask before closing a running program", "confirm close quit").keys(&["panes.confirm_close"]),
+    e(Page::Hosts, "Connecting", "Open hosts in", "ssh window tab remote").keys(&["ssh.open_in"]),
+    e(Page::Hosts, "From ~/.ssh/config", "List these hosts too", "ssh config discover").keys(&["ssh.discover"]),
+    e(Page::Shell, "", "goatty's managed zsh", "zsh managed dotfiles").keys(&["shell.managed"]),
+    e(Page::Shell, "Program", "Shell", "program bash fish login shell").keys(&["shell.program"]),
+    e(Page::Shell, "Your dotfiles", "Use ~/.zshenv and ~/.zprofile", "dotfiles environment path").keys(&["shell.zsh.user_env"]),
+    e(Page::Shell, "Your dotfiles", "Also use ~/.zshrc", "zshrc dotfiles").keys(&["shell.zsh.user_rc"]),
+    e(Page::Shell, "Integration", "Shell integration", "osc 133 osc 7 prompt marks directory").keys(&["shell.zsh.integration"]),
+    e(Page::Prompt, "Prompt", "Starship", "prompt git").keys(&["plugins.starship.enabled"]),
+    e(Page::Prompt, "Prompt", "Style", "rich minimal nerd font symbols").keys(&["prompt.style"]),
+    e(Page::Prompt, "Prompt", "Use my own starship.toml", "starship config").keys(&["plugins.starship.settings.prefer_user_config"]),
+    e(Page::Prompt, "Layout", "Input on its own line", "two line newline").keys(&["prompt.two_line"]),
+    e(Page::Prompt, "Layout", "Empty line before each prompt", "newline blank space").keys(&["prompt.newline_before"]),
+    e(Page::Prompt, "Layout", "Show how long commands took", "duration time took").keys(&["prompt.duration_threshold_ms"]),
+    e(Page::History, "Saving", "Commands to keep", "size length histsize").keys(&["history.size"]),
+    e(Page::History, "Saving", "Skip duplicates", "dedupe repeat").keys(&["history.ignore_duplicates"]),
+    e(Page::History, "Saving", "Skip commands starting with a space", "secret ignore space private").keys(&["history.ignore_space"]),
+    e(Page::History, "Saving", "Share between running shells", "sync share tabs").keys(&["history.share_between_sessions"]),
+    e(Page::History, "Search", "Atuin", "ctrl+r history search").keys(&["plugins.atuin.enabled"]),
+    e(Page::History, "Search", "Atuin on the Up arrow", "up arrow").keys(&["plugins.atuin.settings.up_arrow"]),
     e(Page::Diagnostics, "Shell", "Startup time", "slow startup speed doctor status"),
     e(Page::Diagnostics, "Shell", "Configuration", "generation doctor status zdotdir"),
     e(Page::Diagnostics, "Shell", "Program", "doctor status setup features installed missing tools starship atuin"),
@@ -105,7 +127,7 @@ pub fn search(query: &str) -> Vec<Hit> {
 }
 
 impl SettingsWindow {
-    fn open_hit(&mut self, hit: &Hit, cx: &mut Context<'_, Self>) {
+    pub(super) fn open_hit(&mut self, hit: &Hit, cx: &mut Context<'_, Self>) {
         self.search.update(cx, |i, cx| i.set_text("", cx));
         match hit {
             Hit::Setting(e) => {
@@ -214,6 +236,22 @@ mod tests {
         assert!(labels("cursor blink").contains(&"Blinking"));
         assert!(labels("starship").contains(&"Use my own starship.toml"));
         assert!(labels("zzzz").is_empty());
+    }
+
+    #[test]
+    fn keys_name_real_settings() {
+        use goatty_config::{ClientSettings, HostSettings, store::is_known_key};
+        for e in INDEX {
+            for k in e.keys {
+                let known = if e.page.is_host() { is_known_key::<HostSettings>(k) } else { is_known_key::<ClientSettings>(k) };
+                assert!(known, "{}: {k}", e.label);
+            }
+        }
+        assert_eq!(entry_for(false, "terminal.padding.top").map(|e| e.label), Some("Padding"));
+        assert_eq!(entry_for(true, "prompt.style").map(|e| (e.page, e.label)), Some((Page::Prompt, "Style")));
+        assert_eq!(entry_for(false, "tabs.style").map(|e| (e.page, e.label)), Some((Page::Workspace, "Style")));
+        assert!(entry_for(false, "keybindings.ctrl-k").is_none());
+        assert!(entry_for(false, "").is_none());
     }
 
     #[test]

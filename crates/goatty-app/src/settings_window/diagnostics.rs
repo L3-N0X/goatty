@@ -126,12 +126,29 @@ impl SettingsWindow {
                 );
             }
         }
-        if !s.settings_issues.is_empty() || !s.env_overrides.is_empty() {
-            let mut lines = s.settings_issues.clone();
-            if !s.env_overrides.is_empty() {
-                lines.push(format!("Overridden by goattyd's environment: {}", s.env_overrides.join(", ")));
+        let host = if self.host.is_some() { self.host_issues().len() } else { s.settings_issues.len() };
+        let problems = cx.global::<crate::settings::AppSettings>().issues().len() + host;
+        if problems > 0 || !s.env_overrides.is_empty() {
+            let mut sec = section(ui, "Settings");
+            if problems > 0 {
+                sec = sec.child(
+                    row(
+                        ui,
+                        if problems == 1 {
+                            "1 setting couldn't be used".to_string()
+                        } else {
+                            format!("{problems} settings couldn't be used")
+                        },
+                    )
+                    .icon(Icon::TriangleAlert)
+                    .desc("Each one, and a button to copy them all, on the Profile page")
+                    .on_click("diag-problems", self.listener_go(cx, Page::Profile)),
+                );
             }
-            page = page.child(banner(ui, Tone::Warning, "Shell settings", lines));
+            if !s.env_overrides.is_empty() {
+                sec = sec.child(row(ui, "Overridden by goattyd's environment").icon(Icon::Info).desc(s.env_overrides.join(", ")));
+            }
+            page = page.child(sec);
         }
         page.into_any_element()
     }
@@ -252,7 +269,14 @@ impl SettingsWindow {
             .into_any_element()
     }
 
-    fn copy_button(&self, ui: Ui, id: &'static str, label: &'static str, text: String, cx: &Context<'_, Self>) -> impl IntoElement {
+    pub(super) fn copy_button(
+        &self,
+        ui: Ui,
+        id: &'static str,
+        label: &'static str,
+        text: String,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
         let copied = self.copied.as_ref().is_some_and(|(p, at)| p.as_ref() == id && at.elapsed().as_millis() < 1500);
         button_with(
             id,

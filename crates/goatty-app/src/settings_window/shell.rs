@@ -25,18 +25,20 @@ impl SettingsWindow {
             );
             return (notes, None);
         }
-        let Some(h) = &self.host else {
+        if self.host.is_none() {
             notes.push(
                 kit::empty(ui, Icon::Loader, "Loading…", format!("Asking {} for its settings", self.host_label())).into_any_element(),
             );
             return (notes, None);
         };
-        if !h.issues.is_empty() {
-            notes.push(banner(ui, Tone::Warning, "Some settings couldn't be read", h.issues.clone()).into_any_element());
+        // Problems with a setting on this page show on its row.
+        let (issues, vars) = self.unshown_host_problems(self.page);
+        if !issues.is_empty() {
+            notes.push(banner(ui, Tone::Warning, "Some settings couldn't be read", issues).into_any_element());
         }
-        if !h.env_overrides.is_empty() {
+        if !vars.is_empty() {
             notes.push(
-                banner(ui, Tone::Neutral, format!("Overridden on {} by {}", self.host_label(), h.env_overrides.join(", ")), Vec::new())
+                banner(ui, Tone::Neutral, format!("Overridden on {} by {}", self.host_label(), vars.join(", ")), Vec::new())
                     .into_any_element(),
             );
         }

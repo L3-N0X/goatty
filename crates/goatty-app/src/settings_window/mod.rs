@@ -15,6 +15,7 @@ mod host;
 mod hosts;
 pub(crate) mod kit;
 mod plugins;
+mod problems;
 mod profile;
 mod search;
 mod shell;
@@ -57,6 +58,19 @@ impl Global for OpenWindow {}
 /// Open the settings window, or bring it to the front.
 pub fn open(cx: &mut App) {
     open_at(cx, None);
+}
+
+/// Open the settings window where the client setting `path` is edited,
+/// highlighting its row; the Profile page (which lists every problem) when
+/// no row edits it. For "Show" on a problem toast.
+pub fn open_issue(cx: &mut App, path: &str) {
+    let entry = search::entry_for(false, path);
+    open_at(cx, Some(entry.map_or(Page::Profile, |e| e.page)));
+    if let Some(e) = entry
+        && let Some(handle) = cx.try_global::<OpenWindow>().and_then(|w| w.0)
+    {
+        let _ = handle.update(cx, |view, _, cx| view.open_hit(&search::Hit::Setting(e), cx));
+    }
 }
 
 /// Open the settings window at `page` (or where it was).

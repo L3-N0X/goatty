@@ -130,13 +130,9 @@ pub fn settings(cmd: SettingsCmd) -> Result<()> {
             let mut problems: Vec<String> = loaded.issues.iter().map(ToString::to_string).collect();
             let lib = ThemeLibrary::load_default();
             problems.extend(lib.issues.iter().map(ToString::to_string));
-            for dark in [false, true] {
-                if let (_, Some(i)) = lib.resolve(&loaded.value.theme, dark)
-                    && !problems.contains(&i.to_string())
-                {
-                    problems.push(i.to_string());
-                }
-            }
+            problems.extend(lib.check(&loaded.value.theme).iter().map(ToString::to_string));
+            // Without a window there's no font list: only programs are checked.
+            problems.extend(loaded.value.check_environment(&[], crate::settings::has_program).iter().map(ToString::to_string));
             // Keystrokes goatty can't read are already in `issues`; this
             // catches what only GPUI rejects.
             for key in loaded.value.keybindings.keys().filter(|k| goatty_config::keys::canonical_keystroke(k).is_ok()) {

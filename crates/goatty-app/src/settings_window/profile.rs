@@ -10,7 +10,7 @@ use gpui::{AnyElement, ClipboardItem, Context, FontWeight, IntoElement, ParentEl
 use super::SettingsWindow;
 use super::kit::{self, card, row, section};
 use crate::settings::AppSettings;
-use crate::ui::controls::{ButtonKind, Tone, badge, banner, button, button_with, icon_button};
+use crate::ui::controls::{ButtonKind, Tone, badge, button, button_with, icon_button};
 use crate::ui::icons::Icon;
 use crate::ui::style::{Ui, text};
 
@@ -118,12 +118,9 @@ impl SettingsWindow {
     pub(super) fn profile(&self, ui: Ui, cx: &Context<'_, Self>) -> AnyElement {
         let app = cx.global::<AppSettings>();
         let label = self.host_label();
-        let mut problems: Vec<String> = app.problems().into_iter().map(|p| format!("This computer: {p}")).collect();
-        if let Some(h) = &self.host {
-            problems.extend(h.issues.iter().map(|i| format!("{label}: {i}")));
-        }
-        let status = if problems.is_empty() {
-            card(ui)
+        let status = match self.problems_section(ui, cx) {
+            Some(problems) => problems,
+            None => card(ui)
                 .flex_row()
                 .items_center()
                 .gap(px(14.))
@@ -146,9 +143,7 @@ impl SettingsWindow {
                         .child(div().text_size(px(text::BODY)).font_weight(FontWeight::MEDIUM).child("Every setting was read as written"))
                         .child(div().text_size(px(text::SMALL)).text_color(ui.muted).child("No problems in the settings files")),
                 )
-                .into_any_element()
-        } else {
-            banner(ui, Tone::Warning, format!("{} problem(s) reading the settings", problems.len()), problems).into_any_element()
+                .into_any_element(),
         };
 
         let client_path = app.path.as_ref().map(|p| p.display().to_string());

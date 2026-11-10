@@ -110,6 +110,14 @@ pub fn resolve_program(program: Option<&str>) -> String {
         .unwrap_or_else(|| "/bin/sh".into())
 }
 
+/// `shell.program` names a shell that isn't on this host: new sessions
+/// would fail to start. `None` (the default shell) is always fine.
+pub fn program_issue(program: Option<&str>) -> Option<goatty_config::Issue> {
+    let p = program.map(str::trim).filter(|p| !p.is_empty())?;
+    let found = if p.contains('/') { Path::new(p).is_file() } else { which(p).is_some() };
+    (!found).then(|| goatty_config::Issue::new("shell.program", format!("{p:?} isn't installed on this host; new sessions won't start")))
+}
+
 pub fn is_zsh(program: &str) -> bool {
     Path::new(program).file_name().is_some_and(|n| n == "zsh")
 }
@@ -128,6 +136,16 @@ mod tests {
         let mut h = HostSettings::default();
         h.shell.program = Some(program.into());
         h
+    }
+
+    #[test]
+    fn missing_programs_are_reported() {
+        assert!(program_issue(None).is_none());
+        assert!(program_issue(Some(" ")).is_none());
+        assert!(program_issue(Some("/bin/sh")).is_none());
+        assert!(program_issue(Some("sh")).is_none(), "found on PATH");
+        assert_eq!(program_issue(Some("/nonexistent/fish")).unwrap().path, "shell.program");
+        assert!(program_issue(Some("goatty-no-such-shell")).is_some());
     }
 
     #[test]

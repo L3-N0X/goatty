@@ -10,6 +10,7 @@
 //! - [`search_field`], [`chip`] (filters), [`hint`], [`empty`], [`modal`].
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui::{
@@ -193,6 +194,32 @@ fn scroll_to_focus_row(top: gpui::Pixels, window: &mut Window) {
     }
 }
 
+/// What a page knows about one of its rows: problems reading the setting
+/// and the `GOATTY_*` variable overriding it (#53).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RowNote {
+    pub problems: Vec<SharedString>,
+    pub overridden_by: Option<SharedString>,
+}
+
+thread_local! {
+    /// The notes for the page being rendered, by row label, and the window
+    /// they're for (other windows render rows too).
+    static ROW_NOTES: RefCell<Option<(gpui::WindowId, HashMap<SharedString, RowNote>)>> = const { RefCell::new(None) };
+}
+
+/// Before rendering a page in `window`: what its rows should say.
+pub fn set_row_notes(window: gpui::WindowId, notes: HashMap<SharedString, RowNote>) {
+    ROW_NOTES.with_borrow_mut(|n| *n = Some((window, notes)));
+}
+
+fn row_note(window: &Window, label: &str) -> Option<RowNote> {
+    ROW_NOTES.with_borrow(|n| {
+        let (id, notes) = n.as_ref()?;
+        (*id == window.window_handle().window_id()).then(|| notes.get(label).cloned()).flatten()
+    })
+}
+
 /// One setting.
 #[derive(IntoElement)]
 pub struct Row {
@@ -252,9 +279,12 @@ impl Row {
 }
 
 impl RenderOnce for Row {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let ui = self.ui;
         let focused = is_focus_row(&self.label);
+        let note = row_note(window, &self.label).unwrap_or_default();
+        // The environment wins over the file: editing here would change nothing.
+        let disabled = self.disabled || note.overridden_by.is_some();
         let label = div().text_size(px(text::BODY)).text_color(ui.text).child(self.label.clone());
         let text_col = div()
             .flex()
@@ -264,8 +294,30 @@ impl RenderOnce for Row {
             .min_w_0()
             .child(label)
             .when_some(self.desc, |d, t| d.child(div().text_size(px(text::SMALL)).text_color(ui.muted).child(t)));
+        let notes =
+            (!note.problems.is_empty() || note.overridden_by.is_some()).then(|| {
+                let line = |icon: Icon, color: gpui::Hsla, t: SharedString| {
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap(px(6.))
+                        .text_size(px(text::SMALL))
+                        .text_color(color)
+                        .child(icon.svg().flex_shrink_0().size(px(13.)).mt(px(2.)).text_color(color))
+                        .child(div().min_w_0().child(t))
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .mt(px(2.))
+                    .children(note.overridden_by.map(|var| {
+                        line(Icon::Info, ui.accent_text, format!("Set by {var} for this run; unset it to use this setting").into())
+                    }))
+                    .children(note.problems.into_iter().map(|p| line(Icon::TriangleAlert, ui.warning, p)))
+            });
         let control = self.control.map(|c| {
-            if self.disabled {
+            if disabled {
                 // Visible but inert: a cover takes the clicks.
                 div().relative().flex_shrink_0().opacity(0.45).child(c).child(div().absolute().inset_0().occlude()).into_any_element()
             } else {
@@ -292,7 +344,7 @@ impl RenderOnce for Row {
                         .child(i.svg().size(px(17.)).text_color(ui.muted)),
                 )
             })
-            .child(text_col.when(self.disabled, |d| d.opacity(0.55)))
+            .child(text_col.when(self.disabled, |d| d.opacity(0.55)).children(notes))
             .children(control)
             .when(self.click.is_some(), |d| d.child(Icon::ChevronRight.svg().size(px(16.)).text_color(ui.faint)));
         let body = div()

@@ -499,6 +499,8 @@ impl Render for SettingsWindow {
         let focus_row = self.highlighted(cx);
         kit::set_focus_row(focus_row, &self.scroll);
         let query = self.search.read(cx).text().trim().to_lowercase();
+        let notes = if query.is_empty() { self.row_notes(cx) } else { Default::default() };
+        kit::set_row_notes(window.window_handle().window_id(), notes);
         let cx: &Context<'_, Self> = cx;
         let page = if !query.is_empty() {
             self.search_results(ui, &query, cx)

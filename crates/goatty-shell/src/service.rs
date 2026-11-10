@@ -90,12 +90,21 @@ impl HostService {
         self.launcher.dirs().and_then(generation::current)
     }
 
+    /// Problems only this host can see: plugins' settings against their
+    /// schemas, a shell program that isn't installed.
+    fn environment_issues(&self, value: &HostSettings) -> Vec<String> {
+        let mut issues = Vec::new();
+        if let Some(dirs) = self.launcher.dirs() {
+            issues.extend(crate::plugins::active(dirs, value).1);
+        }
+        issues.extend(crate::launch::program_issue(value.shell.program.as_deref()).map(|i| i.to_string()));
+        issues
+    }
+
     pub fn snapshot(&self) -> HostSnapshot {
         let host = self.settings();
         let mut issues: Vec<String> = host.file.issues.iter().map(ToString::to_string).collect();
-        if let Some(dirs) = self.launcher.dirs() {
-            issues.extend(crate::plugins::active(dirs, &host.value).1);
-        }
+        issues.extend(self.environment_issues(&host.value));
         HostSnapshot {
             json: store::to_json(&host.file.value, &host.file.unknown),
             issues,
@@ -112,9 +121,7 @@ impl HostService {
         let loaded = store::parse::<HostSettings>(json);
         let mut issues: Vec<String> = loaded.issues.iter().map(ToString::to_string).collect();
         let host = goatty_config::with_host_env(loaded);
-        if let Some(dirs) = self.launcher.dirs() {
-            issues.extend(crate::plugins::active(dirs, &host.value).1);
-        }
+        issues.extend(self.environment_issues(&host.value));
         let diff = self.launcher.preview(&host.value);
         if !apply {
             return Ok(ApplyOutcome { issues, diff, applied: false, generation: self.active_generation() });
