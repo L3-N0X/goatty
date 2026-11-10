@@ -264,7 +264,7 @@ impl AppSettings {
         let new: Vec<&Issue> = after.iter().filter(|i| !before.contains(i)).collect();
         let Some(first) = new.first() else {
             if after.is_empty() && !before.is_empty() {
-                toast::show(cx, Toast::success("The settings are fine again").key(TOAST_KEY));
+                toast::show(cx, Toast::success("The settings on this computer are fine again").key(TOAST_KEY));
             }
             return;
         };
@@ -318,6 +318,10 @@ impl AppSettings {
 
 /// Problem toasts replace each other.
 pub(crate) const TOAST_KEY: &str = "settings.issues";
+
+/// Problems with the host's `host.json` get their own key, so a recovery
+/// message about this computer's settings can't replace them.
+pub(crate) const HOST_TOAST_KEY: &str = "settings.host.issues";
 
 /// Save errors get their own key, so a theme reload's warning can't replace them.
 const SAVE_TOAST_KEY: &str = "settings.save";

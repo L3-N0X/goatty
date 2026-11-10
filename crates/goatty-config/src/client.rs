@@ -703,12 +703,13 @@ impl ClientSettings {
     pub fn check_environment(&self, fonts: &[String], has_program: impl Fn(&str) -> bool) -> Vec<Issue> {
         let mut issues = Vec::new();
         let installed = |name: &str| fonts.iter().any(|f| f.eq_ignore_ascii_case(name));
-        let fallback = || self.font.fallbacks.iter().find(|f| installed(f)).cloned().unwrap_or_else(|| "monospace".into());
+        // Fallbacks are matched exactly, as `FontSettings::resolve_family` does.
+        let fallback_installed = |name: &str| fonts.iter().any(|f| f == name);
         match self.font.family.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
             Some(f) if !GENERIC_FONTS.contains(&f) && !fonts.is_empty() && !installed(f) => {
-                issues.push(Issue::new("font.family", format!("{f:?} isn't installed; using {}", fallback())));
+                issues.push(Issue::new("font.family", format!("{f:?} isn't installed; the system picks another font")));
             }
-            None if !fonts.is_empty() && !self.font.fallbacks.is_empty() && !self.font.fallbacks.iter().any(|f| installed(f)) => {
+            None if !fonts.is_empty() && !self.font.fallbacks.is_empty() && !self.font.fallbacks.iter().any(|f| fallback_installed(f)) => {
                 issues.push(Issue::new("font.fallbacks", "none of these fonts is installed; using the system's monospace font"));
             }
             _ => {}
@@ -850,12 +851,16 @@ mod tests {
         s.font.family = Some("Iosevka".into());
         let issues = s.check_environment(&fonts, ok);
         assert_eq!(issues[0].path, "font.family");
-        assert!(issues[0].message.contains("using Fira Code"), "{}", issues[0]);
+        assert!(issues[0].message.contains("the system picks another font"), "{}", issues[0]);
         assert!(s.check_environment(&[], ok).is_empty(), "no font list: nothing to check against");
 
         s.font.family = None;
         s.font.fallbacks = vec!["Nope Mono".into()];
         assert_eq!(paths(&s, &ok), ["font.fallbacks"]);
+        s.font.fallbacks = vec!["fira code".into()];
+        assert_eq!(paths(&s, &ok), ["font.fallbacks"], "fallbacks are matched exactly, like the resolver does");
+        s.font.fallbacks = vec!["Fira Code".into()];
+        assert!(paths(&s, &ok).is_empty());
 
         let mut s = ClientSettings::default();
         s.links.file_opener = Some("'my editor' --goto {path}".into());
