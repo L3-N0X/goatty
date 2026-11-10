@@ -180,7 +180,7 @@ pub fn builtins() -> Vec<Command> {
         Command::action("settings.open", "Settings", "Open settings", "open_settings").keywords(&["preferences", "options", "config"]),
         page("settings.shortcuts", "Keyboard shortcuts", Page::Shortcuts, &["keybindings", "keys", "hotkeys", "bind"]),
         page("settings.appearance", "Appearance and themes", Page::Appearance, &["theme", "colors", "font", "cursor"]),
-        page("settings.shell", "Shell", Page::Shell, &["zsh", "plugins", "autosuggestions"]),
+        page("settings.shell", "Shell", Page::Shell, &["zsh", "managed", "dotfiles", "zshrc"]),
         page("settings.prompt", "Prompt", Page::Prompt, &["starship"]),
         page("settings.history", "History", Page::History, &["atuin"]),
         page(
@@ -209,6 +209,7 @@ pub fn builtins() -> Vec<Command> {
         ),
         page("settings.profile", "Profile: export and import", Page::Profile, &["backup", "sync"]),
         page("settings.hosts", "Hosts: add hosts, plain SSH", Page::Hosts, &["ssh", "remote", "servers", "connect"]),
+        page("settings.about", "About goatty", Page::About, &["version", "info", "bug report", "license"]),
         Command::handler("settings.open_file", "Settings", "Open settings.json in an editor", |_, cx| {
             let Some(path) = goatty_config::client_file() else {
                 toast::show(cx, Toast::error("Can't find settings.json").body("Neither $XDG_CONFIG_HOME nor $HOME is set."));

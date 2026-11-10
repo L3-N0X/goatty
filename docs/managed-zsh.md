@@ -82,10 +82,10 @@ XDG variables are respected. History stays in the file plain zsh would use (`${Z
 | `plugins.<id>.enabled` for `autosuggestions`, `syntax-highlighting`, `starship`, `atuin`, `fzf` | on | |
 | `plugins.autosuggestions.settings.{strategy, max_length}` | `history-completion`, 80 | |
 | `plugins.syntax-highlighting.settings.brackets` | off | |
-| `plugins.starship.settings.prefer_user_config` | on | |
+| `plugins.starship.settings.prefer_user_config` | off | |
 | `plugins.atuin.settings.up_arrow` | off | |
 
-The Shell, Prompt and History pages keep their switches for the built-in plugins; the Plugins page has all their settings. `host.json` version 1 had the switches as `shell.zsh.{autosuggestions, syntax_highlighting, fzf}`, `prompt.starship`, `history.atuin` and the options as `prompt.prefer_user_config`, `history.atuin_up_arrow`: loading one moves them to `plugins.*` (version 2; only keys the file had, so it stays sparse).
+Each built-in plugin has its own page under Plugins with all its settings; Prompt and History also show the Starship and Atuin switches. `host.json` version 1 had the switches as `shell.zsh.{autosuggestions, syntax_highlighting, fzf}`, `prompt.starship`, `history.atuin` and the options as `prompt.prefer_user_config`, `history.atuin_up_arrow`: loading one moves them to `plugins.*` (version 2; only keys the file had, so it stays sparse).
 
 `.zshrc` is off by default because most `.zshrc` files load their own prompt and plugins, which would fight goatty's. With it on, it runs after compinit and before goatty's plugins, so goatty's prompt still wins. Turn off the Starship plugin to keep your own prompt. The `minimal` prompt style uses plain characters only, for fonts without Nerd Font symbols (#46).
 

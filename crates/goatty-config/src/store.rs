@@ -485,7 +485,7 @@ mod tests {
         assert_eq!(v.font.line_height, 1.5);
         assert_eq!(v.font.family.as_deref(), Some("Iosevka"));
         assert_eq!(v.terminal.renderer, Renderer::Glyphs);
-        assert_eq!(v.terminal.padding, 10.0);
+        assert_eq!(v.terminal.padding, crate::client::Padding::all(10.0));
         assert_eq!(v.theme.name, "nord");
         assert_eq!(v.theme.overrides.background, None);
         assert_eq!(v.theme.overrides.ansi, vec![None, Some(crate::Color(0xff0000)), None]);

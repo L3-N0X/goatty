@@ -6,24 +6,33 @@
 //! as a diff of the generated shell configuration, and are applied as a new
 //! generation (validated first, rollback-able). See `docs/profiles.md`.
 
+mod about;
 mod aliases;
+mod appearance;
+mod chrome;
 mod host;
 mod hosts;
-mod pages;
+mod kit;
 mod plugins;
+mod profile;
+mod search;
+mod shell;
+mod shortcuts;
+mod terminal;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use goatty_config::{Color, ColorSlot, HostSettings, Loaded, store};
 use gpui::{
-    App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable, Global, KeyBinding, Subscription, Window, WindowBounds, WindowHandle,
-    WindowOptions, actions, px, size,
+    App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable, Global, KeyBinding, ScrollHandle, SharedString, Subscription, Window,
+    WindowBounds, WindowHandle, WindowOptions, actions, px, size,
 };
 
 pub use host::{GenRow, HostLink, HostLinkGlobal};
 
 use crate::settings::AppSettings;
 use crate::ui::color_picker::{ColorPicker, ColorPickerEvent};
+use crate::ui::icons::Icon;
 use crate::ui::text_input::{TextInput, TextInputEvent};
 
 pub const CONTEXT: &str = "SettingsWindow";
@@ -56,24 +65,18 @@ pub fn open_at(cx: &mut App, page: Option<Page>) {
                 window.activate_window();
                 view.follow_host_link(cx);
                 if let Some(p) = page {
-                    view.page = p;
-                    cx.notify();
-                }
-                if matches!(page, Some(Page::Plugins | Page::Aliases)) {
-                    view.load_plugins(false, cx);
-                }
-                if page == Some(Page::Hosts) {
-                    crate::hosts::refresh(cx);
+                    view.go(p, cx);
                 }
             })
             .is_ok()
     {
         return;
     }
-    let bounds = Bounds::centered(None, size(px(860.), px(640.)), cx);
+    let bounds = Bounds::centered(None, size(px(1060.), px(740.)), cx);
     let handle: anyhow::Result<WindowHandle<SettingsWindow>> = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_min_size: Some(size(px(760.), px(520.))),
             app_id: Some("dev.goatty.goatty".into()),
             ..Default::default()
         },
@@ -94,54 +97,103 @@ pub fn open_at(cx: &mut App, page: Option<Page>) {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Page {
     Appearance,
     Terminal,
+    Workspace,
+    Shortcuts,
+    Hosts,
     Shell,
     Prompt,
     History,
     Aliases,
-    Shortcuts,
     Plugins,
-    Workspace,
-    Hosts,
     Profile,
+    About,
 }
 
 impl Page {
-    pub const ALL: [Page; 11] = [
+    /// Sidebar order: this computer's pages, the host's shell pages, then
+    /// the files and About.
+    pub const ALL: [Page; 12] = [
         Page::Appearance,
         Page::Terminal,
+        Page::Workspace,
+        Page::Shortcuts,
+        Page::Hosts,
         Page::Shell,
         Page::Prompt,
         Page::History,
         Page::Aliases,
         Page::Plugins,
-        Page::Shortcuts,
-        Page::Workspace,
-        Page::Hosts,
         Page::Profile,
+        Page::About,
     ];
 
     pub fn title(self) -> &'static str {
         match self {
             Page::Appearance => "Appearance",
             Page::Terminal => "Terminal",
+            Page::Workspace => "Workspace",
+            Page::Shortcuts => "Shortcuts",
+            Page::Hosts => "Hosts",
             Page::Shell => "Shell",
             Page::Prompt => "Prompt",
             Page::History => "History",
             Page::Aliases => "Aliases",
             Page::Plugins => "Plugins",
-            Page::Shortcuts => "Shortcuts",
-            Page::Workspace => "Workspace",
-            Page::Hosts => "Hosts",
             Page::Profile => "Profile",
+            Page::About => "About",
+        }
+    }
+
+    /// One line under the page title.
+    pub fn summary(self) -> &'static str {
+        match self {
+            Page::Appearance => "Theme, font, cursor and window",
+            Page::Terminal => "Links, selection and pasting",
+            Page::Workspace => "Startup, tabs and split panes",
+            Page::Shortcuts => "Keys for terminal windows",
+            Page::Hosts => "Machines to open sessions on over SSH",
+            Page::Shell => "The shell goatty starts",
+            Page::Prompt => "What the prompt shows",
+            Page::History => "What the shell remembers",
+            Page::Aliases => "Short names for longer commands",
+            Page::Plugins => "Tools and extensions for the shell",
+            Page::Profile => "Settings files, sharing and generations",
+            Page::About => "Version, links and credits",
+        }
+    }
+
+    pub fn icon(self) -> Icon {
+        match self {
+            Page::Appearance => Icon::Palette,
+            Page::Terminal => Icon::SquareTerminal,
+            Page::Workspace => Icon::AppWindow,
+            Page::Shortcuts => Icon::Keyboard,
+            Page::Hosts => Icon::Server,
+            Page::Shell => Icon::Shell,
+            Page::Prompt => Icon::TextCursorInput,
+            Page::History => Icon::History,
+            Page::Aliases => Icon::Link2,
+            Page::Plugins => Icon::Puzzle,
+            Page::Profile => Icon::UserRound,
+            Page::About => Icon::Info,
         }
     }
 
     pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|p| p.title().eq_ignore_ascii_case(name))
+        let name = name.trim().to_lowercase();
+        let alias = match name.as_str() {
+            "keys" | "keybindings" | "keyboard" => Some(Page::Shortcuts),
+            "theme" | "themes" | "colors" | "font" => Some(Page::Appearance),
+            "tabs" | "panes" => Some(Page::Workspace),
+            "ssh" => Some(Page::Hosts),
+            "profiles" | "files" => Some(Page::Profile),
+            _ => None,
+        };
+        alias.or_else(|| Self::ALL.into_iter().find(|p| p.title().eq_ignore_ascii_case(&name)))
     }
 
     /// Edits the connected host's settings (staged, then applied).
@@ -192,10 +244,25 @@ pub struct SettingsWindow {
     outcome: Option<Outcome>,
     show_diff: bool,
     generations: Vec<GenRow>,
+    /// The page's scroll position (back to the top on a new page).
+    scroll: ScrollHandle,
+    /// The open dropdown menu (a select's or the font picker's id).
+    menu: Option<SharedString>,
+    /// The menu a mouse-down outside it just closed: the same click on its
+    /// trigger must not open it again.
+    menu_dismissed: Option<(SharedString, Instant)>,
+    /// "Search settings" in the sidebar.
+    search: Entity<TextInput>,
     font_filter: Entity<TextInput>,
     shell_path: Entity<TextInput>,
     file_opener: Entity<TextInput>,
     show_all_fonts: bool,
+    /// The color editor is open (Appearance).
+    colors_open: bool,
+    /// Padding: one value for all sides, or each side.
+    padding_linked: bool,
+    /// A narrow window shows a rail; this opens the full sidebar over the page.
+    drawer: bool,
     /// Theme gallery target when following the system.
     pub theme_target: ThemeTarget,
     /// The color being edited in the theme editor.
@@ -213,6 +280,15 @@ pub struct SettingsWindow {
     plugins: plugins::PluginsPage,
     aliases: aliases::AliasesPage,
     hosts: hosts::HostsPage,
+    shortcuts: shortcuts::ShortcutsPage,
+    /// Rows that just got focus from a search result, briefly highlighted.
+    highlight: Option<(SharedString, Instant)>,
+    /// What was just copied (a path, "about"), to say so for a moment.
+    copied: Option<(SharedString, Instant)>,
+    /// Profile: "Reset…" was clicked once.
+    confirm_reset: bool,
+    /// Profile: every generation, not only the recent ones.
+    gens_expanded: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -226,17 +302,31 @@ impl SettingsWindow {
     fn new(window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        let font_filter = cx.new(|cx| TextInput::new("Filter fonts…", "", cx));
-        let shell_path = cx.new(|cx| TextInput::new("/path/to/shell, then Enter", "", cx));
+        let font_filter = cx.new(|cx| TextInput::new("Search fonts", "", cx).bare());
+        let search = cx.new(|cx| TextInput::new("Search settings", "", cx).bare());
+        let shell_path = cx.new(|cx| TextInput::new("/usr/bin/nu", "", cx));
         let picker = cx.new(|cx| ColorPicker::new(cx.global::<AppSettings>().colors.get(ColorSlot::Background), cx));
         let theme_name = cx.new(|cx| TextInput::new("Name for a new theme", "", cx));
         let opener = cx.global::<AppSettings>().file.value.links.file_opener.clone().unwrap_or_default();
-        let file_opener = cx.new(|cx| TextInput::new("code --goto {path}:{line}:{column}, then Enter", opener, cx));
+        let file_opener = cx.new(|cx| TextInput::new("code --goto {path}:{line}:{column}", opener, cx));
         let subs = vec![
             // The colors can change underneath the editor (theme switch,
             // desktop light/dark, outside edits): keep the picker current.
             cx.observe_global::<AppSettings>(|this, cx| this.sync_picker(cx)),
             cx.subscribe(&font_filter, |_, _, _: &TextInputEvent, cx| cx.notify()),
+            cx.subscribe(&search, |this, _, ev: &TextInputEvent, cx| {
+                if let TextInputEvent::Submitted(_) = ev {
+                    this.open_first_result(cx);
+                }
+                cx.notify();
+            }),
+            // Opened before any terminal window was active (`goatty --settings`):
+            // pick up the host once there is one.
+            cx.observe_global::<HostLinkGlobal>(|this, cx| {
+                if this.link.is_none() {
+                    this.follow_host_link(cx);
+                }
+            }),
             cx.subscribe(&picker, |this, _, ev: &ColorPickerEvent, cx| match *ev {
                 ColorPickerEvent::Changed(c) => this.color_changed(c, cx),
                 ColorPickerEvent::Committed(_) => this.flush_color(cx),
@@ -272,10 +362,17 @@ impl SettingsWindow {
             outcome: None,
             show_diff: false,
             generations: Vec::new(),
+            scroll: ScrollHandle::new(),
+            menu: None,
+            menu_dismissed: None,
+            search,
             font_filter,
             shell_path,
             file_opener,
             show_all_fonts: false,
+            colors_open: false,
+            drawer: false,
+            padding_linked: cx.global::<AppSettings>().file.value.terminal.padding.is_uniform(),
             theme_target: if cx.global::<AppSettings>().file.value.theme.follow_system {
                 if cx.global::<AppSettings>().system_dark { ThemeTarget::Dark } else { ThemeTarget::Light }
             } else {
@@ -291,6 +388,11 @@ impl SettingsWindow {
             plugins: plugins::PluginsPage::default(),
             aliases: aliases::AliasesPage::new(cx),
             hosts: hosts::HostsPage::new(cx),
+            shortcuts: shortcuts::ShortcutsPage::new(cx),
+            highlight: None,
+            copied: None,
+            confirm_reset: false,
+            gens_expanded: false,
             _subs: subs,
         };
         this.load_host(cx);
@@ -321,6 +423,40 @@ impl SettingsWindow {
         self.load_host(cx);
         self.load_plugins(false, cx);
         cx.notify();
+    }
+
+    /// Show `page` from its top, with its sub-views closed.
+    pub fn go(&mut self, page: Page, cx: &mut Context<'_, Self>) {
+        if self.page != page {
+            self.scroll.set_offset(gpui::point(px(0.), px(0.)));
+            self.plugins.detail = None;
+            self.plugins.plan = None;
+        }
+        self.page = page;
+        self.menu = None;
+        self.drawer = false;
+        self.recording = None;
+        match page {
+            Page::Plugins | Page::Aliases => self.load_plugins(false, cx),
+            Page::Hosts => crate::hosts::refresh(cx),
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// Open (or close) the dropdown `id`.
+    pub fn toggle_menu(&mut self, id: SharedString, cx: &mut Context<'_, Self>) {
+        let just_closed = self.menu_dismissed.take().is_some_and(|(d, at)| d == id && at.elapsed() < Duration::from_millis(300));
+        self.menu = if just_closed || self.menu.as_ref() == Some(&id) { None } else { Some(id) };
+        cx.notify();
+    }
+
+    /// A mouse-down outside the open menu closes it.
+    pub fn dismiss_menu(&mut self, cx: &mut Context<'_, Self>) {
+        if let Some(id) = self.menu.take() {
+            self.menu_dismissed = Some((id, Instant::now()));
+            cx.notify();
+        }
     }
 
     // ---- Themes -----------------------------------------------------------------
@@ -757,6 +893,74 @@ impl SettingsWindow {
             });
         })
         .detach();
+    }
+}
+
+// ---- Callbacks for controls ------------------------------------------------------------
+
+/// Callback editing the client settings (applied and saved immediately).
+fn client(f: impl Fn(&mut goatty_config::ClientSettings) + 'static) -> impl Fn(&mut Window, &mut App) + 'static {
+    move |_, cx| AppSettings::update(cx, &f)
+}
+
+/// A bool setting's default in a built-in plugin's manifest.
+fn builtin_bool_default(id: &str, key: &str) -> bool {
+    goatty_shell::builtins::get(id)
+        .and_then(|b| b.manifest().setting(key))
+        .and_then(|s| s.default.as_ref())
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+impl SettingsWindow {
+    /// Callback acting on the window itself.
+    pub(super) fn act(
+        &self,
+        cx: &Context<'_, Self>,
+        f: impl Fn(&mut Self, &mut Context<'_, Self>) + 'static,
+    ) -> impl Fn(&mut Window, &mut App) + 'static {
+        let this = cx.entity().downgrade();
+        move |_, cx| {
+            let _ = this.update(cx, |view, cx| f(view, cx));
+        }
+    }
+
+    /// Click handler showing another page.
+    pub(super) fn listener_go(&self, cx: &Context<'_, Self>, page: Page) -> impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static {
+        let this = cx.entity().downgrade();
+        move |_, _, cx| {
+            let _ = this.update(cx, |v, cx| v.go(page, cx));
+        }
+    }
+
+    /// Callback editing the draft host settings.
+    fn host(&self, cx: &Context<'_, Self>, f: impl Fn(&mut HostSettings) + 'static) -> impl Fn(&mut Window, &mut App) + 'static {
+        let this = cx.entity().downgrade();
+        move |_, cx| {
+            let _ = this.update(cx, |view, cx| view.edit_host(cx, &f));
+        }
+    }
+
+    /// Callback turning one of goatty's built-in plugins on or off.
+    fn toggle_plugin(&self, cx: &Context<'_, Self>, id: &'static str) -> impl Fn(&mut Window, &mut App) + 'static {
+        self.host(cx, move |h| {
+            let on = h.plugin_enabled(id);
+            h.edit_plugin(id, |p| p.enabled = !on);
+        })
+    }
+
+    /// Callback flipping a bool setting of a built-in plugin.
+    fn toggle_plugin_bool(&self, cx: &Context<'_, Self>, id: &'static str, key: &'static str) -> impl Fn(&mut Window, &mut App) + 'static {
+        self.host(cx, move |h| {
+            let on = h.plugin_bool(id, key, builtin_bool_default(id, key));
+            h.edit_plugin(id, |p| {
+                if on == builtin_bool_default(id, key) {
+                    p.settings.insert(key.into(), (!on).into());
+                } else {
+                    p.settings.remove(key);
+                }
+            });
+        })
     }
 }
 

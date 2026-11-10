@@ -3,7 +3,8 @@
 //!
 //! GPUI draws an SVG as a mask in the element's text color, so the files'
 //! own colors don't matter. They are drawn on a 24×24 grid with 2px round
-//! strokes; add new ones in the same style to `assets/icons/` and here.
+//! strokes (Lucide's style; most are Lucide icons, ISC licensed); add new
+//! ones in the same style to `assets/icons/` and here.
 
 use std::borrow::Cow;
 
@@ -38,6 +39,46 @@ icons! {
     Close => "x.svg",
     Plus => "plus.svg",
     Terminal => "terminal.svg",
+    AppWindow => "app-window.svg",
+    ArrowLeft => "arrow-left.svg",
+    ArrowUpDown => "arrow-up-down.svg",
+    BookOpen => "book-open.svg",
+    Bug => "bug.svg",
+    Check => "check.svg",
+    ChevronDown => "chevron-down.svg",
+    ChevronRight => "chevron-right.svg",
+    ChevronsUpDown => "chevrons-up-down.svg",
+    Code => "code.svg",
+    Copy => "copy.svg",
+    Download => "download.svg",
+    ExternalLink => "external-link.svg",
+    FileText => "file-text.svg",
+    FolderOpen => "folder-open.svg",
+    GitCommit => "git-commit.svg",
+    Globe => "globe.svg",
+    History => "history.svg",
+    Keyboard => "keyboard.svg",
+    Link => "link.svg",
+    Link2 => "link-2.svg",
+    Menu => "menu.svg",
+    Package => "package.svg",
+    Palette => "palette.svg",
+    Pencil => "pencil.svg",
+    Puzzle => "puzzle.svg",
+    Refresh => "refresh.svg",
+    RotateCcw => "rotate-ccw.svg",
+    Search => "search.svg",
+    Server => "server.svg",
+    Shell => "shell.svg",
+    ShieldCheck => "shield-check.svg",
+    Sliders => "sliders.svg",
+    SquareTerminal => "square-terminal.svg",
+    TextCursorInput => "text-cursor-input.svg",
+    Trash => "trash.svg",
+    Unlink => "unlink.svg",
+    Upload => "upload.svg",
+    UserRound => "user-round.svg",
+    Zap => "zap.svg",
 }
 
 impl Icon {

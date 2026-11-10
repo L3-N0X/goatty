@@ -13,5 +13,5 @@ paths:
   - `.action(…)` for buttons
 - Panes don't touch the window. `TerminalView` emits `TerminalEvent`s, and `Workspace` owns titles, closing, tabs and splits.
 - Read client settings from the `AppSettings` global and change them only through `AppSettings::update`. Host settings go through the daemon (`HostLink`/`HostService`); never write another host's file.
-- Reuse the widgets in `ui/` (controls, text_input, color_picker, and icons, whose SVGs are in `assets/icons/`) before writing new ones.
+- Reuse the widgets in `ui/` (controls, text_input, color_picker, and icons, whose SVGs are in `assets/icons/`) before writing new ones. Settings pages are built from `settings_window/kit.rs`; the look is in `settings-ui.md`.
 - `cargo test` can't check GUI behaviour. Tell the user in your reply what to try by hand; don't file an issue for it.

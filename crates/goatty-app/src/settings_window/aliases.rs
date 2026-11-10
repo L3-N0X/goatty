@@ -1,7 +1,7 @@
 //! The settings window's Aliases page (#88): every alias goatty's zsh
-//! defines on the connected host, the user's own grouped by their groups
-//! and each plugin's under the plugin, with switches, a form to add and
-//! edit, and a filter.
+//! defines on the connected host: the user's own first, grouped by their
+//! groups, then each plugin's (folded until opened). Switches, a dialog to
+//! add and edit, a search and filters.
 //!
 //! Aliases are host settings (`aliases` and `plugins.<id>.disabled_aliases`
 //! in `host.json`): edits go into the same draft as the Shell page and are
@@ -14,13 +14,15 @@ use std::collections::HashSet;
 use goatty_config::{HostSettings, UserAlias, alias_name_problem};
 use goatty_shell::aliases::{self, Group, PluginAliases, Row, Source};
 use gpui::{
-    AnyElement, App, Context, Entity, Focusable, FontWeight, IntoElement, ParentElement, SharedString, Styled, Subscription, Window, div,
-    prelude::*, px,
+    AnyElement, App, Context, Entity, Focusable, FontWeight, IntoElement, MouseButton, ParentElement, SharedString, Styled, Subscription,
+    Window, div, prelude::*, px,
 };
 
+use super::kit::{self, card, chip, divider, field, modal, search_field, section};
 use super::{Page, SettingsWindow};
-use crate::ui::controls::{ButtonKind, button, note, notice, toggle};
-use crate::ui::style::Ui;
+use crate::ui::controls::{ButtonKind, Tone, badge, banner, button, button_with, icon_button, toggle};
+use crate::ui::icons::Icon;
+use crate::ui::style::{Ui, radius, text};
 use crate::ui::text_input::{TextInput, TextInputEvent};
 
 /// Offered while the user has no aliases of their own: (name, command, group).
@@ -40,6 +42,14 @@ struct Inputs {
     description: Entity<TextInput>,
 }
 
+/// Which aliases the list shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    All,
+    Mine,
+    Plugins,
+}
+
 /// The page's own state (the aliases themselves are host settings).
 pub struct AliasesPage {
     filter: Entity<TextInput>,
@@ -48,19 +58,21 @@ pub struct AliasesPage {
     form: Option<Option<String>>,
     /// Why the last Save didn't go through.
     form_error: Option<String>,
-    /// Folded groups ([`group_key`]).
-    collapsed: HashSet<String>,
+    scope: Scope,
+    /// Groups the user folded or unfolded ([`group_key`]): user groups
+    /// start open, plugin groups folded.
+    toggled: HashSet<String>,
     _subs: Vec<Subscription>,
 }
 
 impl AliasesPage {
     pub fn new(cx: &mut Context<'_, SettingsWindow>) -> Self {
-        let filter = cx.new(|cx| TextInput::new("Filter aliases…", "", cx));
+        let filter = cx.new(|cx| TextInput::new("Search aliases and commands", "", cx).bare());
         let inputs = Inputs {
             name: cx.new(|cx| TextInput::new("gst", "", cx)),
             command: cx.new(|cx| TextInput::new("git status", "", cx)),
-            group: cx.new(|cx| TextInput::new("Git (optional)", "", cx)),
-            description: cx.new(|cx| TextInput::new("What it does (optional)", "", cx)),
+            group: cx.new(|cx| TextInput::new("Optional", "", cx)),
+            description: cx.new(|cx| TextInput::new("Optional", "", cx)),
         };
         let mut subs = vec![cx.subscribe(&filter, |_, _, _: &TextInputEvent, cx| cx.notify())];
         for input in [&inputs.name, &inputs.command, &inputs.group, &inputs.description] {
@@ -72,7 +84,7 @@ impl AliasesPage {
                 TextInputEvent::Submitted(_) => view.save_alias(cx),
             }));
         }
-        Self { filter, inputs, form: None, form_error: None, collapsed: HashSet::new(), _subs: subs }
+        Self { filter, inputs, form: None, form_error: None, scope: Scope::All, toggled: HashSet::new(), _subs: subs }
     }
 }
 
@@ -112,6 +124,12 @@ pub fn check_form(settings: &HostSettings, editing: Option<&str>, name: &str, co
         return Err(format!("You already have an alias {name}: edit that one, or pick another name."));
     }
     Ok(())
+}
+
+/// Existing groups that complete what's typed (all of them when nothing is).
+fn group_suggestions(groups: &[String], typed: &str) -> Vec<String> {
+    let t = typed.trim().to_lowercase();
+    groups.iter().filter(|g| g.to_lowercase() != t && (t.is_empty() || g.to_lowercase().contains(&t))).cloned().collect()
 }
 
 impl SettingsWindow {
@@ -185,10 +203,21 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    fn close_alias_form(&mut self, cx: &mut Context<'_, Self>) {
+    pub(super) fn close_alias_form(&mut self, cx: &mut Context<'_, Self>) {
         self.aliases.form = None;
         self.aliases.form_error = None;
         cx.notify();
+    }
+
+    /// Show only `plugin`'s aliases, unfolded (from its page).
+    pub(super) fn show_plugin_aliases(&mut self, plugin: &str, cx: &mut Context<'_, Self>) {
+        self.aliases.scope = Scope::Plugins;
+        self.aliases.filter.update(cx, |i, cx| i.set_text(plugin.to_owned(), cx));
+        cx.notify();
+    }
+
+    pub(super) fn aliases_modal_open(&self) -> bool {
+        self.aliases.form.is_some()
     }
 
     /// The form's values into the draft (checked first).
@@ -234,239 +263,203 @@ impl SettingsWindow {
         }
     }
 
-    // ---- Rendering ----------------------------------------------------------
-
-    pub(super) fn aliases_page(&self, ui: Ui, cx: &Context<'_, Self>) -> AnyElement {
-        let (header, ok) = self.host_header(ui);
-        let mut page = div().flex().flex_col().gap_1().child(header);
-        let Some(h) = self.host_value().filter(|_| ok) else { return page.into_any_element() };
-        page = page.child(note(
-            ui,
-            "An alias is a short name for a longer command: type gst, run git status. Yours are listed by group, then the ones your plugins bring. One of yours with a plugin alias's name replaces it.",
-        ));
-        if !h.shell.managed {
-            page = page.child(notice(
-                ui,
-                ui.warning,
-                vec!["goatty's managed zsh is off on this host (Shell page), so none of these are loaded.".into()],
-            ));
-        }
-        page =
-            page.child(div().flex().items_center().gap_2().pt_2().child(div().flex_1().child(self.aliases.filter.clone())).child(button(
-                "alias-new",
-                "New alias",
-                ButtonKind::Primary,
-                ui,
-                self.act_window(cx, |v, window, cx| v.open_alias_form(None, ["", "", "", ""], window, cx)),
-            )));
-        if self.aliases.form.is_some() {
-            page = page.child(self.alias_form(ui, h, cx));
-        }
-        if self.plugins.loading && self.plugins.catalog.is_none() {
-            page = page.child(note(ui, "Loading the plugins' aliases…"));
-        }
-
-        let groups = self.alias_table();
-        let query = self.aliases.filter.read(cx).text().trim().to_lowercase();
-        if h.aliases.is_empty() && query.is_empty() {
-            page = page.child(self.suggestions(ui, cx));
-        }
-        let mut shown = 0;
-        for g in &groups {
-            let rows: Vec<&Row> = g.rows.iter().filter(|r| matches(&query, g, r)).collect();
-            if rows.is_empty() {
-                continue;
-            }
-            shown += rows.len();
-            page = page.child(self.alias_group(ui, g, &rows, !query.is_empty(), cx));
-        }
-        if shown == 0 && !query.is_empty() {
-            page = page.child(note(ui, "No alias matches."));
-        }
-        if !groups.iter().any(|g| g.plugin_id().is_some()) && self.plugins.catalog.is_some() {
-            page = page.child(note(ui, "Plugins can bring aliases too (Docker: dps, dcu, …). Browse them on the Plugins page."));
-        }
-        page.child(note(ui, "From a shell: goattyd alias list | add NAME COMMAND | edit | disable | remove (on the host)."))
-            .into_any_element()
+    fn group_open(&self, g: &Group) -> bool {
+        let toggled = self.aliases.toggled.contains(&group_key(g));
+        // User groups start open, plugin groups folded.
+        if g.plugin_id().is_some() { toggled } else { !toggled }
     }
 
-    fn mono(cx: &Context<'_, Self>) -> SharedString {
-        cx.global::<crate::settings::AppSettings>().client.font.family.clone().unwrap_or_else(|| "monospace".into()).into()
+    // ---- Rendering ----------------------------------------------------------
+
+    pub(super) fn aliases_page(&self, ui: Ui, window: &Window, cx: &Context<'_, Self>) -> AnyElement {
+        let (notes, h) = self.host_status(ui);
+        let mut page = div().flex().flex_col().gap(px(20.)).children(notes);
+        let Some(h) = h else { return page.into_any_element() };
+        if !h.shell.managed {
+            page = page.child(banner(
+                ui,
+                Tone::Warning,
+                "None of these are loaded",
+                vec!["goatty's managed zsh is off on this host. Turn it on in Shell.".into()],
+            ));
+        }
+        let groups = self.alias_table();
+        let query = self.aliases.filter.read(cx).text().trim().to_lowercase();
+        let (mine, theirs): (Vec<&Group>, Vec<&Group>) = groups.iter().partition(|g| g.plugin_id().is_none());
+        let count = |gs: &[&Group]| gs.iter().map(|g| g.rows.len()).sum::<usize>();
+        let (mine_n, theirs_n) = (count(&mine), count(&theirs));
+        let scope = self.aliases.scope;
+        let set_scope = |s: Scope| {
+            self.act(cx, move |v, cx| {
+                v.aliases.scope = s;
+                cx.notify();
+            })
+        };
+        page = page.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(div().flex_1().child(search_field(ui, "alias-search", &self.aliases.filter, window, cx)))
+                        .child(
+                            button_with(
+                                "alias-new",
+                                Some(Icon::Plus),
+                                "New alias",
+                                ButtonKind::Primary,
+                                ui,
+                                self.act_window(cx, |v, window, cx| v.open_alias_form(None, ["", "", "", ""], window, cx)),
+                            )
+                            .h(px(38.)),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(8.))
+                        .child(chip(ui, "alias-all", "All", Some(mine_n + theirs_n), scope == Scope::All, set_scope(Scope::All)))
+                        .child(chip(ui, "alias-mine", "Mine", Some(mine_n), scope == Scope::Mine, set_scope(Scope::Mine)))
+                        .child(chip(
+                            ui,
+                            "alias-plugins",
+                            "From plugins",
+                            Some(theirs_n),
+                            scope == Scope::Plugins,
+                            set_scope(Scope::Plugins),
+                        )),
+                ),
+        );
+
+        let mut shown = 0;
+        if scope != Scope::Plugins {
+            let mut s = section(ui, "My aliases").plain();
+            if mine.is_empty() && query.is_empty() {
+                s = s.child(self.suggestions(ui, cx));
+            }
+            for g in &mine {
+                let rows: Vec<&Row> = g.rows.iter().filter(|r| matches(&query, g, r)).collect();
+                if !rows.is_empty() {
+                    shown += rows.len();
+                    s = s.child(self.alias_group(ui, g, &rows, !query.is_empty(), cx));
+                }
+            }
+            if !mine.is_empty() || query.is_empty() {
+                page = page.child(s);
+            }
+        }
+        if scope != Scope::Mine {
+            let mut s =
+                section(ui, "From plugins").desc("Switch off the ones you don't want; one of yours with the same name replaces it").plain();
+            if self.plugins.loading && self.plugins.catalog.is_none() {
+                s = s.child(kit::hint(ui, "Loading the plugins' aliases…").px(px(4.)));
+            }
+            let mut any = false;
+            for g in &theirs {
+                let rows: Vec<&Row> = g.rows.iter().filter(|r| matches(&query, g, r)).collect();
+                if !rows.is_empty() {
+                    any = true;
+                    shown += rows.len();
+                    s = s.child(self.alias_group(ui, g, &rows, !query.is_empty(), cx));
+                }
+            }
+            if theirs.is_empty() && self.plugins.catalog.is_some() {
+                s = s.child(
+                    card(ui).child(
+                        kit::row(ui, "Plugins can bring aliases too")
+                            .icon(Icon::Puzzle)
+                            .desc("Docker brings dps, dcu and more. Browse the plugins")
+                            .on_click("alias-browse", self.listener_go(cx, Page::Plugins)),
+                    ),
+                );
+                any = true;
+            }
+            if any || query.is_empty() {
+                page = page.child(s);
+            }
+        }
+        if shown == 0 && !query.is_empty() {
+            page = page.child(card(ui).child(kit::empty(
+                ui,
+                Icon::Search,
+                "No alias matches",
+                "Search looks at names, commands, descriptions and groups.",
+            )));
+        }
+        page.child(kit::hint(ui, "From a shell on the host: goattyd alias list, add, edit, disable, remove.").px(px(4.))).into_any_element()
     }
 
     /// Quick starts while the user has no aliases.
     fn suggestions(&self, ui: Ui, cx: &Context<'_, Self>) -> AnyElement {
-        let mono = Self::mono(cx);
-        let mut chips = div().flex().flex_wrap().gap_2();
+        let mono = kit::mono(cx);
+        let mut chips = div().flex().flex_wrap().justify_center().gap(px(8.));
         for (i, &(name, command, group)) in SUGGESTIONS.iter().enumerate() {
             chips = chips.child(
                 div()
                     .id(SharedString::from(format!("alias-suggest-{i}")))
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .h(px(30.))
+                    .px(px(12.))
+                    .rounded(px(8.))
                     .border_1()
                     .border_color(ui.border)
-                    .bg(ui.surface)
                     .cursor_pointer()
-                    .hover(|s| s.bg(ui.surface_hover))
-                    .text_sm()
+                    .hover(|s| s.bg(ui.field))
+                    .text_size(px(text::SMALL))
                     .font_family(mono.clone())
-                    .child(SharedString::from(format!("{name} → {command}")))
+                    .child(div().font_weight(FontWeight::BOLD).child(name))
+                    .child(div().text_color(ui.faint).child("→"))
+                    .child(div().text_color(ui.muted).child(command))
                     .on_click({
                         let f = self.act_window(cx, move |v, window, cx| v.open_alias_form(None, [name, command, group, ""], window, cx));
                         move |_, window, cx| f(window, cx)
                     }),
             );
         }
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .my_2()
-            .p_3()
-            .rounded_md()
-            .border_1()
-            .border_color(ui.border)
-            .child(div().text_sm().child("No aliases of your own yet. Start with one of these, or press New alias:"))
-            .child(chips)
+        card(ui)
+            .pb(px(20.))
+            .child(kit::empty(
+                ui,
+                Icon::Link2,
+                "No aliases of your own yet",
+                "An alias is a short name for a longer command. Start with one of these:",
+            ))
+            .child(chips.px(px(20.)))
             .into_any_element()
-    }
-
-    fn alias_form(&self, ui: Ui, h: &HostSettings, cx: &Context<'_, Self>) -> AnyElement {
-        let editing = self.aliases.form.clone().flatten();
-        let i = &self.aliases.inputs;
-        let name = i.name.read(cx).text().trim().to_owned();
-        let command = i.command.read(cx).text().trim().to_owned();
-        let title = match &editing {
-            Some(n) => format!("Edit {n}"),
-            None => "New alias".to_owned(),
-        };
-        let field = |label: &str, input: &Entity<TextInput>, width: Option<f32>| {
-            let d = div().flex().flex_col().gap_1().child(div().text_xs().text_color(ui.muted).child(SharedString::from(label.to_owned())));
-            match width {
-                Some(w) => d.w(px(w)).child(input.clone()),
-                None => d.flex_1().min_w_0().child(input.clone()),
-            }
-        };
-        let mut card = div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .my_2()
-            .p_3()
-            .rounded_md()
-            .border_1()
-            .border_color(ui.accent.opacity(0.6))
-            .bg(ui.surface)
-            .child(div().font_weight(FontWeight::BOLD).child(SharedString::from(title)))
-            .child(div().flex().gap_3().child(field("Name", &i.name, Some(160.))).child(field("Command", &i.command, None)))
-            .child(div().flex().gap_3().child(field("Group", &i.group, Some(160.))).child(field("Description", &i.description, None)));
-
-        let groups = aliases::user_groups(h);
-        if !groups.is_empty() {
-            let mut chips = div().flex().flex_wrap().items_center().gap_1().child(div().text_xs().text_color(ui.muted).child("Groups:"));
-            for (n, g) in groups.into_iter().enumerate() {
-                let input = i.group.clone();
-                chips = chips.child(
-                    div()
-                        .id(SharedString::from(format!("alias-group-{n}")))
-                        .px_2()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(ui.border)
-                        .text_xs()
-                        .cursor_pointer()
-                        .hover(|s| s.bg(ui.surface_hover))
-                        .child(SharedString::from(g.clone()))
-                        .on_click(move |_, _, cx| input.update(cx, |input, cx| input.set_text(g.clone(), cx))),
-                );
-            }
-            card = card.child(chips);
-        }
-
-        // What it will do, and what it replaces, while typing.
-        let mut hints = Vec::new();
-        if !name.is_empty() && !command.is_empty() && alias_name_problem(&name).is_none() {
-            hints.push(note(ui, format!("Typing {name} will run: {command}")).font_family(Self::mono(cx)));
-        }
-        for g in self.alias_table().iter().filter(|g| g.plugin_id().is_some()) {
-            if g.rows.iter().any(|r| r.name == name) {
-                hints.push(note(ui, format!("Replaces {}'s alias {name}.", g.title())));
-            }
-        }
-        card = card.children(hints);
-        if let Some(e) = &self.aliases.form_error {
-            card = card.child(notice(ui, ui.danger, vec![e.clone()]));
-        }
-        card.child(
-            div()
-                .flex()
-                .justify_end()
-                .gap_2()
-                .child(button("alias-cancel", "Cancel", ButtonKind::Normal, ui, self.act(cx, |v, cx| v.close_alias_form(cx))))
-                .child(button(
-                    "alias-save",
-                    if editing.is_some() { "Save" } else { "Add" },
-                    ButtonKind::Primary,
-                    ui,
-                    self.act(cx, |v, cx| v.save_alias(cx)),
-                )),
-        )
-        .child(note(ui, "Enter saves. Changes are staged like every shell setting: apply them below."))
-        .into_any_element()
     }
 
     fn alias_group(&self, ui: Ui, g: &Group, rows: &[&Row], filtering: bool, cx: &Context<'_, Self>) -> AnyElement {
         let key = group_key(g);
-        let folded = !filtering && self.aliases.collapsed.contains(&key);
+        let open = filtering || self.group_open(g);
         let any_on = g.rows.iter().any(|r| r.enabled);
         let active = g.rows.iter().filter(|r| r.active).count();
+        let plugin = g.plugin_id().is_some();
         let plugin_off = matches!(g.source, Source::Plugin { enabled: false, .. });
         let count = if active == g.rows.len() { format!("{active}") } else { format!("{active} of {}", g.rows.len()) };
+        let title = if g.title().is_empty() { "Ungrouped".to_string() } else { g.title().to_owned() };
         let header = div()
+            .id(SharedString::from(format!("alias-fold-{key}")))
             .flex()
             .items_center()
-            .gap_2()
-            .pt_4()
-            .pb_1()
-            .border_b_1()
-            .border_color(ui.border)
-            .child(
-                div()
-                    .id(SharedString::from(format!("alias-fold-{key}")))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .flex_1()
-                    .cursor_pointer()
-                    .child(div().w(px(12.)).text_color(ui.muted).child(if folded { "▸" } else { "▾" }))
-                    .child(div().font_weight(FontWeight::BOLD).child(SharedString::from(g.title().to_owned())))
-                    .when(g.plugin_id().is_some(), |d| d.child(badge("plugin", ui.muted)))
-                    .child(div().text_xs().text_color(ui.muted).child(SharedString::from(count)))
-                    .on_click({
-                        let key = key.clone();
-                        let f = self.act(cx, move |v, cx| {
-                            if !v.aliases.collapsed.remove(&key) {
-                                v.aliases.collapsed.insert(key.clone());
-                            }
-                            cx.notify();
-                        });
-                        move |_, window, cx| f(window, cx)
-                    }),
-            )
-            .when(plugin_off, |d| {
-                d.child(button(
-                    SharedString::from(format!("alias-plugin-{key}")),
-                    "Plugin is disabled…",
-                    ButtonKind::Normal,
-                    ui,
-                    self.act(cx, |v, cx| {
-                        v.page = Page::Plugins;
-                        cx.notify();
-                    }),
-                ))
-            })
+            .gap(px(10.))
+            .h(px(52.))
+            .px(px(16.))
+            .cursor_pointer()
+            .hover(|s| s.bg(ui.surface_hover))
+            .rounded_t(px(radius::CARD))
+            .when(!open, |d| d.rounded_b(px(radius::CARD)))
+            .child((if open { Icon::ChevronDown } else { Icon::ChevronRight }).svg().size(px(15.)).text_color(ui.muted))
+            .when(plugin, |d| d.child(Icon::Puzzle.svg().size(px(15.)).text_color(ui.muted)))
+            .child(div().text_size(px(text::BODY)).font_weight(FontWeight::SEMIBOLD).child(SharedString::from(title)))
+            .child(div().text_size(px(text::SMALL)).text_color(ui.faint).child(SharedString::from(count)))
+            .child(div().flex_1())
+            .when(plugin_off, |d| d.child(badge("Plugin off", Tone::Warning, ui)))
             .child({
                 let group = g.clone();
                 toggle(
@@ -475,131 +468,276 @@ impl SettingsWindow {
                     ui,
                     self.act(cx, move |v, cx| v.set_group_enabled(&group, !any_on, cx)),
                 )
+            })
+            .on_click({
+                let key = key.clone();
+                cx.listener(move |v, _, _, cx| {
+                    if !v.aliases.toggled.remove(&key) {
+                        v.aliases.toggled.insert(key.clone());
+                    }
+                    cx.notify();
+                })
             });
-        let mut d = div().flex().flex_col().child(header);
-        if !folded {
-            for r in rows {
-                d = d.child(self.alias_row(ui, g, r, cx));
+        let mut c = card(ui).child(header);
+        if open {
+            c = c.child(div().h(px(1.)).bg(ui.divider));
+            for (i, r) in rows.iter().enumerate() {
+                if i > 0 {
+                    c = c.child(divider(ui));
+                }
+                c = c.child(self.alias_row(ui, g, r, cx));
             }
         }
-        d.into_any_element()
+        c.into_any_element()
     }
 
     fn alias_row(&self, ui: Ui, g: &Group, r: &Row, cx: &Context<'_, Self>) -> AnyElement {
-        let mono = Self::mono(cx);
+        let mono = kit::mono(cx);
         let target = match g.plugin_id() {
             Some(id) => Target::Plugin { id: id.to_owned(), alias: r.name.clone() },
             None => Target::User(r.name.clone()),
         };
+        let gid = SharedString::from(format!("alias-row-{}-{}", group_key(g), r.name));
         let id = |what: &str| SharedString::from(format!("alias-{what}-{}-{}", group_key(g), r.name));
         let on = r.enabled;
-        let mut text = div()
+        let mut text_col = div()
             .flex()
             .flex_col()
+            .gap(px(2.))
             .flex_1()
             .min_w_0()
-            .child(div().text_sm().font_family(mono.clone()).truncate().child(SharedString::from(r.expansion.clone())))
+            .child(
+                div()
+                    .text_size(px(text::LABEL))
+                    .font_family(mono.clone())
+                    .text_color(ui.text)
+                    .truncate()
+                    .child(SharedString::from(r.expansion.clone())),
+            )
             .when(!r.description.is_empty(), |d| {
-                d.child(div().text_xs().text_color(ui.muted).child(SharedString::from(r.description.clone())))
+                d.child(div().text_size(px(text::SMALL)).text_color(ui.muted).child(SharedString::from(r.description.clone())))
             });
         if let Some(n) = &r.note {
             let color = if r.active {
-                ui.accent
+                ui.accent_text
             } else if r.enabled {
                 ui.warning
             } else {
-                ui.muted
+                ui.faint
             };
-            text = text.child(div().text_xs().text_color(color).child(SharedString::from(n.clone())));
+            text_col = text_col.child(div().text_size(px(text::SMALL)).text_color(color).child(SharedString::from(n.clone())));
         }
-        let mut row = div()
+        let actions = match &target {
+            Target::User(name) => {
+                let (edit_name, delete_name) = (name.clone(), name.clone());
+                div()
+                    .flex()
+                    .gap(px(2.))
+                    .invisible()
+                    .group_hover(gid.clone(), |s| s.visible())
+                    .child(icon_button(
+                        id("edit"),
+                        Icon::Pencil,
+                        "Edit",
+                        ui,
+                        self.act_window(cx, move |v, window, cx| {
+                            let Some(a) = v.host_value().and_then(|h| h.aliases.get(&edit_name)).cloned() else { return };
+                            v.open_alias_form(Some(edit_name.clone()), [&edit_name, &a.command, &a.group, &a.description], window, cx);
+                        }),
+                    ))
+                    .child(icon_button(
+                        id("delete"),
+                        Icon::Trash,
+                        "Delete",
+                        ui,
+                        self.act(cx, move |v, cx| v.delete_alias(delete_name.clone(), cx)),
+                    ))
+            }
+            Target::Plugin { .. } => {
+                let (name, expansion, plugin) = (r.name.clone(), r.expansion.clone(), g.title().to_owned());
+                let mine = self.host_value().is_some_and(|h| h.aliases.contains_key(&name));
+                let settings =
+                    r.condition.is_some() && !r.active && r.enabled && r.note.as_deref().is_some_and(|n| n.starts_with("only while"));
+                div()
+                    .flex()
+                    .gap(px(2.))
+                    .invisible()
+                    .group_hover(gid.clone(), |s| s.visible())
+                    .when(settings, |d| {
+                        let pid = g.plugin_id().unwrap_or_default().to_owned();
+                        d.child(icon_button(
+                            id("settings"),
+                            Icon::Sliders,
+                            "Plugin settings",
+                            ui,
+                            self.act(cx, move |v, cx| {
+                                v.go(Page::Plugins, cx);
+                                v.plugins.detail = Some(pid.clone());
+                            }),
+                        ))
+                    })
+                    .when(!mine, |d| {
+                        d.child(icon_button(
+                            id("customize"),
+                            Icon::Copy,
+                            "Make my own version",
+                            ui,
+                            self.act_window(cx, move |v, window, cx| v.open_alias_form(None, [&name, &expansion, &plugin, ""], window, cx)),
+                        ))
+                    })
+            }
+        };
+        div()
+            .id(gid.clone())
+            .group(gid.clone())
             .flex()
             .items_center()
-            .gap_3()
-            .py_2()
-            .border_b_1()
-            .border_color(ui.border.opacity(0.5))
+            .gap(px(14.))
+            .min_h(px(54.))
+            .px(px(16.))
+            .py(px(8.))
+            .hover(|s| s.bg(ui.surface_hover))
             .child({
                 let target = target.clone();
                 toggle(id("on"), on, ui, self.act(cx, move |v, cx| v.set_alias_enabled(target.clone(), !on, cx)))
             })
             .child(
                 div()
-                    .w(px(110.))
+                    .w(px(112.))
                     .flex_shrink_0()
                     .font_family(mono)
+                    .text_size(px(text::BODY))
                     .font_weight(FontWeight::BOLD)
                     .truncate()
-                    .when(!r.active, |d| d.text_color(ui.muted))
+                    .text_color(if r.active { ui.text } else { ui.faint })
                     .child(SharedString::from(r.name.clone())),
             )
-            .child(text.when(!r.active, |d| d.opacity(0.75)));
-        row = match &target {
-            Target::User(name) => {
-                let (edit_name, delete_name) = (name.clone(), name.clone());
-                row.child(button(
-                    id("edit"),
-                    "Edit",
-                    ButtonKind::Normal,
-                    ui,
-                    self.act_window(cx, move |v, window, cx| {
-                        let Some(a) = v.host_value().and_then(|h| h.aliases.get(&edit_name)).cloned() else { return };
-                        v.open_alias_form(Some(edit_name.clone()), [&edit_name, &a.command, &a.group, &a.description], window, cx);
-                    }),
-                ))
-                .child(button(
-                    id("delete"),
-                    "Delete",
-                    ButtonKind::Danger,
-                    ui,
-                    self.act(cx, move |v, cx| v.delete_alias(delete_name.clone(), cx)),
-                ))
-            }
-            Target::Plugin { .. } => {
-                let (name, expansion, plugin) = (r.name.clone(), r.expansion.clone(), g.title().to_owned());
-                let mine = self.host_value().is_some_and(|h| h.aliases.contains_key(&name));
-                row.when(!mine, |row| {
-                    row.child(button(
-                        id("customize"),
-                        "Customize…",
-                        ButtonKind::Normal,
-                        ui,
-                        self.act_window(cx, move |v, window, cx| {
-                            v.open_alias_form(None, [&name, &expansion, &plugin, ""], window, cx);
-                        }),
-                    ))
-                })
-                .when(
-                    r.condition.is_some() && !r.active && r.enabled && r.note.as_deref().is_some_and(|n| n.starts_with("only while")),
-                    |row| {
-                        row.child(button(
-                            id("settings"),
-                            "Plugin settings…",
-                            ButtonKind::Normal,
-                            ui,
-                            self.act(cx, |v, cx| {
-                                v.page = Page::Plugins;
-                                cx.notify();
-                            }),
-                        ))
-                    },
-                )
-            }
-        };
-        row.into_any_element()
+            .child(text_col.when(!r.active, |d| d.opacity(0.7)))
+            .child(actions)
+            .into_any_element()
     }
-}
 
-fn badge(text: &str, color: gpui::Hsla) -> AnyElement {
-    div()
-        .px_2()
-        .rounded_md()
-        .border_1()
-        .border_color(color.opacity(0.6))
-        .text_xs()
-        .text_color(color)
-        .child(SharedString::from(text.to_owned()))
-        .into_any_element()
+    /// The add/edit dialog, while it's open.
+    pub(super) fn alias_modal(&self, ui: Ui, window: &Window, cx: &Context<'_, Self>) -> Option<AnyElement> {
+        let editing = self.aliases.form.clone()?;
+        let h = self.host_value()?;
+        let i = &self.aliases.inputs;
+        let mono = kit::mono(cx);
+        let name = i.name.read(cx).text().trim().to_owned();
+        let command = i.command.read(cx).text().trim().to_owned();
+        let title = match &editing {
+            Some(n) => format!("Edit {n}"),
+            None => "New alias".to_owned(),
+        };
+
+        // The group field completes the user's existing groups.
+        let groups = aliases::user_groups(h);
+        let typed = i.group.read(cx).text().to_owned();
+        let suggestions = if i.group.read(cx).is_focused(window) { group_suggestions(&groups, &typed) } else { Vec::new() };
+        let group_input = div().relative().child(i.group.clone()).when(!suggestions.is_empty(), |d| {
+            let mut list = kit::menu(ui, "alias-group-menu").min_w(px(200.)).max_h(px(200.));
+            for (n, g) in suggestions.into_iter().enumerate() {
+                let input = i.group.clone();
+                let label = g.clone();
+                list = list.child(
+                    kit::menu_item(ui, SharedString::from(format!("alias-group-{n}")), label.into(), None, false).on_mouse_down(
+                        MouseButton::Left,
+                        move |_, window, cx| {
+                            input.update(cx, |input, cx| input.set_text(g.clone(), cx));
+                            window.focus(&input.focus_handle(cx), cx);
+                        },
+                    ),
+                );
+            }
+            d.child(div().absolute().top(px(40.)).left_0().child(gpui::deferred(gpui::anchored().child(list)).with_priority(3)))
+        });
+
+        // What it will do, and what it replaces, while typing.
+        let preview = (!name.is_empty() || !command.is_empty()).then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .p(px(12.))
+                .rounded(px(radius::CONTROL))
+                .bg(ui.bg)
+                .border_1()
+                .border_color(ui.divider)
+                .font_family(mono.clone())
+                .text_size(px(text::LABEL))
+                .child(div().flex().gap(px(8.)).child(div().text_color(ui.success).child("❯")).child(
+                    div().font_weight(FontWeight::BOLD).child(SharedString::from(if name.is_empty() {
+                        "…".into()
+                    } else {
+                        name.clone()
+                    })),
+                ))
+                .child(div().flex().gap(px(8.)).text_color(ui.muted).child(div().child("runs")).child(
+                    div().text_color(ui.text).child(SharedString::from(if command.is_empty() { "…".into() } else { command.clone() })),
+                ))
+        });
+        let replaces: Vec<String> = self
+            .alias_table()
+            .iter()
+            .filter(|g| g.plugin_id().is_some() && g.rows.iter().any(|r| r.name == name))
+            .map(|g| g.title().to_owned())
+            .collect();
+
+        let body = div()
+            .flex()
+            .flex_col()
+            .gap(px(16.))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(12.))
+                    .child(field(ui, "Name", div().font_family(mono.clone()).child(i.name.clone())).w(px(150.)))
+                    .child(field(ui, "Command", div().font_family(mono.clone()).child(i.command.clone())).flex_1()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(px(12.))
+                    .child(field(ui, "Group", group_input).w(px(150.)))
+                    .child(field(ui, "Description", i.description.clone()).flex_1()),
+            )
+            .children(preview)
+            .children(replaces.into_iter().map(|p| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .text_size(px(text::SMALL))
+                    .text_color(ui.muted)
+                    .child(Icon::Info.svg().size(px(14.)).text_color(ui.muted))
+                    .child(SharedString::from(format!("Replaces the {p} plugin's {name}")))
+            }))
+            .children(self.aliases.form_error.clone().map(|e| banner(ui, Tone::Danger, e, Vec::new())));
+        let footer = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(kit::hint(ui, "Applied with the other shell changes").mr(px(8.)))
+            .child(button("alias-cancel", "Cancel", ButtonKind::Ghost, ui, self.act(cx, |v, cx| v.close_alias_form(cx))))
+            .child(button(
+                "alias-save",
+                if editing.is_some() { "Save" } else { "Add alias" },
+                ButtonKind::Primary,
+                ui,
+                self.act(cx, |v, cx| v.save_alias(cx)),
+            ));
+        Some(
+            modal(ui, "alias-modal", title, body, footer)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|v, _, _, cx| {
+                        // A click on the scrim (not the card, which occludes) closes.
+                        v.close_alias_form(cx)
+                    }),
+                )
+                .into_any_element(),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -634,5 +772,13 @@ mod tests {
             assert!(matches(q, &g, &r), "{q}");
         }
         assert!(!matches("docker", &g, &r));
+    }
+
+    #[test]
+    fn groups_complete_what_is_typed() {
+        let groups = vec!["Git".to_string(), "Docker".to_string(), "Navigation".to_string()];
+        assert_eq!(group_suggestions(&groups, ""), groups);
+        assert_eq!(group_suggestions(&groups, "g"), ["Git", "Navigation"]);
+        assert!(group_suggestions(&groups, "git").is_empty(), "an exact match needs no suggestion");
     }
 }

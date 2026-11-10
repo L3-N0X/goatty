@@ -32,10 +32,10 @@ size = 4776202
 
 [[setting]]
 id = "prefer_user_config"
-label = "Prefer my own Starship config"
+label = "Use my own starship.toml"
 help = "Use ~/.config/starship.toml (or $STARSHIP_CONFIG) when it exists, instead of goatty's prompt settings."
 type = "bool"
-default = true
+default = false
 
 [zsh]
 init = "zsh/init.zsh"
