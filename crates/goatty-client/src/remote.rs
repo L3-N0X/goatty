@@ -171,12 +171,27 @@ v=$("$t" --version 2>&1) || {{ echo "the uploaded goattyd doesn't run on this ho
 case "$v" in "goattyd {version}"*) ;; *) echo "unexpected goattyd version: $v" >&2; exit 1;; esac
 mv -f "$t" "$d/$n"
 echo "installed $d/$n"
+if [ -e /proc/self/exe ]; then
+  pd=$(cd "$d" && pwd -P)
+  for f in "$d"/goattyd-*; do
+    b=${{f##*/}}
+    [ -f "$f" ] && [ "$b" != "$n" ] || continue
+    keep=
+    for e in /proc/[0-9]*/exe; do
+      [ "$(readlink "$e" 2>/dev/null)" = "$pd/$b" ] && {{ keep=1; break; }}
+    done
+    [ -n "$keep" ] || {{ rm -f "$f" && echo "removed $f"; }} || :
+  done
+fi
 "#
     )
 }
 
 /// Upload `binary` to the host as this build's goattyd (see
 /// [`binary_name`]), after checking it arrived whole and runs there.
+/// Afterwards, older `goattyd-*` builds in [`BIN_DIR`] are deleted unless a
+/// running process uses them (found through `/proc`; hosts without it keep
+/// everything).
 pub fn install(target: &SshTarget, binary: &Path) -> Result<()> {
     let file = std::fs::File::open(binary).with_context(|| format!("open {}", binary.display()))?;
     let size = file.metadata()?.len();
