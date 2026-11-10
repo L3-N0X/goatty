@@ -50,6 +50,12 @@ pub enum PaneEvent {
     Resynced { skipped: u64 },
     /// The link dropped; the session keeps running on the host.
     Disconnected(String),
+    /// Automatic reconnects can't continue without asking the user (a
+    /// password, a key passphrase, a host key): [`Connection::reconnect`]
+    /// tries again with prompts.
+    ///
+    /// [`Connection::reconnect`]: crate::Connection::reconnect
+    NeedsReconnect(String),
     /// Reattached after a reconnect (a full snapshot was fed).
     Reconnected,
     /// The session's process exited.
