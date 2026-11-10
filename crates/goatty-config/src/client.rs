@@ -666,9 +666,20 @@ impl ClientSettings {
         }
     }
 
-    /// Names of the `GOATTY_*` variables currently overriding settings.
+    /// Names of the `GOATTY_*` variables [`apply_env`](Self::apply_env)
+    /// accepts. One it ignores (an empty `GOATTY_THEME`, a size that isn't
+    /// a number) overrides nothing, so its rows stay editable.
     pub fn env_overrides(var: impl Fn(&str) -> Option<String>) -> Vec<&'static str> {
-        Self::ENV_KEYS.iter().map(|(name, _)| *name).filter(|k| var(k).is_some()).collect()
+        let accepted = |name: &str| {
+            let v = var(name);
+            match name {
+                "GOATTY_FONT_SIZE" => v.is_some_and(|s| s.parse::<f32>().is_ok()),
+                "GOATTY_RENDER" => matches!(v.as_deref(), Some("shaped" | "glyphs")),
+                "GOATTY_STATS" => v.is_some(),
+                _ => v.is_some_and(|s| !s.is_empty()),
+            }
+        };
+        Self::ENV_KEYS.iter().map(|(name, _)| *name).filter(|k| accepted(k)).collect()
     }
 
     /// Each `GOATTY_*` variable [`apply_env`](Self::apply_env) reads, with
@@ -859,7 +870,10 @@ mod tests {
                 assert!(crate::store::is_known_key::<ClientSettings>(k), "{var}: {k}");
             }
         }
-        assert_eq!(ClientSettings::env_overrides(|k| (k == "GOATTY_THEME").then(String::new)), ["GOATTY_THEME"]);
+        assert!(ClientSettings::env_overrides(|k| (k == "GOATTY_THEME").then(String::new)).is_empty(), "an empty value is ignored");
+        let vars = [("GOATTY_FONT_SIZE", "huge"), ("GOATTY_RENDER", "glyphs"), ("GOATTY_THEME", "nord"), ("GOATTY_STATS", "")];
+        let var = |k: &str| vars.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string());
+        assert_eq!(ClientSettings::env_overrides(var), ["GOATTY_RENDER", "GOATTY_THEME", "GOATTY_STATS"]);
     }
 
     #[test]
