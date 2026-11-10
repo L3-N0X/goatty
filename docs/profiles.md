@@ -151,4 +151,4 @@ goattyd settings path | show [KEY] [--all] | validate [FILE] | set KEY VALUE | u
 
 ## Not done yet
 
-Problems and env overrides shown on their row (#53), shortcut conflict warnings (#54), per-generation change summaries (#55), proper monospace detection (#57), keyboard navigation in the settings window (#58), and the GUI first-run/diagnostics screen (#40).
+Problems and env overrides shown on their row (#53), shortcut conflict warnings (#54), per-generation change summaries (#55), proper monospace detection (#57) and keyboard navigation in the settings window (#58).

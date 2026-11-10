@@ -52,12 +52,17 @@ impl Daemon {
     }
 
     /// A session running the user's shell (goatty's managed zsh by default).
-    pub(crate) fn create(self: &Arc<Self>, ws: WinSize, cwd: Option<String>) -> Result<Arc<Session>> {
+    /// `gui_setup`: the client offers the shell setup itself (protocol v9),
+    /// so the shell's own missing-tools hint stays quiet.
+    pub(crate) fn create(self: &Arc<Self>, ws: WinSize, cwd: Option<String>, gui_setup: bool) -> Result<Arc<Session>> {
         let host = self.host.settings();
         for issue in &host.file.issues {
             log::warn!("host settings: {issue}");
         }
-        let launch = self.host.launcher.launch(&host);
+        let mut launch = self.host.launcher.launch(&host);
+        if gui_setup {
+            goatty_shell::setup::gui_offers_setup(&mut launch);
+        }
         let managed = launch.managed;
         self.spawn(ShellCommand::new(launch.program, launch.args, launch.env), managed, ws, cwd)
     }

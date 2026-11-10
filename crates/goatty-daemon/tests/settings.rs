@@ -291,3 +291,40 @@ fn request_msg(sock: &Path, msg: impl FnOnce(u32) -> ClientMsg) -> ServerMsg {
         Err(e) => ServerMsg::Error { req: None, message: format!("{e:#}") },
     }
 }
+
+/// Shell setup and diagnostics over the protocol (v9): the status of a
+/// managed zsh (a real startup, the built-in tools) and of an unmanaged
+/// shell, and the "offered" / "don't ask again" markers.
+#[test]
+fn shell_status_over_the_protocol() {
+    use goatty_shell::setup::{FeatureState, Reply, Request};
+    let call = |d: &Daemon, r: Request| -> Reply {
+        let request = serde_json::to_string(&r).unwrap();
+        match request_msg(&d.sock, |req| ClientMsg::Shell { req, request }) {
+            ServerMsg::Shell { reply, .. } => serde_json::from_str(&reply).unwrap(),
+            other => panic!("{other:?}"),
+        }
+    };
+
+    let d = start_daemon();
+    let Reply::Status(s) = call(&d, Request::Status) else { panic!() };
+    assert!(!s.managed && s.unmanaged.is_some() && s.startup.is_none(), "{s:?}");
+    assert_eq!(s.tools.len(), 5, "every built-in plugin is listed");
+    assert!(!s.should_offer(), "nothing to offer for a shell goatty doesn't manage");
+    assert_eq!(call(&d, Request::Offered), Reply::Done);
+    assert!(d.home.join(".local/state/goatty/shell-setup-offered").exists());
+    assert_eq!(call(&d, Request::Dismiss), Reply::Done);
+    let Reply::Status(s) = call(&d, Request::Status) else { panic!() };
+    assert!(s.offered && s.dismissed);
+
+    let Some(zsh) = ["/usr/bin/zsh", "/bin/zsh"].into_iter().find(|p| Path::new(p).exists()) else {
+        eprintln!("zsh not installed; skipping the managed half");
+        return;
+    };
+    let d = start_daemon_with(zsh);
+    let Reply::Status(s) = call(&d, Request::Status) else { panic!() };
+    assert!(s.managed, "{s:?}");
+    let startup = s.startup.as_ref().unwrap_or_else(|| panic!("no startup: {:?}", s.startup_error));
+    assert!(startup.features.iter().any(|f| f.id == "integration" && matches!(f.state, FeatureState::Loaded { .. })), "{startup:?}");
+    assert!(s.generation.is_some(), "the probe built the configuration");
+}

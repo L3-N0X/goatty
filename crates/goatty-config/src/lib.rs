@@ -78,6 +78,12 @@ pub fn client_file() -> Option<PathBuf> {
     config_dir().map(|d| d.join("settings.json"))
 }
 
+/// Exists once the welcome window (first-run setup) was shown. State,
+/// not a setting: `$XDG_STATE_HOME/goatty/welcome-shown`.
+pub fn welcome_marker() -> Option<PathBuf> {
+    color_history::state_dir_from(|k| std::env::var(k).ok()).map(|d| d.join("welcome-shown"))
+}
+
 /// This host's settings file (what a goattyd here uses).
 pub fn host_file() -> Option<PathBuf> {
     config_dir().map(|d| d.join("host.json"))

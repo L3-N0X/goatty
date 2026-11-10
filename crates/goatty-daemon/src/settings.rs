@@ -61,3 +61,16 @@ pub(crate) fn plugin(daemon: &Daemon, req: ReqId, request: &str) -> ServerMsg {
         Err(e) => error(req, e),
     }
 }
+
+/// A shell setup or diagnostics operation: JSON in, JSON out (`goatty_shell::setup`).
+pub(crate) fn shell(daemon: &Daemon, req: ReqId, request: &str) -> ServerMsg {
+    let parsed: Result<goatty_shell::setup::Request, _> = serde_json::from_str(request);
+    let result = match parsed {
+        Ok(r) => daemon.host.shell_request(r),
+        Err(e) => Err(anyhow::anyhow!("unknown shell request ({e}); is goattyd older than this goatty?")),
+    };
+    match result.and_then(|r| serde_json::to_string(&r).map_err(Into::into)) {
+        Ok(reply) => ServerMsg::Shell { req, reply },
+        Err(e) => error(req, e),
+    }
+}

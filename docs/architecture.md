@@ -56,6 +56,7 @@ Threads per session: `s{id}-reader` (PTY → terminal → subscribers) and `s{id
 | `install` | download (curl/wget), verify, unpack, activate `bin/` and `plugins/` symlinks, uninstall packages |
 | `doctor`  | start a real managed shell and parse `goatty-status`                    |
 | `generation` | build → validate (`zsh -n`) → activate generations; list, rollback, diff |
+| `setup`   | shell setup and diagnostics as JSON (`Request`/`Reply`, protocol v9 `Shell`): `Status` (configuration, a real startup, the built-in tools), install built-in tools, the offered/dismissed markers; `goattyd shell status` prints the same `Status` |
 | `service` | `HostService`: host settings get/set(preview, apply)/generations/rollback, for the daemon API and `goatty --local` |
 | `cmd`     | `goattyd shell status|install|uninstall|dismiss|generations|diff|rollback` |
 | `plugins` | plugins on this host: `registry` (trusted sources, fetch → verify → snapshot), `lock` (installed files + approvals), `Plugins` (find, plan, install, uninstall, catalog; built-in ones included), `active` + `load_order` (what a generation renders, in slot order), `cmd` (`goattyd plugin …`) |
@@ -88,6 +89,7 @@ settings_window/
   shortcuts.rs the Shortcuts table: groups or sorting, search by name or pressed keys, changed/unbound filters
   aliases.rs   the Aliases page: mine first, plugin groups folded, filters, the add/edit dialog
   plugins.rs   the Plugins page: installed list, each plugin's own page (schema-driven settings by group), browse, install review
+  diagnostics.rs  the Diagnostics page: the host's `setup::Status` (features and their source, startup time, startup errors, your files), install missing tools, copy report
   hosts.rs     the Hosts page: open hosts in a tab or window, add/remove hosts, plain SSH per host, `~/.ssh/config` discovery
   profile.rs   files (copy path, open folder), problems, export/import, generations, reset
   about.rs     version, connection, links, "copy for a bug report"
@@ -110,6 +112,8 @@ workspace/
 close_confirm.rs  "Close this pane?" dialog when a program other than the shell still runs (`panes.confirm_close`, "Don't ask again")
 connect.rs     ConnectView, the connect screen in a tab: connects off the UI thread (local daemon or remote), turns RemoteProblem into questions (install / update and restart / plain SSH), hands the tab its session or restored layout
 hosts.rs       hosts to connect to: `ssh.hosts` + `~/.ssh/config` (`HostList` global, read in the background), palette commands, `pool` (one shared Connection per host), `open` → a connecting tab of the last active window or a new window (`ssh.open_in`)
+shell_setup.rs installing a host's built-in tools with progress (`install`), the per-host install offer toast after a tab connects (`offer`)
+welcome.rs     the welcome window (first-run setup): theme and text size, the host's tools and prompt style, shortcuts
 askpass.rs     goatty as ssh's SSH_ASKPASS: one window per prompt (passphrase, host key, confirm), answer on stdout
 paste_confirm.rs  "Paste this?" dialog: risks, preview with control/invisible chars marked, paste as is / cleaned / as one line
 session.rs     a pane's data: local PTY or goattyd session → mirror Terminal; coalescing waker; foreground program; `Spawner` for a tab's new panes (goattyd, local PTY, plain `ssh host`)
@@ -148,7 +152,7 @@ Input: GPUI dispatches a bound action before the view's raw `on_key_down`. Short
 | Kitty keyboard (#22)                   | `goatty-term/src/input.rs`, fed from `terminal/keys.rs`               |
 | Shell integration, terminal side (#28) | `goatty-term` listener (OSC 133/7 → `UiEvent`) + daemon `SessionInfo`; the zsh side is in `goatty-shell/zsh/integration.zsh` |
 | Managed zsh features, tool versions    | `goatty-shell/zsh/zshrc.zsh` (load order matters, see `managed-zsh.md`); the tools are built-in plugins: `goatty-shell/plugins/<id>/plugin.toml` (+ `builtins.rs` to list a new one) |
-| GUI first-run / shell diagnostics      | daemon API for `goatty_shell::cmd`-style status/install (new wire messages), then a GPUI view |
+| First-run setup, shell diagnostics     | host side: `goatty-shell/src/setup.rs` (new operations go in its `Request`/`Reply`, no protocol bump); GUI: `welcome.rs`, `shell_setup.rs`, `settings_window/diagnostics.rs` |
 | Bash/Fish adapters (Stage 6)           | `goatty-shell`: a sibling of `zsh.rs` + its startup files; `Launcher::launch` picks by program |
 | New client setting                     | field in `goatty-config/src/client.rs` (+ `validate`), a `kit::row` on its page in `settings_window/` (+ an entry in `search.rs`), apply in `TerminalView::apply_settings` |
 | New host setting                       | field in `goatty-config/src/host.rs`, render it in `goatty-shell/src/zsh.rs` (`settings.zsh`/`starship.toml`), a row in `settings_window/shell.rs` (+ `search.rs`) |

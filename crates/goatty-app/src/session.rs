@@ -202,7 +202,9 @@ impl Session {
     /// A shell owned by this process (`--local`): no daemon, so it ends
     /// with the window. Same shell choice and managed zsh as goattyd.
     pub fn local(size: TermSize, host: &HostService, cwd: Option<String>) -> Result<Arc<Self>> {
-        let launch = host.launcher.launch(&host.settings());
+        let mut launch = host.launcher.launch(&host.settings());
+        // This window offers the shell setup: the shell's own hint stays quiet.
+        goatty_shell::setup::gui_offers_setup(&mut launch);
         let mut cmd = ShellCommand::new(launch.program, launch.args, launch.env);
         if let Some(cwd) = cwd.filter(|c| std::path::Path::new(c).is_dir()) {
             cmd.cwd = Some(cwd.into());

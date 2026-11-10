@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
 use goatty_proto::{
-    ClientMsg, FileDiff, Frame, GenerationInfo, HostInfo, LayoutId, LayoutInfo, PROTOCOL_VERSION, RUN_SINCE, ReqId, ServerMsg, SessionId,
-    SessionInfo, StreamOpts, WinSize, encode, read_msg,
+    ClientMsg, FileDiff, Frame, GenerationInfo, HostInfo, LayoutId, LayoutInfo, PROTOCOL_VERSION, RUN_SINCE, ReqId, SHELL_SINCE, ServerMsg,
+    SessionId, SessionInfo, StreamOpts, WinSize, encode, read_msg,
 };
 use parking_lot::Mutex;
 
@@ -411,6 +411,24 @@ impl Connection {
         }
     }
 
+    /// A shell setup or diagnostics operation (`goatty_shell::setup::Request`
+    /// as JSON); returns the reply JSON. Installs download, so this waits up
+    /// to [`PLUGIN_TIMEOUT`]. Needs a daemon with protocol v9. Blocks: call
+    /// off the UI thread.
+    pub fn shell(&self, request: String) -> Result<String> {
+        let version = self.protocol_version();
+        if version < SHELL_SINCE {
+            bail!(
+                "goattyd via {} is too old for shell setup and diagnostics (protocol v{version}); restart it to use the new version",
+                self.endpoint().label()
+            );
+        }
+        match self.request_within(PLUGIN_TIMEOUT, Pending::Reply, |req| ClientMsg::Shell { req, request })? {
+            ServerMsg::Shell { reply, .. } => Ok(reply),
+            other => bail!("unexpected reply {other:?}"),
+        }
+    }
+
     /// Remember the window's layout (tabs and splits; `json` is the
     /// client's format) on the host, so a later window can restore it. No
     /// `sessions`: forget it. Never blocks; saved again after a reconnect.
@@ -670,7 +688,8 @@ fn dispatch(s: &Shared, msg: ServerMsg) {
         | ServerMsg::Generations { req, .. }
         | ServerMsg::ShellsReloaded { req, .. }
         | ServerMsg::Plugin { req, .. }
-        | ServerMsg::Layout { req, .. } => {
+        | ServerMsg::Layout { req, .. }
+        | ServerMsg::Shell { req, .. } => {
             if let Some(Pending::Reply(tx) | Pending::Attach { tx, .. }) = s.pending.lock().remove(&req) {
                 let _ = tx.send(msg);
             }

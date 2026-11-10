@@ -26,7 +26,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The newest protocol version this build speaks.
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// The oldest protocol version this build still speaks.
 pub const MIN_PROTOCOL_VERSION: u32 = 7;
@@ -39,6 +39,9 @@ pub const PROCESS_SINCE: u32 = 7;
 
 /// v8: `SaveLayout` / `ClaimLayout` (saved window layouts).
 pub const LAYOUT_SINCE: u32 = 8;
+
+/// v9: `Shell` (setup and diagnostics of the managed shell).
+pub const SHELL_SINCE: u32 = 9;
 
 /// The version to use with a peer whose newest version is `peer`, or
 /// `None` when the ranges don't overlap.
@@ -212,6 +215,14 @@ pub enum ClientMsg {
     ClaimLayout {
         req: ReqId,
     },
+    /// v9: a shell setup or diagnostics operation (`goatty_shell::setup::Request`
+    /// as JSON: status, install the built-in tools, offered, dismiss).
+    /// Answered off the connection's reader thread, since the status starts a
+    /// shell and installs download. Reply: `Shell`.
+    Shell {
+        req: ReqId,
+        request: String,
+    },
 }
 
 /// A saved window layout (see `ClientMsg::SaveLayout`).
@@ -354,6 +365,11 @@ pub enum ServerMsg {
         req: ReqId,
         layout: Option<LayoutInfo>,
     },
+    /// v9: `goatty_shell::setup::Reply` as JSON.
+    Shell {
+        req: ReqId,
+        reply: String,
+    },
 }
 
 impl ServerMsg {
@@ -368,7 +384,8 @@ impl ServerMsg {
             | ServerMsg::Generations { req, .. }
             | ServerMsg::ShellsReloaded { req, .. }
             | ServerMsg::Plugin { req, .. }
-            | ServerMsg::Layout { req, .. } => Some(*req),
+            | ServerMsg::Layout { req, .. }
+            | ServerMsg::Shell { req, .. } => Some(*req),
             ServerMsg::Error { req, .. } => *req,
             _ => None,
         }
@@ -418,5 +435,8 @@ mod tests {
         let size = WinSize { cols: 1, rows: 1, cell_width: 1, cell_height: 1 };
         let run = ClientMsg::Run { req: 1, size, cwd: None, argv: vec![], opts: StreamOpts::LOCAL };
         assert_eq!(postcard::to_allocvec(&run).unwrap()[0], 19);
+        // v9 additions come after v8's.
+        assert_eq!(postcard::to_allocvec(&ClientMsg::Shell { req: 1, request: String::new() }).unwrap()[0], 22);
+        assert_eq!(postcard::to_allocvec(&ServerMsg::Shell { req: 1, reply: String::new() }).unwrap()[0], 16);
     }
 }

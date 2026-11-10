@@ -452,7 +452,7 @@ Move PTY ownership into `goattyd`. Add reconnection after closing the GUI, persi
 
 Add the managed Zsh startup configuration, shell integration, completion, autosuggestions, syntax highlighting, Starship and Atuin. Make the initial setup one-click and provide a diagnostic screen for missing tools or failed integrations.
 
-> **Update (7 Nov 2026):** the managed zsh, shell integration (shell side), pinned user-space tool installs and CLI diagnostics (`goattyd shell status|install`, `goatty-setup` in the shell) are in `crates/goatty-shell`. See [`managed-zsh.md`](managed-zsh.md). The GUI first-run prompt and diagnostics screen are still open (see the Stage 3 milestone).
+> **Update (7 Nov 2026):** the managed zsh, shell integration (shell side), pinned user-space tool installs and CLI diagnostics (`goattyd shell status|install`, `goatty-setup` in the shell) are in `crates/goatty-shell`. See [`managed-zsh.md`](managed-zsh.md). The GUI first-run setup (welcome window, install offer per host) and the Diagnostics page followed with #40.
 
 ### Stage 4 — Profile engine and settings GUI
 

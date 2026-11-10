@@ -42,6 +42,8 @@ pub(crate) fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
     };
 
     let mut subs: HashMap<SessionId, (Arc<Session>, Arc<Subscriber>)> = HashMap::new();
+    // The protocol version agreed in the handshake.
+    let mut agreed_version = 0;
     let mut rstream = BufReader::with_capacity(64 << 10, stream);
     let result = (|| -> Result<()> {
         loop {
@@ -61,10 +63,11 @@ pub(crate) fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                         return Ok(());
                     };
                     log::debug!("connection {conn}: {client} (protocol v{agreed})");
+                    agreed_version = agreed;
                     reply(ServerMsg::Hello { version: agreed, daemon_pid, host });
                 }
                 ClientMsg::ListSessions { req } => reply(ServerMsg::Sessions { req, list: daemon.list() }),
-                ClientMsg::Create { req, size, cwd, opts } => match daemon.create(size, cwd) {
+                ClientMsg::Create { req, size, cwd, opts } => match daemon.create(size, cwd, agreed_version >= goatty_proto::SHELL_SINCE) {
                     Ok(s) => {
                         let sub = s.subscribe(conn, req, opts, &tx);
                         subs.insert(s.id, (s, sub));
@@ -148,6 +151,19 @@ pub(crate) fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                     });
                     if let Err(e) = spawned {
                         reply(ServerMsg::Error { req: Some(req), message: format!("couldn't start the plugin operation: {e}") });
+                    }
+                }
+                ClientMsg::Shell { req, request } => {
+                    // The status starts a shell, installs download: off the reader thread.
+                    let (daemon, tx) = (daemon.clone(), tx.clone());
+                    let spawned = std::thread::Builder::new().name(format!("c{conn}-shell")).spawn(move || {
+                        let msg = crate::settings::shell(&daemon, req, &request);
+                        if let Ok(f) = encode(&msg) {
+                            let _ = tx.send(f);
+                        }
+                    });
+                    if let Err(e) = spawned {
+                        reply(ServerMsg::Error { req: Some(req), message: format!("couldn't start the shell operation: {e}") });
                     }
                 }
                 ClientMsg::SaveLayout { id, sessions, json } => {

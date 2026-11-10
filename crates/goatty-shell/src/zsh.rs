@@ -148,6 +148,7 @@ fn render_settings(cfg: &ZshConfig<'_>) -> String {
     scalar("_goatty_cache", &d.cache.to_string_lossy());
     scalar("_goatty_user_zshrc", &d.user_zshrc().to_string_lossy());
     scalar("_goatty_hint_marker", &d.hint_marker().to_string_lossy());
+    scalar("_goatty_offer_marker", &d.offer_marker().to_string_lossy());
     scalar("_goatty_daemon", &cfg.daemon_exe.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default());
     scalar("_goatty_user_env", flag(s.shell.zsh.user_env));
     scalar("_goatty_user_rc", flag(s.shell.zsh.user_rc));

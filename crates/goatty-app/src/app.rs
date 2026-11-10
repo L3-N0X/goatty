@@ -30,7 +30,9 @@ pub fn run(initial: Initial, open_settings: Option<String>) {
         // `~/.ssh/config`'s hosts, ready for the palette.
         crate::hosts::refresh(cx);
 
+        crate::welcome::check_first_run(cx);
         open_terminal_window(cx, initial, open_settings);
+        crate::welcome::open_if_first_run(cx);
         // Quit with the last window (the settings window may outlive the
         // terminal window briefly, or close first).
         cx.on_window_closed(|cx, _| {

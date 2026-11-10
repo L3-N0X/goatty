@@ -337,7 +337,7 @@ fn main() -> Result<()> {
             let launcher = goatty_shell::Launcher::from_env(std::env::current_exe().ok());
             let host_file = || goatty_config::host_file().ok_or_else(|| anyhow::anyhow!("$HOME is not set"));
             match cmd {
-                ShellCmd::Status => cmd::status(&host, &launcher),
+                ShellCmd::Status => cmd::status(&goatty_shell::HostService::from_env(std::env::current_exe().ok())),
                 ShellCmd::Install { tools, yes } => cmd::install(&host, &launcher, &tools, yes),
                 ShellCmd::Generations => cmd::generations(&launcher),
                 ShellCmd::Diff => cmd::diff(&host, &launcher),

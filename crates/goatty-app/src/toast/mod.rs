@@ -85,7 +85,6 @@ pub enum Lifetime {
     /// Exactly this long (while visible and not paused).
     For(Duration),
     /// Until dismissed or updated.
-    #[cfg_attr(not(test), expect(dead_code, reason = "toast API for upcoming features"))]
     Sticky,
 }
 
@@ -171,7 +170,6 @@ impl Toast {
     }
 
     /// Stay until dismissed or updated.
-    #[cfg_attr(not(test), expect(dead_code, reason = "toast API for upcoming features"))]
     pub fn sticky(mut self) -> Self {
         self.lifetime = Lifetime::Sticky;
         self

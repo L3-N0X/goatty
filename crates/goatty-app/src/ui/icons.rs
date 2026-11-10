@@ -31,6 +31,7 @@ macro_rules! icons {
 }
 
 icons! {
+    Activity => "activity.svg",
     CircleCheck => "circle-check.svg",
     CircleX => "circle-x.svg",
     Info => "info.svg",
