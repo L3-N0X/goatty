@@ -171,12 +171,27 @@ v=$("$t" --version 2>&1) || {{ echo "the uploaded goattyd doesn't run on this ho
 case "$v" in "goattyd {version}"*) ;; *) echo "unexpected goattyd version: $v" >&2; exit 1;; esac
 mv -f "$t" "$d/$n"
 echo "installed $d/$n"
+if [ -e /proc/self/exe ]; then
+  pd=$(cd "$d" && pwd -P)
+  for f in "$d"/goattyd-*; do
+    b=${{f##*/}}
+    [ -f "$f" ] && [ "$b" != "$n" ] || continue
+    keep=
+    for e in /proc/[0-9]*/exe; do
+      [ "$(readlink "$e" 2>/dev/null)" = "$pd/$b" ] && {{ keep=1; break; }}
+    done
+    [ -n "$keep" ] || {{ rm -f "$f" && echo "removed $f"; }} || :
+  done
+fi
 "#
     )
 }
 
 /// Upload `binary` to the host as this build's goattyd (see
 /// [`binary_name`]), after checking it arrived whole and runs there.
+/// Afterwards, older `goattyd-*` builds in [`BIN_DIR`] are deleted unless a
+/// running process uses them (found through `/proc`; hosts without it keep
+/// everything).
 pub fn install(target: &SshTarget, binary: &Path) -> Result<()> {
     let file = std::fs::File::open(binary).with_context(|| format!("open {}", binary.display()))?;
     let size = file.metadata()?.len();
@@ -310,6 +325,41 @@ mod tests {
             let out = std::process::Command::new("sh").args(["-n", "-c", &script]).output().unwrap();
             assert!(out.status.success(), "{script}\n{}", String::from_utf8_lossy(&out.stderr));
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn install_prunes_old_daemons_but_not_running_ones() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let bin = home.path().join(BIN_DIR);
+        std::fs::create_dir_all(&bin).unwrap();
+        let stale = bin.join("goattyd-0.0.1-p1");
+        std::fs::write(&stale, "old").unwrap();
+        // A "daemon" that's still running from an old build.
+        let running = bin.join("goattyd-0.0.2-p2");
+        std::fs::copy("/bin/sleep", &running).unwrap();
+        let mut daemon = std::process::Command::new(&running).arg("30").spawn().unwrap();
+        let unrelated = bin.join("notes.txt");
+        std::fs::write(&unrelated, "x").unwrap();
+
+        let fake = home.path().join("upload");
+        std::fs::write(&fake, format!("#!/bin/sh\necho 'goattyd {}'\n", env!("CARGO_PKG_VERSION"))).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let size = std::fs::metadata(&fake).unwrap().len();
+        let out = std::process::Command::new("sh")
+            .args(["-c", &install_script(size)])
+            .env("HOME", home.path())
+            .stdin(std::fs::File::open(&fake).unwrap())
+            .output()
+            .unwrap();
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(bin.join(binary_name()).is_file());
+        assert!(!stale.exists(), "{}", String::from_utf8_lossy(&out.stdout));
+        assert!(running.exists());
+        assert!(unrelated.exists());
     }
 
     #[test]
