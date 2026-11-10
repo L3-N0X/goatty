@@ -55,6 +55,31 @@ fn systemd_quote(s: &str) -> String {
     format!("\"{escaped}\"")
 }
 
+/// The program in an `ExecStart=` line we wrote (the reverse of
+/// [`systemd_quote`] for its first word).
+fn exec_program(exec_start: &str) -> Option<PathBuf> {
+    let rest = exec_start.strip_prefix('"')?;
+    let (mut out, mut chars) = (String::new(), rest.chars());
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(PathBuf::from(out)),
+            '\\' => out.push(chars.next()?),
+            '%' | '$' => {
+                chars.next().filter(|n| *n == c)?;
+                out.push(c);
+            }
+            c => out.push(c),
+        }
+    }
+    None
+}
+
+/// The goattyd the installed service runs.
+pub fn service_program() -> Option<PathBuf> {
+    let text = std::fs::read_to_string(unit_dir()?.join(SERVICE_UNIT)).ok()?;
+    text.lines().find_map(|l| l.strip_prefix("ExecStart=")).and_then(exec_program)
+}
+
 pub fn render_socket() -> String {
     format!(
         "{HEADER}
@@ -236,5 +261,9 @@ mod tests {
         // Stopping the socket must not stop the sessions.
         assert!(!service.contains("Requires="));
         assert_eq!(systemd_quote(r#"a"b\c"#), r#""a\"b\\c""#);
+        let exec = service.lines().find_map(|l| l.strip_prefix("ExecStart=")).unwrap();
+        assert_eq!(exec_program(exec).unwrap(), Path::new("/home/a b/100%/$x/goattyd"));
+        assert_eq!(exec_program(&format!("{} serve", systemd_quote(r#"/a"b\c"#))).unwrap(), Path::new(r#"/a"b\c"#));
+        assert_eq!(exec_program("/usr/bin/goattyd serve"), None);
     }
 }

@@ -84,6 +84,8 @@ struct Shared {
     announce: AtomicU32,
     /// The version agreed on the current link.
     version: AtomicU32,
+    /// The daemon's pid on the current link.
+    daemon_pid: AtomicU32,
     connected: AtomicBool,
     closed: AtomicBool,
     closer: Mutex<Option<Closer>>,
@@ -148,6 +150,7 @@ impl Shared {
             Ok(Outcome::Ok(g)) => {
                 let _ = self.out.send(WriterCmd::Replace(t.writer));
                 self.version.store(g.version, Ordering::Relaxed);
+                self.daemon_pid.store(g.pid, Ordering::Relaxed);
                 self.last_rx_us.store(self.now_us(), Ordering::Relaxed);
                 self.connected.store(true, Ordering::Release);
                 Ok(Some((t.reader, g.host, g.pid)))
@@ -163,6 +166,7 @@ impl Shared {
                 let lines = stderr.wait(STDERR_GRACE);
                 Err(match &self.endpoint {
                     Endpoint::Ssh(target) => remote::diagnose(&target.host, e, &lines),
+                    Endpoint::Local => crate::local::diagnose(e),
                     _ => remote::with_stderr(e, &lines),
                 })
             }
@@ -193,6 +197,7 @@ impl Connection {
             host: Mutex::new(HostInfo::default()),
             announce: AtomicU32::new(PROTOCOL_VERSION),
             version: AtomicU32::new(0),
+            daemon_pid: AtomicU32::new(0),
             connected: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             closer: Mutex::new(None),
@@ -236,6 +241,11 @@ impl Connection {
     /// The protocol version agreed with the daemon on the current link.
     pub fn protocol_version(&self) -> u32 {
         self.shared.version.load(Ordering::Relaxed)
+    }
+
+    /// The daemon's pid (on its host) on the current link.
+    pub fn daemon_pid(&self) -> u32 {
+        self.shared.daemon_pid.load(Ordering::Relaxed)
     }
 
     pub fn is_connected(&self) -> bool {
