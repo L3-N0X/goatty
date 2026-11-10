@@ -118,9 +118,10 @@ impl Shared {
 
     /// Open a transport and shake hands, announcing a lower version once if
     /// an old daemon asks for it.
-    fn connect(&self) -> Result<(Reader, HostInfo, u32)> {
+    /// `interactive: false` for automatic reconnects (ssh must not prompt).
+    fn connect(&self, interactive: bool) -> Result<(Reader, HostInfo, u32)> {
         for _ in 0..2 {
-            if let Some(ok) = self.handshake(self.endpoint.connect()?)? {
+            if let Some(ok) = self.handshake(self.endpoint.connect(interactive)?)? {
                 return Ok(ok);
             }
         }
@@ -198,7 +199,7 @@ impl Connection {
 
         std::thread::Builder::new().name("goatty-writer".into()).spawn(move || writer_loop(out_rx))?;
 
-        let (reader, host, pid) = shared.connect()?;
+        let (reader, host, pid) = shared.connect(true)?;
         log::info!(
             "connected to goattyd {} on {}@{} (pid {pid}, via {}, protocol v{})",
             host.daemon_version,
@@ -502,7 +503,7 @@ fn reader_main(s: Arc<Shared>, mut reader: Reader) {
                 return;
             }
             std::thread::sleep(Duration::from_millis(backoff.next().unwrap_or(5000)));
-            match s.connect() {
+            match s.connect(false) {
                 Ok((r, host, pid)) => {
                     log::info!("reconnected to goattyd (pid {pid})");
                     *s.host.lock() = host;

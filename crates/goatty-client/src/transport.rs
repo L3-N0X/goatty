@@ -65,7 +65,17 @@ impl SshTarget {
     /// askpass program when there is one. `remote` runs in the user's login
     /// shell on the host, so it must be valid there (we wrap ours in `sh -c`).
     pub fn command(&self, remote: &str) -> Command {
+        self.command_with(remote, true)
+    }
+
+    /// Like [`Self::command`]. Not `interactive`: `BatchMode=yes`, so ssh
+    /// fails instead of asking for a password or passphrase (automatic
+    /// reconnects must not pop up a prompt on every attempt).
+    pub fn command_with(&self, remote: &str, interactive: bool) -> Command {
         let mut c = Command::new(&self.program);
+        if !interactive {
+            c.args(["-o", "BatchMode=yes"]);
+        }
         c.args(["-T", "-e", "none", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=10"]);
         // `--`: a host that starts with `-` is a host, not an option.
         c.arg("--").arg(&self.host).arg(remote);
@@ -111,7 +121,8 @@ impl Endpoint {
         if self.is_local() { StreamOpts::LOCAL } else { StreamOpts::REMOTE }
     }
 
-    pub fn connect(&self) -> Result<Transport> {
+    /// `interactive: false` for automatic retries: ssh never prompts.
+    pub fn connect(&self, interactive: bool) -> Result<Transport> {
         match self {
             Endpoint::Local => {
                 let s = connect_or_spawn_daemon(None)?;
@@ -126,7 +137,7 @@ impl Endpoint {
             }
             Endpoint::Ssh(t) => {
                 let script = remote::proxy_script(t.remote_daemon.as_deref());
-                spawn_stdio(t.command(&format!("sh -c {}", sh_quote(&script))), &t.host)
+                spawn_stdio(t.command_with(&format!("sh -c {}", sh_quote(&script)), interactive), &t.host)
             }
             Endpoint::Command { program, args, label } => {
                 let mut c = Command::new(program);
@@ -335,6 +346,10 @@ mod tests {
             c.get_envs().map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned()))).collect();
         assert!(envs.contains(&("SSH_ASKPASS_REQUIRE".into(), Some("force".into()))));
         assert!(envs.contains(&("SSH_ASKPASS".into(), Some("/opt/goatty".into()))));
+        assert!(!args.contains(&"BatchMode=yes".to_string()));
+        let batch: Vec<_> =
+            t.command_with("true", false).get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(batch.contains(&"BatchMode=yes".to_string()));
         assert_eq!(sh_quote("it's"), "'it'\\''s'");
     }
 
