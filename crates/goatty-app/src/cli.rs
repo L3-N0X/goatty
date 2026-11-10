@@ -37,6 +37,7 @@ pub struct Cli {
     pub plain: bool,
 
     /// Use goattyd behind any stdio command, e.g. 'docker exec -i box goattyd proxy'.
+    /// It runs under `sh -c`, so quote arguments as in a shell.
     #[arg(long, value_name = "CMD")]
     pub via: Option<String>,
 

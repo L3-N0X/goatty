@@ -96,12 +96,11 @@ impl Endpoint {
         Endpoint::Ssh(SshTarget { remote_daemon: remote_daemon.map(String::from), ..SshTarget::new(host) })
     }
 
-    /// An arbitrary command line, split on whitespace (prototype-grade; use
-    /// [`Endpoint::Command`] directly for arguments containing spaces).
+    /// An arbitrary command line, run by `sh -c`, so quoting, variables and
+    /// pipes work as in a shell. Labelled by its first word.
     pub fn command_line(cmdline: &str) -> Result<Self> {
-        let mut parts = cmdline.split_whitespace().map(String::from);
-        let program = parts.next().context("empty --via command")?;
-        Ok(Endpoint::Command { label: program.clone(), program, args: parts.collect() })
+        let label = cmdline.split_whitespace().next().context("empty --via command")?.to_string();
+        Ok(Endpoint::Command { label, program: "sh".into(), args: vec!["-c".into(), cmdline.to_string()] })
     }
 
     pub fn is_local(&self) -> bool {
@@ -350,6 +349,16 @@ mod tests {
         let batch: Vec<_> = t.command_with("true", false).get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         assert!(batch.contains(&"BatchMode=yes".to_string()));
         assert_eq!(sh_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn command_line_keeps_quoted_arguments() {
+        let e = Endpoint::command_line("printf '%s|' 'a b' \"c  d\" e").unwrap();
+        assert_eq!(e.label(), "printf");
+        let Endpoint::Command { program, args, .. } = e else { panic!("not a command endpoint") };
+        let out = Command::new(program).args(args).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "a b|c  d|e|");
+        assert!(Endpoint::command_line("  ").is_err());
     }
 
     #[test]

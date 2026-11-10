@@ -48,6 +48,23 @@ impl Geom {
         let row = (y as usize).min(self.rows.saturating_sub(1));
         (col, row, x.fract() > 0.5)
     }
+
+    /// Selection auto-scroll: lines to scroll per tick for a drag at height
+    /// `y`, positive towards history. 0 over the grid; past the top or
+    /// bottom edge it grows with the distance, one line per cell height.
+    pub fn edge_scroll(&self, y: Pixels) -> i32 {
+        const MAX: f32 = 10.0;
+        let h = self.cell.height.max(px(1.0));
+        let top = self.origin.y;
+        let bottom = top + h * self.rows as f32;
+        if y < top {
+            (1.0 + (top - y) / h).min(MAX) as i32
+        } else if y >= bottom {
+            -((1.0 + (y - bottom) / h).min(MAX) as i32)
+        } else {
+            0
+        }
+    }
 }
 
 pub struct TerminalElement {
@@ -523,5 +540,23 @@ fn push_deco(
     }
     if f.contains(CellFlags::STRIKE) {
         decos.push(Deco::Strike(point(x, baseline - cache.ascent * 0.32), w, StrikethroughStyle { thickness: px(1.0), color }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edge_scroll_grows_past_the_edges() {
+        let g = Geom { origin: point(px(5.0), px(10.0)), cell: size(px(8.0), px(20.0)), cols: 80, rows: 10 };
+        assert_eq!(g.edge_scroll(px(10.0)), 0);
+        assert_eq!(g.edge_scroll(px(209.0)), 0);
+        assert_eq!(g.edge_scroll(px(9.0)), 1);
+        assert_eq!(g.edge_scroll(px(-35.0)), 3);
+        assert_eq!(g.edge_scroll(px(210.0)), -1);
+        assert_eq!(g.edge_scroll(px(250.0)), -3);
+        assert_eq!(g.edge_scroll(px(-10_000.0)), 10);
+        assert_eq!(g.edge_scroll(px(10_000.0)), -10);
     }
 }

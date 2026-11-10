@@ -20,9 +20,10 @@ use goatty_term::input::{Key, Mods, MouseAction, MouseButton, encode_key, encode
 use goatty_term::paste::{self, PasteRisk};
 use goatty_term::{CursorKind, Frame, Link, SelectKind, TermMode, UiEvent};
 use gpui::{
-    App, ClipboardItem, Context, CursorStyle, EventEmitter, FocusHandle, Focusable, Font, InteractiveElement, IntoElement, KeyDownEvent,
-    Modifiers, ModifiersChangedEvent, MouseButton as GMouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
-    Render, ScrollDelta, ScrollEvent, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
+    App, ClipboardItem, Context, CursorStyle, DispatchPhase, EventEmitter, FocusHandle, Focusable, Font, InteractiveElement, IntoElement,
+    KeyDownEvent, Modifiers, ModifiersChangedEvent, MouseButton as GMouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement, Pixels, Point, Render, ScrollDelta, ScrollEvent, StatefulInteractiveElement, Styled, Task, Window, canvas, div,
+    prelude::FluentBuilder, px,
 };
 
 use super::element::{Geom, TerminalElement, hsla};
@@ -43,6 +44,8 @@ const BLINK: Duration = Duration::from_millis(530);
 const DEFAULT_TITLE: &str = "goatty";
 /// The zoom toast is brief: the text size itself is the feedback.
 const ZOOM_TOAST: Duration = Duration::from_millis(1800);
+/// How often a selecting drag past the edge scrolls.
+const AUTOSCROLL_TICK: Duration = Duration::from_millis(50);
 
 /// What a pane tells its parent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +106,10 @@ pub struct TerminalView {
     cursor_blink: bool,
     // Interaction state.
     selecting: bool,
+    /// Where the selecting drag last was, in window coordinates.
+    drag_pos: Option<Point<Pixels>>,
+    /// Scrolls while a selecting drag is past the top or bottom edge (#26).
+    autoscroll: Option<Task<()>>,
     scroll_accum: f32,
     cursor_visible: bool,
     last_activity: Instant,
@@ -211,6 +218,8 @@ impl TerminalView {
             glyph_mode: true,
             cursor_blink: true,
             selecting: false,
+            drag_pos: None,
+            autoscroll: None,
             scroll_accum: 0.0,
             cursor_visible: true,
             last_activity: Instant::now(),
@@ -638,15 +647,7 @@ impl TerminalView {
         {
             self.report_mouse(btn, MouseAction::Release, col, row, &ev.modifiers);
         }
-        if self.selecting {
-            self.selecting = false;
-            if self.session.terminal.has_selection() {
-                self.copy_on_select(cx);
-            } else {
-                self.session.terminal.selection_clear();
-            }
-            cx.notify();
-        }
+        self.end_selection(cx);
         if let Some(target) = self.pressed_link.take()
             && ev.button == GMouseButton::Left
             && !self.session.terminal.has_selection()
@@ -660,15 +661,12 @@ impl TerminalView {
     }
 
     fn on_mouse_move(&mut self, ev: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<'_, Self>) {
-        let (col, row, right) = self.geom.get().cell_at(ev.position);
+        let (col, row, _) = self.geom.get().cell_at(ev.position);
         self.mouse_cell = Some((col, row));
         self.modifiers = ev.modifiers;
-        if self.selecting && ev.pressed_button == Some(GMouseButton::Left) {
-            self.session.terminal.selection_update(col, row, right);
-            // A press that turns into a selection doesn't open its link
-            // (checked on release), and no link shows while selecting.
-            self.hover = None;
-            cx.notify();
+        if self.selecting {
+            // The window-wide listener (see `render`) extends the selection,
+            // also when the drag leaves the pane.
             return;
         }
         if self.refresh_hover(cx) {
@@ -678,6 +676,64 @@ impl TerminalView {
             let btn = mouse_button(ev.pressed_button).unwrap_or(MouseButton::None);
             self.report_mouse(btn, MouseAction::Motion, col, row, &ev.modifiers);
         }
+    }
+
+    /// A selecting drag moved to `pos` (anywhere in the window). Past the
+    /// top or bottom edge, the view scrolls until the drag comes back.
+    fn drag_to(&mut self, pos: Point<Pixels>, cx: &mut Context<'_, Self>) {
+        let geom = self.geom.get();
+        let (col, row, right) = geom.cell_at(pos);
+        self.session.terminal.selection_update(col, row, right);
+        // A press that turns into a selection doesn't open its link
+        // (checked on release), and no link shows while selecting.
+        self.hover = None;
+        self.drag_pos = Some(pos);
+        if geom.edge_scroll(pos.y) != 0 && self.autoscroll.is_none() {
+            self.autoscroll = Some(cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(AUTOSCROLL_TICK).await;
+                    match this.update(cx, |view, cx| view.autoscroll_tick(cx)) {
+                        Ok(true) => {}
+                        _ => break,
+                    }
+                }
+            }));
+        }
+        cx.notify();
+    }
+
+    /// One auto-scroll step; false once the drag is over or back on the grid.
+    fn autoscroll_tick(&mut self, cx: &mut Context<'_, Self>) -> bool {
+        let geom = self.geom.get();
+        let lines = match self.drag_pos {
+            Some(pos) if self.selecting => geom.edge_scroll(pos.y),
+            _ => 0,
+        };
+        let Some(pos) = self.drag_pos.filter(|_| lines != 0) else {
+            self.autoscroll = None;
+            return false;
+        };
+        self.session.terminal.scroll(lines);
+        let (col, row, right) = geom.cell_at(pos);
+        self.session.terminal.selection_update(col, row, right);
+        cx.notify();
+        true
+    }
+
+    /// The selecting drag ended: copy what it selected, if anything.
+    fn end_selection(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.selecting {
+            return;
+        }
+        self.selecting = false;
+        self.drag_pos = None;
+        self.autoscroll = None;
+        if self.session.terminal.has_selection() {
+            self.copy_on_select(cx);
+        } else {
+            self.session.terminal.selection_clear();
+        }
+        cx.notify();
     }
 
     fn on_scroll(&mut self, ev: &ScrollEvent, _window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -797,6 +853,31 @@ impl Render for TerminalView {
                 glyphs: self.glyphs.clone(),
                 cursor_visible: self.cursor_visible,
                 link_spans,
+            })
+            .when(self.selecting, |d| {
+                // While selecting, follow the drag across the whole window:
+                // the pane's own move handler only fires over the pane.
+                let view = cx.entity().downgrade();
+                d.child(canvas(
+                    |_, _, _| (),
+                    move |_, _, window, _| {
+                        window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
+                            if phase != DispatchPhase::Bubble {
+                                return;
+                            }
+                            let _ = view.update(cx, |view, cx| {
+                                if ev.pressed_button == Some(GMouseButton::Left) {
+                                    if view.selecting {
+                                        view.drag_to(ev.position, cx);
+                                    }
+                                } else {
+                                    // Released where we didn't see it (outside the window).
+                                    view.end_selection(cx);
+                                }
+                            });
+                        });
+                    },
+                ))
             })
             .when_some(hint, |d, (target, action)| {
                 // The target, since an OSC 8 link's text can say anything.
