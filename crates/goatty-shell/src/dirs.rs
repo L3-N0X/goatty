@@ -14,7 +14,7 @@
 //! $XDG_CONFIG_HOME/goatty/zshrc   the user's own additions (goatty never writes it)
 //! $XDG_CONFIG_HOME/goatty/registries.json   plugin registries added besides the official one
 //! $XDG_CACHE_HOME/goatty/         completion dump, downloads
-//! $XDG_STATE_HOME/goatty/         small flags (e.g. the dismissed setup hint)
+//! $XDG_STATE_HOME/goatty/         small flags (the dismissed setup hint, the GUI offered the setup)
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -93,6 +93,11 @@ impl Dirs {
     /// Exists once the user dismissed the "tools missing" hint.
     pub fn hint_marker(&self) -> PathBuf {
         self.state.join("shell-hint-dismissed")
+    }
+    /// Exists once a GUI offered to install the missing tools: the hint in
+    /// new shells stays quiet (the GUI asks instead).
+    pub fn offer_marker(&self) -> PathBuf {
+        self.state.join("shell-setup-offered")
     }
 }
 

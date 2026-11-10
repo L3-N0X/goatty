@@ -61,7 +61,8 @@ Rules that came out of testing against real zsh (`crates/goatty-shell/tests/zsh_
 ~/.local/share/goatty/plugins/<package>         → active managed zsh plugin (a package with a `source` script)
 ~/.config/goatty/zshrc          the user's additions (goatty never writes it)
 ~/.cache/goatty/                zcompdump, completion cache, downloads
-~/.local/state/goatty/shell-hint-dismissed      set by `goatty-setup --dismiss`
+~/.local/state/goatty/shell-hint-dismissed      set by `goatty-setup --dismiss` or the GUI's "Don't ask again"
+~/.local/state/goatty/shell-setup-offered       set once goatty's window offered the install (the shell hint stays quiet)
 ```
 
 XDG variables are respected. History stays in the file plain zsh would use (`${ZDOTDIR:-$HOME}/.zsh_history`), so existing history keeps working.
@@ -118,7 +119,17 @@ No sudo, nothing outside goatty's data directory. `goattyd shell uninstall NAME�
 
 Pinned 2026-11-07 to releases at least two weeks old. Checksums were computed from the downloads and matched upstream's published `.sha256`/checksums files where they exist (Starship, Atuin, fzf). The package ids are the tool ids from before #98, so managed installs made then (`tools/<id>/`, `bin/` and `plugins/` links) are used as they are. zsh itself isn't installed: if it's missing, goatty starts `$SHELL` and `goattyd shell status` says so.
 
+## First run and the GUI
+
+On the very first start (no `settings.json`, no `~/.local/state/goatty/welcome-shown`), goatty opens a **welcome window** with three steps: a theme (or follow the desktop) and the text size; the built-in tools of the window's host, the missing ones preselected and installed one at a time with progress, plus the prompt style (icons need a Nerd Font); then the shortcuts worth knowing. Everything else keeps its defaults. The command palette's "Welcome and setup" opens it again.
+
+When a tab connects to a host (local or remote) whose managed shell misses default tools, a sticky toast offers to install them: Install / Not now / Don't ask again. That happens once per host per run, never while the welcome window is open, and never after "Don't ask again" (the same marker as `goatty-setup --dismiss`). The in-shell hint stays quiet in sessions of a goatty window that offers the setup itself (goattyd sets `GOATTY_GUI_SETUP=1` for clients with protocol v9, `goatty --local` always; the shell unsets it after startup), and on hosts where a window already offered it (`shell-setup-offered`). Installing reloads the host's running shells, so an idle prompt has the new tools at once.
+
+The GUI talks to the host through `goatty_shell::setup` (protocol v9 `Shell`, JSON like the plugin operations; with `--local` in-process): `status`, `install` (built-in tool ids), `offered`, `dismiss`. A goattyd older than v9 gets no offer and the Diagnostics page says to restart it.
+
 ## Diagnostics
+
+Settings → Diagnostics (or `goatty --settings=diagnostics`, or "Shell diagnostics" in the palette) shows the same report as `goattyd shell status` for the window's host: the program and configuration, the startup time, each feature with where it came from (system path or goatty's copy and its version), what the startup printed to stderr, the user's own startup files, and an Install button for missing tools. "Copy report" puts it on the clipboard for a bug report.
 
 `goattyd shell status` prints the configuration, then starts the managed shell the way a session would (login + interactive, no TTY), runs `goatty-status`, and lists each feature with where it came from and the startup time. Anything the startup printed to stderr is shown. Inside a shell, `goatty-status` prints the same feature table.
 
@@ -146,4 +157,4 @@ Installed plugins (Stage 5, [`plugins.md`](plugins.md)) render into `plugins-ear
 
 ## Not done yet
 
-The GUI first-run prompt and a diagnostics screen (#40), caching tool init scripts (#41), installs for macOS and other architectures (#42), managed completions for installed tools (#43), importing existing history into Atuin on first install (#44), updating managed tools after a pin bump (#45), Nerd Font symbols for the default prompt (#46), an interactive GUI smoke test (#47), and the terminal side of shell integration (#28).
+Caching tool init scripts (#41), installs for macOS and other architectures (#42), managed completions for installed tools (#43), importing existing history into Atuin on first install (#44), updating managed tools after a pin bump (#45), Nerd Font symbols for the default prompt (#46), an interactive GUI smoke test (#47), and the terminal side of shell integration (#28).

@@ -514,6 +514,7 @@ impl Render for SettingsWindow {
                 Page::History => self.history(ui, cx),
                 Page::Aliases => self.aliases_page(ui, window, cx),
                 Page::Plugins => self.plugins_page(ui, window, cx),
+                Page::Diagnostics => self.diagnostics(ui, cx),
                 Page::Profile => self.profile(ui, cx),
                 Page::About => self.about(ui, cx),
             }

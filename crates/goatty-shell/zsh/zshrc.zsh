@@ -245,13 +245,15 @@ builtin autoload -Uz add-zsh-hook
 add-zsh-hook precmd _goatty_reload_requested
 
 # --- Missing-tools hint -----------------------------------------------------
+# Quiet once dismissed, once goatty's window offered the install, and in
+# sessions of a goatty window that offers it itself (GOATTY_GUI_SETUP).
 () {
   local -a missing=(${(ko)_goatty_state[(R)missing]})
   missing=(${missing:*_goatty_setup_defaults})
-  (( $#missing )) && [[ -t 1 && ! -e $_goatty_hint_marker ]] || return 0
+  (( $#missing )) && [[ -t 1 && -z $GOATTY_GUI_SETUP && ! -e $_goatty_hint_marker && ! -e $_goatty_offer_marker ]] || return 0
   builtin print -r -- $'\e[33mgoatty:\e[0m not installed: '"${(j:, :)missing}"$'. Run \e[1mgoatty-setup\e[0m to install (user space, no sudo), \e[1mgoatty-setup --dismiss\e[0m to hide this.'
 }
 
 # --- Done --------------------------------------------------------------------
 builtin unfunction _goatty_zdotdir_user _goatty_zdotdir_capture _goatty_user_file _goatty_on _goatty_find _goatty_ok
-builtin unset _goatty_user_zdotdir _goatty_src _goatty_prompt
+builtin unset _goatty_user_zdotdir _goatty_src _goatty_prompt GOATTY_GUI_SETUP

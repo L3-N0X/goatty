@@ -14,7 +14,7 @@ paths:
   - The enums are append-only. Add new variants at the end, never change existing ones, bump `PROTOCOL_VERSION` and mark the variant `vN:`.
   - Neither side sends a message newer than the agreed version.
   - Raise `MIN_PROTOCOL_VERSION` only for a change that can't be appended.
-  - Plugin operations go through `goatty_plugin::api` JSON and need no version bump.
+  - Plugin operations go through `goatty_plugin::api` JSON, shell setup and diagnostics through `goatty_shell::setup` JSON (`Shell`, v9). New operations there need no version bump.
 - Encode a broadcast frame once and share it as `Arc<[u8]>`.
 - Don't use `std::io::copy` between pipes and Unix sockets. On Linux it uses `splice()`, which stalled the proxy. Use plain read/write loops, and write binary data to stdout through the raw fd.
 - Remote hosts:

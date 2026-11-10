@@ -210,6 +210,15 @@ pub fn builtins() -> Vec<Command> {
         page("settings.profile", "Profile: export and import", Page::Profile, &["backup", "sync"]),
         page("settings.hosts", "Hosts: add hosts, plain SSH", Page::Hosts, &["ssh", "remote", "servers", "connect"]),
         page("settings.about", "About goatty", Page::About, &["version", "info", "bug report", "license"]),
+        page("shell.diagnostics", "Shell diagnostics", Page::Diagnostics, &["doctor", "status", "startup", "slow", "missing", "tools"]),
+        Command::handler("app.welcome", "goatty", "Welcome and setup", |_, cx| crate::welcome::open(cx)).keywords(&[
+            "first run",
+            "onboarding",
+            "install tools",
+            "starship",
+            "atuin",
+            "getting started",
+        ]),
         Command::handler("settings.open_file", "Settings", "Open settings.json in an editor", |_, cx| {
             let Some(path) = goatty_config::client_file() else {
                 toast::show(cx, Toast::error("Can't find settings.json").body("Neither $XDG_CONFIG_HOME nor $HOME is set."));

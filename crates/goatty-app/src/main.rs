@@ -17,9 +17,11 @@ mod paste_confirm;
 mod session;
 mod settings;
 mod settings_window;
+mod shell_setup;
 mod terminal;
 mod toast;
 mod ui;
+mod welcome;
 mod workspace;
 
 use anyhow::Result;

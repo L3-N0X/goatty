@@ -17,6 +17,7 @@
 //! * [`install`]: user-space installs of packages (no sudo),
 //! * [`doctor`]: asks a real managed shell what it loaded,
 //! * [`service`]: host settings operations (goattyd's API, `goatty --local`),
+//! * [`setup`]: diagnostics and installing the built-in tools, for the GUI,
 //! * [`cmd`]: the `goattyd shell ...` commands.
 //!
 //! goatty never writes outside its own directories ([`dirs`]): no edits to
@@ -33,6 +34,7 @@ pub mod launch;
 pub mod packages;
 pub mod plugins;
 pub mod service;
+pub mod setup;
 pub mod zsh;
 
 pub use dirs::Dirs;

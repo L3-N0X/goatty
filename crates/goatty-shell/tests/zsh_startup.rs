@@ -346,6 +346,28 @@ fn dismissed_hint_stays_quiet() {
     assert!(!out.contains("goatty-setup"), "{out:?}");
 }
 
+#[test]
+fn hint_stays_quiet_in_sessions_of_a_window_that_offers_the_setup() {
+    let Some(zsh) = zsh() else { return };
+    let sb = Sandbox::new(zsh);
+    let mut launch = sb.launch(ZshSettings::default(), None);
+    goatty_shell::setup::gui_offers_setup(&mut launch);
+    let out = pty_session(&sb, &launch, &["echo gui=${GOATTY_GUI_SETUP-unset}"]);
+    assert!(!out.contains("goatty-setup"), "{out:?}");
+    assert!(out.contains("gui=unset"), "programs don't inherit the marker: {out:?}");
+}
+
+#[test]
+fn hint_stays_quiet_once_the_gui_offered_the_install() {
+    let Some(zsh) = zsh() else { return };
+    let sb = Sandbox::new(zsh);
+    std::fs::create_dir_all(&sb.dirs.state).unwrap();
+    std::fs::write(sb.dirs.offer_marker(), "").unwrap();
+    let launch = sb.launch(ZshSettings::default(), None);
+    let out = pty_session(&sb, &launch, &[]);
+    assert!(!out.contains("goatty-setup"), "{out:?}");
+}
+
 /// An interactive managed shell in a PTY, driven prompt by prompt.
 struct PtyShell {
     pty: Pty,

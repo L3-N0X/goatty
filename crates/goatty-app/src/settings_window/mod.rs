@@ -10,9 +10,10 @@ mod about;
 mod aliases;
 mod appearance;
 mod chrome;
+mod diagnostics;
 mod host;
 mod hosts;
-mod kit;
+pub(crate) mod kit;
 mod plugins;
 mod profile;
 mod search;
@@ -28,6 +29,7 @@ use gpui::{
     WindowBounds, WindowHandle, WindowOptions, actions, px, size,
 };
 
+pub use diagnostics::progress_card;
 pub use host::{GenRow, HostLink, HostLinkGlobal};
 
 use crate::settings::AppSettings;
@@ -85,7 +87,7 @@ pub fn open_at(cx: &mut App, page: Option<Page>) {
             cx.new(|cx| {
                 let mut w = SettingsWindow::new(window, cx);
                 if let Some(p) = page {
-                    w.page = p;
+                    w.go(p, cx);
                 }
                 w
             })
@@ -109,6 +111,7 @@ pub enum Page {
     History,
     Aliases,
     Plugins,
+    Diagnostics,
     Profile,
     About,
 }
@@ -116,7 +119,7 @@ pub enum Page {
 impl Page {
     /// Sidebar order: this computer's pages, the host's shell pages, then
     /// the files and About.
-    pub const ALL: [Page; 12] = [
+    pub const ALL: [Page; 13] = [
         Page::Appearance,
         Page::Terminal,
         Page::Workspace,
@@ -127,6 +130,7 @@ impl Page {
         Page::History,
         Page::Aliases,
         Page::Plugins,
+        Page::Diagnostics,
         Page::Profile,
         Page::About,
     ];
@@ -143,6 +147,7 @@ impl Page {
             Page::History => "History",
             Page::Aliases => "Aliases",
             Page::Plugins => "Plugins",
+            Page::Diagnostics => "Diagnostics",
             Page::Profile => "Profile",
             Page::About => "About",
         }
@@ -161,6 +166,7 @@ impl Page {
             Page::History => "What the shell remembers",
             Page::Aliases => "Short names for longer commands",
             Page::Plugins => "Tools and extensions for the shell",
+            Page::Diagnostics => "What the shell loads, and how fast it starts",
             Page::Profile => "Settings files, sharing and generations",
             Page::About => "Version, links and credits",
         }
@@ -178,6 +184,7 @@ impl Page {
             Page::History => Icon::History,
             Page::Aliases => Icon::Link2,
             Page::Plugins => Icon::Puzzle,
+            Page::Diagnostics => Icon::Activity,
             Page::Profile => Icon::UserRound,
             Page::About => Icon::Info,
         }
@@ -191,6 +198,7 @@ impl Page {
             "tabs" | "panes" => Some(Page::Workspace),
             "ssh" => Some(Page::Hosts),
             "profiles" | "files" => Some(Page::Profile),
+            "doctor" | "status" | "setup" => Some(Page::Diagnostics),
             _ => None,
         };
         alias.or_else(|| Self::ALL.into_iter().find(|p| p.title().eq_ignore_ascii_case(&name)))
@@ -198,7 +206,7 @@ impl Page {
 
     /// Edits the connected host's settings (staged, then applied).
     pub fn is_host(self) -> bool {
-        matches!(self, Page::Shell | Page::Prompt | Page::History | Page::Aliases | Page::Plugins)
+        matches!(self, Page::Shell | Page::Prompt | Page::History | Page::Aliases | Page::Plugins | Page::Diagnostics)
     }
 }
 
@@ -278,6 +286,7 @@ pub struct SettingsWindow {
     /// (action it was recorded for, message).
     shortcut_note: Option<(&'static str, String)>,
     plugins: plugins::PluginsPage,
+    diag: diagnostics::DiagPage,
     aliases: aliases::AliasesPage,
     hosts: hosts::HostsPage,
     shortcuts: shortcuts::ShortcutsPage,
@@ -386,6 +395,7 @@ impl SettingsWindow {
             recording: None,
             shortcut_note: None,
             plugins: plugins::PluginsPage::default(),
+            diag: diagnostics::DiagPage::default(),
             aliases: aliases::AliasesPage::new(cx),
             hosts: hosts::HostsPage::new(cx),
             shortcuts: shortcuts::ShortcutsPage::new(cx),
@@ -420,8 +430,12 @@ impl SettingsWindow {
         self.outcome = None;
         self.generations.clear();
         self.plugins = plugins::PluginsPage::default();
+        self.diag = diagnostics::DiagPage::default();
         self.load_host(cx);
         self.load_plugins(false, cx);
+        if self.page == Page::Diagnostics {
+            self.load_diagnostics(cx);
+        }
         cx.notify();
     }
 
@@ -439,6 +453,7 @@ impl SettingsWindow {
         match page {
             Page::Plugins | Page::Aliases => self.load_plugins(false, cx),
             Page::Hosts => crate::hosts::refresh(cx),
+            Page::Diagnostics => self.load_diagnostics(cx),
             _ => {}
         }
         cx.notify();

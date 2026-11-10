@@ -12,130 +12,87 @@ use goatty_config::{Effective, HostSettings, store};
 
 use crate::builtins::{self, BUILTINS, Builtin};
 use crate::dirs::Dirs;
-use crate::doctor::{self, State};
+use crate::doctor;
 use crate::generation;
 use crate::launch::Launcher;
 use crate::packages::{self, Location};
 use crate::plugins::{Candidate, Plugins};
+use crate::setup::{self, FeatureState, ToolLocation, size, tilde};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// `~/x` for paths under `$HOME`.
-fn tilde(p: &Path) -> String {
-    match std::env::var_os("HOME").and_then(|h| p.strip_prefix(h).ok().map(Path::to_path_buf)) {
-        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
-        Some(rest) => format!("~/{}", rest.display()),
-        None => p.display().to_string(),
-    }
-}
-
-fn size(bytes: u64) -> String {
-    if bytes < 1_000_000 { format!("{} kB", bytes.div_ceil(1000)) } else { format!("{:.1} MB", bytes as f64 / 1e6) }
-}
 
 fn dirs_of(launcher: &Launcher) -> Result<&Dirs> {
     launcher.dirs().context("$HOME is not set, so goatty has nowhere to keep its shell environment")
 }
 
-/// `goattyd shell status`: configuration, what a real shell loads, startup time.
-pub fn status(host: &Effective<HostSettings>, launcher: &Launcher) -> Result<()> {
-    let dirs = dirs_of(launcher)?;
-    let shell = &host.value.shell;
-    let launch = launcher.launch(host);
+/// `goattyd shell status`: configuration, what a real shell loads, startup
+/// time. The same [`setup::Status`] the GUI's Diagnostics page shows.
+pub fn status(svc: &crate::HostService) -> Result<()> {
+    let s = setup::status(svc)?;
     println!("goatty shell");
-    println!("  program     {}", launch.program);
-    if !launch.managed {
-        if !shell.managed {
-            println!("  config      your own dotfiles only (managed zsh is off: GOATTY_SHELL_MANAGED=0)");
-        } else if crate::launch::is_zsh(&launch.program) {
-            println!("  config      your own dotfiles only (couldn't write the managed config; see goattyd's log)");
-        } else {
-            println!("  config      started as is: goatty's managed configuration is zsh-only for now");
-        }
+    println!("  program     {}", s.program);
+    if let Some(why) = &s.unmanaged {
+        println!("  config      {why}");
         return Ok(());
     }
-    let z = &shell.zsh;
-    match generation::current(dirs) {
-        Some(n) => println!("  config      {} (generation {n}; `goattyd shell generations`)", tilde(&dirs.zsh_dir())),
-        None => println!("  config      {} (not built)", tilde(&dirs.zsh_dir())),
+    match s.generation {
+        Some(n) => println!("  config      {} (generation {n}; `goattyd shell generations`)", s.config_dir),
+        None => println!("  config      {} (not built)", s.config_dir),
     }
-    for issue in &host.file.issues {
+    for issue in &s.settings_issues {
         println!("  settings    \u{26a0} {issue}");
     }
-    if !host.env_overrides.is_empty() {
-        println!("  overridden  by {}", host.env_overrides.join(", "));
+    if !s.env_overrides.is_empty() {
+        println!("  overridden  by {}", s.env_overrides.join(", "));
     }
-    let home_or = |name: &str| format!("{}/{name}", std::env::var("ZDOTDIR").map(|d| tilde(Path::new(&d))).unwrap_or_else(|_| "~".into()));
-    println!("  your files  {}: {}", [".zshenv", ".zprofile"].map(home_or).join(", "), if z.user_env { "sourced" } else { "not sourced" });
-    println!(
-        "              {}: {}",
-        home_or(".zshrc"),
-        if z.user_rc { "sourced" } else { "not sourced (GOATTY_ZSH_USER_RC=1 to include it)" }
-    );
-    let additions = dirs.user_zshrc();
-    println!("  additions   {}{}", tilde(&additions), if additions.exists() { "" } else { " (create it for your own aliases etc.)" });
+    for (i, f) in s.user_files.iter().enumerate() {
+        let what = match (f.exists, f.sourced, f.path.ends_with(".zshrc")) {
+            (false, ..) => "not there",
+            (true, true, _) => "sourced",
+            (true, false, true) => "not sourced (GOATTY_ZSH_USER_RC=1 to include it)",
+            (true, false, false) => "not sourced",
+        };
+        println!("  {:<10}  {}: {what}", if i == 0 { "your files" } else { "" }, f.path);
+    }
+    println!("  additions   {}{}", s.additions, if s.additions_exist { "" } else { " (create it for your own aliases etc.)" });
 
-    match doctor::probe(&launch, PROBE_TIMEOUT) {
-        Ok(p) => {
-            println!("  startup     {} ms (login + interactive, measured just now)", p.elapsed.as_millis());
+    match &s.startup {
+        Some(st) => {
+            println!("  startup     {} ms (login + interactive, measured just now)", st.ms);
             println!();
-            for f in &p.features {
+            for f in &st.features {
                 let line = match &f.state {
-                    State::Ok(detail) => format!("\u{2713} {}", describe_ok(&f.name, detail, dirs)),
-                    State::Off => "- off".into(),
-                    State::Missing => match builtins::get(&f.name) {
-                        Some(b) => format!("\u{2717} not installed: goattyd shell install {} ({})", b.id, pinned(b)),
+                    FeatureState::Loaded { managed: Some(v), .. } => format!("\u{2713} managed {} {v}", f.name),
+                    FeatureState::Loaded { detail, .. } => format!("\u{2713} {detail}"),
+                    FeatureState::Off => "- off".into(),
+                    FeatureState::Missing => match s.tool(&f.id) {
+                        Some(t) => format!("\u{2717} not installed: goattyd shell install {} ({} {})", t.id, t.name, t.version),
                         None => "\u{2717} its command isn't installed (see `goattyd plugin info`)".into(),
                     },
                 };
-                println!("  {:<20} {line}", f.name);
+                println!("  {:<20} {line}", f.id);
             }
-            let stderr = p.stderr.trim();
-            if !stderr.is_empty() {
-                println!("\nThe shell printed errors while starting:\n{stderr}");
+            if !st.stderr.is_empty() {
+                println!("\nThe shell printed errors while starting:\n{}", st.stderr);
             }
-            if p.missing().any(|m| builtins::get(m).is_some_and(|b| b.default_install)) {
+            if s.offer().next().is_some() {
                 println!("\nInstall what's missing with `goattyd shell install` (or `goatty-setup` in a goatty shell).");
             }
         }
-        Err(e) => {
-            println!("  startup     failed: {e:#}");
+        None => {
+            println!("  startup     failed: {}", s.startup_error.as_deref().unwrap_or("unknown error"));
             println!("\n  as seen from goattyd's PATH:");
-            let path = std::env::var("PATH").ok();
-            for b in BUILTINS {
-                for p in &b.manifest().packages {
-                    let line = match packages::locate(dirs, p, path.as_deref()) {
-                        Location::System(found) => format!("\u{2713} {}", tilde(&found)),
-                        Location::Managed { version, .. } => format!("\u{2713} managed {version}"),
-                        Location::Missing => "\u{2717} not found".into(),
-                    };
-                    println!("  {:<20} {line}", b.id);
-                }
+            for t in &s.tools {
+                let line = match &t.location {
+                    ToolLocation::System { path } => format!("\u{2713} {path}"),
+                    ToolLocation::Managed { version } => format!("\u{2713} managed {version}"),
+                    ToolLocation::Missing => "\u{2717} not found".into(),
+                };
+                println!("  {:<20} {line}", t.id);
             }
         }
     }
     Ok(())
-}
-
-/// `Starship 1.27.0`: what a built-in plugin's packages pin.
-fn pinned(b: &Builtin) -> String {
-    let m = b.manifest();
-    m.packages.iter().map(|p| format!("{} {}", m.name, p.version)).collect::<Vec<_>>().join(", ")
-}
-
-fn describe_ok(feature: &str, detail: &str, dirs: &Dirs) -> String {
-    let path = Path::new(detail);
-    if feature == "integration" {
-        return "OSC 133 prompt marks, OSC 7 working directory".into();
-    }
-    let managed = path.starts_with(dirs.bin_dir()) || path.starts_with(dirs.plugins_dir());
-    let version = builtins::get(feature)
-        .filter(|_| managed)
-        .and_then(|b| b.manifest().packages.iter().find_map(|p| packages::managed(dirs, p)).map(|(v, _)| (b, v)));
-    match version {
-        Some((b, v)) => format!("managed {} {v}", b.manifest().name),
-        None => tilde(path),
-    }
 }
 
 /// Built-in plugins that are on, installed by default, and that the

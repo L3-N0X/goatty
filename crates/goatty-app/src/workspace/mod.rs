@@ -225,6 +225,7 @@ impl Workspace {
         match initial {
             Initial::Ready { startup, spawner } => {
                 this.home = Some(spawner.clone());
+                crate::shell_setup::offer(spawner.host_link(), cx);
                 match startup {
                     Startup::Session(session) => this.insert_pane(session, Placement::NewTab, spawner, window, cx),
                     Startup::Restore(r) => {
@@ -512,6 +513,8 @@ impl Workspace {
         if self.home.is_none() {
             self.home = Some(spawner.clone());
         }
+        // Missing shell tools there: offer them (once per host and run).
+        crate::shell_setup::offer(spawner.host_link(), cx);
         let was_active = index == self.active;
         let show = match startup {
             Startup::Session(session) => {

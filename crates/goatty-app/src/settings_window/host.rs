@@ -3,9 +3,10 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use goatty_client::Connection;
 use goatty_shell::HostService;
+use goatty_shell::setup;
 use gpui::Global;
 
 #[derive(Clone)]
@@ -134,6 +135,23 @@ impl HostLink {
         match self {
             HostLink::Daemon(c) => Ok(serde_json::from_str(&c.plugin(serde_json::to_string(&req)?)?)?),
             HostLink::Local(s) => s.plugin_request(req),
+        }
+    }
+
+    /// A shell setup or diagnostics operation on the host (the status
+    /// starts a shell, installs download: can take a while).
+    pub fn shell(&self, req: setup::Request) -> Result<setup::Reply> {
+        match self {
+            HostLink::Daemon(c) => Ok(serde_json::from_str(&c.shell(serde_json::to_string(&req)?)?)?),
+            HostLink::Local(s) => s.shell_request(req),
+        }
+    }
+
+    /// The host's shell diagnostics (starts a shell to ask it).
+    pub fn shell_status(&self) -> Result<setup::Status> {
+        match self.shell(setup::Request::Status)? {
+            setup::Reply::Status(s) => Ok(*s),
+            other => bail!("unexpected reply from the host: {other:?}"),
         }
     }
 
