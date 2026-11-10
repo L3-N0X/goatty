@@ -104,7 +104,7 @@ ssh's stderr is captured (logged, last 40 lines kept): a failed connect shows ss
 **Tailscale:** works out of the box with `--ssh <magicdns-name>`, using normal OpenSSH over the tailnet or Tailscale SSH. No goatty-specific network port is needed.
 
 ### Any stdio command (implemented: `goatty --via '<cmd>'`)
-E.g. `--via 'docker exec -i devbox goattyd proxy'`. The tests use this with the local `goattyd proxy` to exercise the full remote path, including reconnect, without ssh.
+E.g. `--via 'docker exec -i devbox goattyd proxy'`. The command line runs under `sh -c`, so shell quoting works for arguments with spaces. The tests use this with the local `goattyd proxy` to exercise the full remote path, including reconnect, without ssh.
 
 ### Socket watchdog (implemented)
 If another listener has taken over the path (a second daemon, or a systemd socket installed meanwhile), the watchdog leaves it alone and says so once.
