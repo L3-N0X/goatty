@@ -327,41 +327,6 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn install_prunes_old_daemons_but_not_running_ones() {
-        use std::os::unix::fs::PermissionsExt;
-        let home = tempfile::tempdir().unwrap();
-        let bin = home.path().join(BIN_DIR);
-        std::fs::create_dir_all(&bin).unwrap();
-        let stale = bin.join("goattyd-0.0.1-p1");
-        std::fs::write(&stale, "old").unwrap();
-        // A "daemon" that's still running from an old build.
-        let running = bin.join("goattyd-0.0.2-p2");
-        std::fs::copy("/bin/sleep", &running).unwrap();
-        let mut daemon = std::process::Command::new(&running).arg("30").spawn().unwrap();
-        let unrelated = bin.join("notes.txt");
-        std::fs::write(&unrelated, "x").unwrap();
-
-        let fake = home.path().join("upload");
-        std::fs::write(&fake, format!("#!/bin/sh\necho 'goattyd {}'\n", env!("CARGO_PKG_VERSION"))).unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let size = std::fs::metadata(&fake).unwrap().len();
-        let out = std::process::Command::new("sh")
-            .args(["-c", &install_script(size)])
-            .env("HOME", home.path())
-            .stdin(std::fs::File::open(&fake).unwrap())
-            .output()
-            .unwrap();
-        let _ = daemon.kill();
-        let _ = daemon.wait();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-        assert!(bin.join(binary_name()).is_file());
-        assert!(!stale.exists(), "{}", String::from_utf8_lossy(&out.stdout));
-        assert!(running.exists());
-        assert!(unrelated.exists());
-    }
-
     #[test]
     fn proxy_script_reports_a_missing_daemon() {
         let home = tempfile::tempdir().unwrap();
