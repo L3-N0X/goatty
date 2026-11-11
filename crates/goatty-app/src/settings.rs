@@ -268,6 +268,11 @@ impl AppSettings {
         if after == s.announced {
             return;
         }
+        // The edit that cleared the last problem didn't reach the disk: hold
+        // the all-clear back until a save works.
+        if after.is_empty() && s.save_error.is_some() {
+            return;
+        }
         let before = std::mem::replace(&mut cx.global_mut::<Self>().announced, after.clone());
         Self::announce(cx, &before, after);
     }
