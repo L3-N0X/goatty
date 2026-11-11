@@ -226,10 +226,14 @@ enum ShellCmd {
     },
     /// Stop new shells from mentioning missing tools.
     Dismiss,
-    /// List the built shell configurations (generations).
+    /// List the built shell configurations (generations) and what each changed.
     Generations,
-    /// Show how the current settings would change the generated files.
-    Diff,
+    /// Name a generation, so it's easy to find again: `goattyd shell name 7 before trying fish`.
+    /// Without a name: remove it.
+    Name { generation: u32, name: Vec<String> },
+    /// Show how the current settings would change the generated files; with a
+    /// generation, what that one changed.
+    Diff { generation: Option<u32> },
     /// Activate an older generation (default: the previous one) and restore
     /// the settings it was built from.
     Rollback { generation: Option<u32> },
@@ -340,7 +344,8 @@ fn main() -> Result<()> {
                 ShellCmd::Status => cmd::status(&goatty_shell::HostService::from_env(std::env::current_exe().ok())),
                 ShellCmd::Install { tools, yes } => cmd::install(&host, &launcher, &tools, yes),
                 ShellCmd::Generations => cmd::generations(&launcher),
-                ShellCmd::Diff => cmd::diff(&host, &launcher),
+                ShellCmd::Name { generation, name } => cmd::name(&launcher, generation, &name),
+                ShellCmd::Diff { generation } => cmd::diff(&host, &launcher, generation),
                 ShellCmd::Rollback { generation } => cmd::rollback(&launcher, &host_file()?, generation),
                 ShellCmd::Uninstall { tools, all } => cmd::uninstall(&launcher, &tools, all),
                 ShellCmd::Dismiss => cmd::dismiss(&launcher),

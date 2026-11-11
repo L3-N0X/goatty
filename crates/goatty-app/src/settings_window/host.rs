@@ -6,7 +6,7 @@ use std::sync::Arc;
 use anyhow::{Result, bail};
 use goatty_client::Connection;
 use goatty_shell::HostService;
-use goatty_shell::setup;
+use goatty_shell::{history, setup};
 use gpui::Global;
 
 #[derive(Clone)]
@@ -34,11 +34,13 @@ pub struct Applied {
     pub generation: Option<u32>,
 }
 
+/// A generation as the Profile page lists it.
 #[derive(Debug, Clone)]
 pub struct GenRow {
-    pub number: u32,
-    pub created_unix: u64,
-    pub active: bool,
+    pub entry: history::Entry,
+    /// The host can name generations and show their file changes (a
+    /// goattyd from before #55 only lists them).
+    pub rich: bool,
 }
 
 impl HostLink {
@@ -106,15 +108,36 @@ impl HostLink {
         })
     }
 
+    /// The generations with names and what each changed; only numbers and
+    /// ages from an older goattyd.
     pub fn generations(&self) -> Result<Vec<GenRow>> {
-        Ok(match self {
-            HostLink::Daemon(c) => {
-                c.generations()?.into_iter().map(|g| GenRow { number: g.number, created_unix: g.created_unix, active: g.active }).collect()
-            }
-            HostLink::Local(s) => {
-                s.generations().into_iter().map(|g| GenRow { number: g.number, created_unix: g.created_unix, active: g.active }).collect()
-            }
-        })
+        if let Ok(setup::Reply::Generations { list }) = self.shell(setup::Request::Generations) {
+            return Ok(list.into_iter().map(|entry| GenRow { entry, rich: true }).collect());
+        }
+        let HostLink::Daemon(c) = self else { bail!("no generations") };
+        Ok(c.generations()?
+            .into_iter()
+            .map(|g| GenRow {
+                entry: history::Entry { number: g.number, created_unix: g.created_unix, active: g.active, name: None, changes: None },
+                rich: false,
+            })
+            .collect())
+    }
+
+    /// Name generation `number` (`None`: remove the name).
+    pub fn name_generation(&self, number: u32, name: Option<String>) -> Result<()> {
+        match self.shell(setup::Request::NameGeneration { number, name })? {
+            setup::Reply::Done => Ok(()),
+            other => bail!("unexpected reply from the host: {other:?}"),
+        }
+    }
+
+    /// The generated files generation `number` changed: (file name, unified diff).
+    pub fn generation_diff(&self, number: u32) -> Result<Vec<(String, String)>> {
+        match self.shell(setup::Request::GenerationDiff { number })? {
+            setup::Reply::Diff { files } => Ok(files.into_iter().map(|d| (d.name, d.unified)).collect()),
+            other => bail!("unexpected reply from the host: {other:?}"),
+        }
     }
 
     pub fn rollback(&self, to: Option<u32>) -> Result<Snapshot> {

@@ -10,6 +10,7 @@
 //! * [`launch`]: which shell a session runs, and its environment,
 //! * [`zsh`]: the startup files, rendered from the host settings,
 //! * [`generation`]: build, validate, activate and roll back configurations,
+//! * [`history`]: what each generation changed, names for them,
 //! * [`builtins`]: the plugins that come with goatty (autosuggestions,
 //!   syntax highlighting, Starship, Atuin, fzf),
 //! * [`plugins`]: registries, install plans, installs, what goes into the shell,
@@ -29,6 +30,7 @@ pub mod cmd;
 pub mod dirs;
 pub mod doctor;
 pub mod generation;
+pub mod history;
 pub mod install;
 pub mod launch;
 pub mod packages;

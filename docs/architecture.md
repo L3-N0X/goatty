@@ -55,10 +55,11 @@ Threads per session: `s{id}-reader` (PTY → terminal → subscribers) and `s{id
 | `packages`| where a plugin's package is: system copy, goatty's managed copy, or missing |
 | `install` | download (curl/wget), verify, unpack, activate `bin/` and `plugins/` symlinks, uninstall packages |
 | `doctor`  | start a real managed shell and parse `goatty-status`                    |
-| `generation` | build → validate (`zsh -n`) → activate generations; list, rollback, diff |
-| `setup`   | shell setup and diagnostics as JSON (`Request`/`Reply`, protocol v9 `Shell`): `Status` (configuration, a real startup, the built-in tools), install built-in tools, the offered/dismissed markers; `goattyd shell status` prints the same `Status` |
+| `generation` | build → validate (`zsh -n`) → activate generations; list, rollback, diff; `info.json` |
+| `history` | what each generation changed against its base (settings, plugins, files), one-line summaries, names, file diffs |
+| `setup`   | shell setup and diagnostics as JSON (`Request`/`Reply`, protocol v9 `Shell`): `Status` (configuration, a real startup, the built-in tools), install built-in tools, the offered/dismissed markers, the generation history (list with changes, name, file diff); `goattyd shell status` prints the same `Status` |
 | `service` | `HostService`: host settings get/set(preview, apply)/generations/rollback, for the daemon API and `goatty --local` |
-| `cmd`     | `goattyd shell status|install|uninstall|dismiss|generations|diff|rollback` |
+| `cmd`     | `goattyd shell status|install|uninstall|dismiss|generations|name|diff|rollback` |
 | `plugins` | plugins on this host: `registry` (trusted sources, fetch → verify → snapshot), `lock` (installed files + approvals), `Plugins` (find, plan, install, uninstall, catalog; built-in ones included), `active` + `load_order` (what a generation renders, in slot order), `cmd` (`goattyd plugin …`) |
 | `dirs`    | XDG locations under `goatty/`                                           |
 
@@ -91,7 +92,7 @@ settings_window/
   plugins.rs   the Plugins page: installed list, each plugin's own page (schema-driven settings by group), browse, install review
   diagnostics.rs  the Diagnostics page: the host's `setup::Status` (features and their source, startup time, startup errors, your files), install missing tools, copy report
   hosts.rs     the Hosts page: open hosts in a tab or window, add/remove hosts, plain SSH per host, `~/.ssh/config` discovery
-  profile.rs   files (copy path, open folder), problems, export/import, generations, reset
+  profile.rs   files (copy path, open folder), problems, export/import, generations (summary, details: every change, file diff, name), reset
   about.rs     version, connection, links, "copy for a bug report"
 toast/
   mod.rs       Toast (level, title, body, buttons, key, lifetime) and the API: show/show_in/update/dismiss/dismiss_all, routed to a window's layer

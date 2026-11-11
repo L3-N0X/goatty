@@ -1,15 +1,18 @@
 //! The Profile page: where the settings live (copy the path, open the
 //! folder), problems reading them, export/import, shell configuration
-//! generations, and resetting.
+//! generations (what each changed, names, file diffs), and resetting.
 
 use std::time::{Duration, Instant};
 
 use goatty_config::{ClientSettings, ThemeSettings};
-use gpui::{AnyElement, ClipboardItem, Context, FontWeight, IntoElement, ParentElement, SharedString, Styled, div, px};
+use goatty_shell::history::{Entry, NAME_MAX};
+use gpui::{AnyElement, ClipboardItem, Context, FontWeight, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px};
 
 use super::SettingsWindow;
+use super::host::GenRow;
 use super::kit::{self, card, row, section};
 use crate::settings::AppSettings;
+use crate::toast::{self, Toast};
 use crate::ui::controls::{ButtonKind, Tone, badge, button, button_with, icon_button};
 use crate::ui::icons::Icon;
 use crate::ui::style::{Ui, text};
@@ -18,6 +21,8 @@ use crate::ui::style::{Ui, text};
 const COPIED: Duration = Duration::from_millis(1500);
 /// Generations shown before "Show all".
 const RECENT_GENERATIONS: usize = 5;
+/// Changes listed in an open generation before "and N more".
+const CHANGE_LINES: usize = 12;
 
 /// `/home/me/.config/x` → `~/.config/x`, for showing (copying keeps the full path).
 fn tilde(path: &str) -> String {
@@ -38,7 +43,150 @@ pub(super) fn ago(created_unix: u64) -> String {
     }
 }
 
+/// "2 h ago · history.size 100000 → 5000", with the number first when
+/// the generation has a name.
+fn gen_desc(e: &Entry) -> String {
+    let mut parts = Vec::new();
+    if e.name.is_some() {
+        parts.push(format!("Generation {}", e.number));
+    }
+    parts.push(ago(e.created_unix));
+    parts.extend(Some(e.summary()).filter(|s| !s.is_empty()));
+    parts.join(" · ")
+}
+
 impl SettingsWindow {
+    /// Open or close a generation's details.
+    fn toggle_generation(&mut self, number: u32, cx: &mut Context<'_, Self>) {
+        if self.gen_open == Some(number) {
+            self.gen_open = None;
+        } else {
+            self.gen_open = Some(number);
+            let name = self.generations.iter().find(|g| g.entry.number == number).and_then(|g| g.entry.name.clone());
+            self.gen_name.update(cx, |input, cx| input.set_text(name.unwrap_or_default(), cx));
+        }
+        self.gen_diff = None;
+        cx.notify();
+    }
+
+    /// Save the open generation's name (blank removes it), then list again.
+    pub(super) fn save_generation_name(&mut self, cx: &mut Context<'_, Self>) {
+        let (Some(link), Some(number)) = (self.link.clone(), self.gen_open) else { return };
+        let name = self.gen_name.read(cx).text().trim().to_string();
+        let name = (!name.is_empty()).then_some(name);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { link.name_generation(number, name.clone()).and_then(|()| Ok((name, link.generations()?))) })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                match result {
+                    Ok((name, gens)) => {
+                        view.generations = gens;
+                        let title = match name {
+                            Some(n) => format!("Generation {number} is \u{201c}{n}\u{201d}"),
+                            None => format!("Generation {number} has no name now"),
+                        };
+                        toast::show(cx, Toast::success(title).key("generation-name"));
+                    }
+                    Err(e) => {
+                        toast::show(cx, Toast::error("Couldn't name the generation").body(format!("{e:#}")).key("generation-name"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Show or hide the generated-file changes of generation `number`.
+    fn toggle_generation_diff(&mut self, number: u32, cx: &mut Context<'_, Self>) {
+        if self.gen_diff.as_ref().is_some_and(|(n, _)| *n == number) {
+            self.gen_diff = None;
+            cx.notify();
+            return;
+        }
+        let Some(link) = self.link.clone() else { return };
+        self.gen_diff = Some((number, None));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { link.generation_diff(number) }).await;
+            let _ = this.update(cx, |view, cx| {
+                if view.gen_diff.as_ref().is_some_and(|(n, _)| *n == number) {
+                    view.gen_diff = Some((number, Some(result.map_err(|e| format!("{e:#}")))));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Under an open generation: every change, its name, its file changes.
+    fn generation_details(&self, ui: Ui, g: &GenRow, cx: &Context<'_, Self>) -> AnyElement {
+        let n = g.entry.number;
+        let line = |t: String| div().text_size(px(text::SMALL)).text_color(ui.text).child(SharedString::from(t));
+        let mut changes = div().flex().flex_col().gap(px(4.));
+        match &g.entry.changes {
+            Some(c) if c.base.is_none() => changes = changes.child(line("The first configuration built on this host".into())),
+            Some(c) => {
+                let lines = c.lines();
+                let total = lines.len();
+                changes = changes.children(lines.into_iter().take(CHANGE_LINES).map(|l| line(format!("• {l}"))));
+                if total > CHANGE_LINES {
+                    changes = changes.child(line(format!("and {} more", total - CHANGE_LINES)));
+                }
+                if total == 0 && c.files == 0 {
+                    changes = changes.child(line("No setting and no generated file changed".into()));
+                }
+            }
+            None => changes = changes.child(line("Nothing to compare: the generation before it is gone".into())),
+        }
+        let files = g.entry.changes.as_ref().map_or(0, |c| c.files);
+        let diff_open = self.gen_diff.as_ref().filter(|(d, _)| *d == n);
+        let diff_button = (files > 0 || g.entry.changes.as_ref().is_some_and(|c| c.base.is_none())).then(|| {
+            let label = match diff_open {
+                Some(_) => "Hide file changes".to_string(),
+                None if files > 0 => format!("Show file changes ({files})"),
+                None => "Show files".to_string(),
+            };
+            button_with(
+                ("gen-diff", n as usize),
+                Some(Icon::FileText),
+                label,
+                ButtonKind::Ghost,
+                ui,
+                self.act(cx, move |v, cx| v.toggle_generation_diff(n, cx)),
+            )
+        });
+        let diff = diff_open.map(|(_, result)| match result {
+            None => kit::hint(ui, "Loading…").into_any_element(),
+            Some(Ok(d)) if d.is_empty() => kit::hint(ui, "No generated file changed").into_any_element(),
+            Some(Ok(d)) => self.diff_view(ui, cx, d).into_any_element(),
+            Some(Err(e)) => kit::hint(ui, e.clone()).into_any_element(),
+        });
+        let name = kit::field(
+            ui,
+            &format!("Name (up to {NAME_MAX} characters)"),
+            div().flex().items_center().gap(px(8.)).child(div().flex_1().min_w_0().child(self.gen_name.clone())).child(button(
+                ("gen-name", n as usize),
+                "Save",
+                ButtonKind::Normal,
+                ui,
+                self.act(cx, |v, cx| v.save_generation_name(cx)),
+            )),
+        );
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .pl(px(50.))
+            .child(changes)
+            .children(diff_button.map(|b| div().flex().child(b)))
+            .children(diff)
+            .child(name)
+            .into_any_element()
+    }
+
     fn copy_path(&mut self, path: String, cx: &mut Context<'_, Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(path.clone()));
         self.copied = Some((path.into(), Instant::now()));
@@ -202,21 +350,36 @@ impl SettingsWindow {
             ));
         }
         for g in shown {
-            let n = g.number;
-            let control = if g.active {
+            let n = g.entry.number;
+            let control = if g.entry.active {
                 badge("Active", Tone::Success, ui).into_any_element()
             } else {
-                button_with(
-                    ("rollback", n as usize),
-                    Some(Icon::RotateCcw),
-                    "Roll back",
-                    ButtonKind::Ghost,
-                    ui,
-                    self.act(cx, move |v, cx| v.rollback(n, cx)),
-                )
-                .into_any_element()
+                // The row opens on click; the button mustn't toggle it too.
+                div()
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(button_with(
+                        ("rollback", n as usize),
+                        Some(Icon::RotateCcw),
+                        "Roll back",
+                        ButtonKind::Ghost,
+                        ui,
+                        self.act(cx, move |v, cx| v.rollback(n, cx)),
+                    ))
+                    .into_any_element()
             };
-            gens = gens.child(row(ui, format!("Generation {n}")).icon(Icon::GitCommit).desc(ago(g.created_unix)).control(control));
+            let mut r = row(ui, g.entry.title()).icon(Icon::GitCommit).desc(gen_desc(&g.entry)).control(control);
+            if g.rich {
+                r = r.on_click(("gen-open", n as usize), cx.listener(move |v, _, _, cx| v.toggle_generation(n, cx)));
+            }
+            if g.rich && self.gen_open == Some(n) {
+                // Clicks in the details (the name field) don't close them.
+                r = r.below(
+                    div()
+                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(self.generation_details(ui, g, cx)),
+                );
+            }
+            gens = gens.child(r);
         }
         if total > RECENT_GENERATIONS {
             gens = gens.child(row(ui, if self.gens_expanded { "Show fewer".to_string() } else { format!("Show all {total}") }).on_click(

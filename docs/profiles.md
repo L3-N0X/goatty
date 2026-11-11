@@ -42,6 +42,12 @@ Host settings compile into shell configuration (plan §6). `goatty_shell::genera
 
 Sessions get `ZDOTDIR=~/.local/share/goatty/current/zsh`. Paths written into the config go through `current`, so the files don't depend on the generation number. Builders lock `generations/.lock` (`File::lock`), so goattyd, `goatty --local` and the CLI can't race.
 
+**What each generation changed** (#55, `goatty_shell::history`): `info.json` records the generation that was active when it was built (its *base*; after a rollback that isn't `n-1`), what changed against it and an optional name. The changes are the settings that differ between the two `host.json` snapshots, compared with every default filled in (so `history.size 100000 → 5000` shows whether or not either file spelled the value out; unknown keys don't count), plugins whose files came or went, how many generated files differ, and the goatty version when another one built the base. They're computed at build time, so they survive the base being pruned. Generations from before #55 get theirs computed on the fly against `n-1` while it's kept.
+
+The one-line summary stays short on purpose: one or two short changes are listed (`history.size 100000 → 5000`, `starship off`), anything more is counted with where it happened (`5 changes: history, aliases, eza`). `From 3: …` marks a generation built after rolling back to 3. Nothing changed but files: `2 generated files changed`. The full list and the generated-file diff against the base are one click away.
+
+**Names** (`generations/<n>/info.json` `name`, at most 60 characters) make rollback targets recognizable ("before trying fish"). Naming rewrites `info.json` atomically under the build lock and touches nothing else; a rolled-back-to generation keeps its name.
+
 **Rollback** switches `current` to an older generation *and* restores its `host.json` snapshot as the settings file (backing up the current one). Without restoring the settings, the next session would rebuild from the newer settings and undo the rollback.
 
 **Apply order** (`HostService::set`): parse leniently → compute the diff against the active generation → build + validate + activate → save `host.json`. A configuration that doesn't validate is rejected before the file is touched.
@@ -56,6 +62,9 @@ Sessions get `ZDOTDIR=~/.local/share/goatty/current/zsh`. Paths written into the
 | `Rollback { generation }` | `HostSettings` | `None` = the previous one |
 | `SetPalette { session, colors }` | – | 21 `0xRRGGBB`: ANSI 16, fg, bg, cursor, selection fg/bg |
 | `ReloadShells` | `ShellsReloaded { count }` | v4: ask the running managed shells to restart with the active generation |
+| `Shell` `{"op": "generations"}` | `{"kind": "generations", "list": [Entry]}` | v9 JSON (`goatty_shell::setup`): number, age, active, name, changes. The GUI falls back to `ListGenerations` for an older goattyd and then shows numbers and ages only |
+| `Shell` `{"op": "name_generation", number, name}` | `{"kind": "done"}` | `name: null` or blank removes it |
+| `Shell` `{"op": "generation_diff", number}` | `{"kind": "diff", "files": [FileDiff]}` | unified diffs against the generation's base |
 
 Settings travel as JSON documents rather than typed structs, so a schema change doesn't need a protocol bump. The daemon's parser handles versions and unknown keys.
 
@@ -85,7 +94,7 @@ Settings travel as JSON documents rather than typed structs, so a schema change 
 | History | size, duplicates, leading space, sharing, Atuin, Atuin on Up | staged |
 | Aliases | yours first, then each plugin's (folded); filters All / Mine / From plugins; add/edit in a dialog (group completes existing groups) | staged |
 | Plugins | installed and built-in plugins, each with its own page (settings by the manifest's groups, advanced folded; tools; permissions; aliases); browse the registries; install review | staged / installs right away |
-| Profile | problems (show, copy all), file locations (copy, open folder), env overrides, export/import, generations with rollback, reset | – |
+| Profile | problems (show, copy all), file locations (copy, open folder), env overrides, export/import, generations (name, one-line summary; click for every change, the file diff and naming) with rollback, reset | – |
 | About | version, what the window is connected to, links, a summary to copy into bug reports | – |
 
 Host edits collect in a draft. A floating bar at the bottom offers **Discard**, **Preview** (the host computes the diff of the generated files, shown colored) and **Apply** (a new generation, validated first); the sidebar marks the pages with unapplied changes. When an apply or a rollback changed the shell configuration, the bar offers **Reload running shells** (or **Not now**); see below. Calls to the daemon run off the UI thread. With `--local` there is no daemon, and the window uses `goatty_shell::HostService` in-process: same code path, same files.
@@ -141,14 +150,17 @@ goatty settings import FILE|- [--yes]    # host part goes to the local goattyd (
 goatty theme list | import FILE… [--name N] | export ID [FILE] | set ID [--for light|dark] | delete ID
 
 goattyd settings path | show [KEY] [--all] | validate [FILE] | set KEY VALUE | unset KEY
+goattyd shell generations | name N [NAME…] | diff [N] | rollback [N]
 ```
+
+`shell generations` prints one line per generation: `* 8  2h ago  "before trying fish"  history.size 100000 → 5000`. `shell name N` without a name removes it. `shell diff N` prints the generated-file changes of generation N (without N: what the current settings would change).
 
 `set` takes a dotted key and reads the value as JSON when it parses (`5000`, `true`, `null`, `"#ff00ff"`), otherwise as a string (`minimal`, `/bin/zsh`). Unknown keys and invalid values are errors, and nothing is written (`store::set_key`). Entries of open maps (`keybindings.ctrl-k`) are allowed. `goattyd settings set` applies like the settings window's Apply: a validated new generation, then the save. Client changes made with `goatty settings set` reach a running app within half a second, through the file polling. `import` asks for confirmation, and without a terminal it needs `--yes`.
 
 ## Verified
 
 - `goatty-config`: 20 unit tests (lenient parsing per field, unknown keys kept across saves, versions, backups and pruning, themes, keybinding edits, profile round trip without private values).
-- `goatty-shell`: generations (idempotence, numbering, settings-only changes, rollback, pruning, `zsh -n` rejection), `HostService` (preview/apply/rollback), launcher through `current`, and the real-zsh tests from Stage 3.
+- `goatty-shell`: generations (idempotence, numbering, settings-only changes, rollback, pruning, `zsh -n` rejection), `HostService` (preview/apply/rollback), launcher through `current`, and the real-zsh tests from Stage 3. `history` (#55): settings changes with defaults filled in and plugin entries aligned, the one-line summary (list vs count, `From N:`), changes recorded at build time against the base after a rollback, names, file diffs, generations from before #55 compared on the fly and a pruned base; the `Shell` JSON operations.
 - `goatty-daemon/tests/settings.rs`: the protocol against a real goattyd with a sandboxed HOME (get, preview, apply, a bad value, generations, rollback, and `SetPalette` changing the actual OSC 11 answer read back from the PTY).
 - Manually, release build, sandboxed HOME: the window renders every page. Editing `settings.json` from outside switched the terminal and the window to Catppuccin Latte, 17 px, bar cursor within the poll interval, and reported the bad value and the unknown key on the Profile page. `goattyd shell diff/status/generations/rollback` behaved as described.
 - Themes and CLI (#50–#52): `theme_import` tests for every format; `ThemeLibrary` loading, shadowing, unique ids and resolution; dotted-key editing; `goatty-app/tests/cli.rs` and `goatty-daemon/tests/settings_cli.rs` run the real binaries in a sandboxed HOME (set/show/validate/unset, theme import/set/export/delete, profile export → import on a "second machine" including the host generation).
@@ -158,4 +170,4 @@ goattyd settings path | show [KEY] [--all] | validate [FILE] | set KEY VALUE | u
 
 ## Not done yet
 
-Shortcut conflict warnings (#54), per-generation change summaries (#55), proper monospace detection (#57) and keyboard navigation in the settings window (#58).
+Shortcut conflict warnings (#54), proper monospace detection (#57) and keyboard navigation in the settings window (#58).
