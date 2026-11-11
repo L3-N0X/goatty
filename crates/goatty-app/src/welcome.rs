@@ -5,7 +5,7 @@
 //! 1. **Look**: a theme (or follow the desktop's light/dark) and the text size.
 //! 2. **Shell**: goatty's built-in tools on the window's host, preselected
 //!    when missing, installed with progress (no sudo, pinned checksums),
-//!    and the prompt style (icons need a Nerd Font).
+//!    and the prompt style.
 //! 3. **Ready**: the few shortcuts worth knowing, links onward.
 //!
 //! It opens by itself once, on the very first start (no client settings
@@ -555,7 +555,7 @@ impl Welcome {
                 choice(ui, SharedString::from(format!("prompt-{label}")), label, selected, line)
                     .on_click(cx.listener(move |v: &mut Self, _: &gpui::ClickEvent, _, cx| v.set_prompt(s, cx)))
             };
-            let mut sec = settings_section(ui, "Prompt").desc("Pick the one that looks right: the icons need a Nerd Font");
+            let mut sec = settings_section(ui, "Prompt").desc("Rich shows icons, minimal plain characters");
             if let Some(e) = &self.prompt_error {
                 sec = sec.footer(format!("Couldn't change it: {e}"));
             }

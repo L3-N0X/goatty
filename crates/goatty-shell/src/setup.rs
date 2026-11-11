@@ -18,6 +18,7 @@ use crate::builtins::{self, BUILTINS, Builtin};
 use crate::dirs::Dirs;
 use crate::doctor::{self, State};
 use crate::generation;
+use crate::history;
 use crate::packages;
 use crate::plugins::{Candidate, Plugins};
 use crate::service::HostService;
@@ -50,6 +51,12 @@ pub enum Request {
     Offered,
     /// "Don't ask again": no offers in the GUI, no hint in the shell.
     Dismiss,
+    /// The generations with names and what each changed. Reply: `Generations`.
+    Generations,
+    /// Name a generation (`None` or blank: remove its name). Reply: `Done`.
+    NameGeneration { number: u32, name: Option<String> },
+    /// The generated files a generation changed, as unified diffs. Reply: `Diff`.
+    GenerationDiff { number: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -58,6 +65,8 @@ pub enum Reply {
     Status(Box<Status>),
     Installed(Installed),
     Done,
+    Generations { list: Vec<history::Entry> },
+    Diff { files: Vec<generation::FileDiff> },
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -228,6 +237,12 @@ impl HostService {
                 touch(&dirs_of(self)?.hint_marker())?;
                 Ok(Reply::Done)
             }
+            Request::Generations => Ok(Reply::Generations { list: history::list(dirs_of(self)?) }),
+            Request::NameGeneration { number, name } => {
+                history::set_name(dirs_of(self)?, number, name.as_deref())?;
+                Ok(Reply::Done)
+            }
+            Request::GenerationDiff { number } => Ok(Reply::Diff { files: history::file_diff(dirs_of(self)?, number)? }),
         }
     }
 }
@@ -429,6 +444,23 @@ mod tests {
         assert!(dirs.offer_marker().exists() && !dirs.hint_marker().exists());
         svc.shell_request(Request::Dismiss).unwrap();
         assert!(dirs.hint_marker().exists());
+    }
+
+    #[test]
+    fn generation_requests() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = Dirs::under(tmp.path());
+        let svc = HostService::new(Launcher::new(Some(dirs.clone()), None), Some(tmp.path().join("config/host.json")));
+        svc.set(r#"{"history": {"size": 5000}}"#, true).unwrap();
+        svc.set(r#"{"history": {"size": 6000}}"#, true).unwrap();
+        let name = Request::NameGeneration { number: 1, name: Some("small history".into()) };
+        assert_eq!(svc.shell_request(name).unwrap(), Reply::Done);
+        let json = serde_json::to_string(&svc.shell_request(Request::Generations).unwrap()).unwrap();
+        let Ok(Reply::Generations { list }) = serde_json::from_str(&json) else { panic!("{json}") };
+        assert_eq!(list[0].title(), "small history");
+        assert_eq!(list[1].summary(), "history.size 5000 → 6000");
+        let Reply::Diff { files } = svc.shell_request(Request::GenerationDiff { number: 2 }).unwrap() else { panic!() };
+        assert_eq!(files.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["settings.zsh"]);
     }
 
     #[test]

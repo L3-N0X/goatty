@@ -57,7 +57,6 @@ use crate::terminal::{Activity, PasteRequest, TerminalEvent, TerminalView};
 use crate::toast::{self, Toast, ToastLayer};
 use crate::ui::style::Ui;
 use crate::ui::text_input::{TextInput, TextInputEvent};
-use icons::NerdFont;
 use layout::{Axis, Direction, Node, PaneId, Rect};
 use saved::{SavedTab, SavedWindow, SavedWorkspace, Startup};
 
@@ -181,7 +180,6 @@ pub struct Workspace {
     tabs: Vec<Tab>,
     active: usize,
     next_id: u64,
-    nerd: NerdFont,
     rename: Option<Rename>,
     palette: Option<(Entity<CommandPalette>, Subscription)>,
     paste: Option<(Entity<PasteConfirm>, PaneId, Subscription)>,
@@ -205,17 +203,15 @@ impl Workspace {
         let appearance = cx.observe_window_appearance(window, |_, window, cx| {
             crate::settings::AppSettings::set_system_dark(cx, crate::settings::is_dark(window.appearance()));
         });
-        // The terminal font decides which icons can show.
         // `terminal.opacity` / `terminal.blur`, live.
         let mut background = background_appearance(&cx.global::<AppSettings>().client.terminal);
         window.set_background_appearance(background);
-        let settings = cx.observe_global_in::<AppSettings>(window, move |this, window, cx| {
+        let settings = cx.observe_global_in::<AppSettings>(window, move |_, window, cx| {
             let wanted = background_appearance(&cx.global::<AppSettings>().client.terminal);
             if wanted != background {
                 background = wanted;
                 window.set_background_appearance(wanted);
             }
-            this.refresh_icon_font(cx);
             cx.notify();
         });
         // Settings and "reload shells" act on the active window's host, and
@@ -233,7 +229,6 @@ impl Workspace {
             tabs: Vec::new(),
             active: 0,
             next_id: 1,
-            nerd: NerdFont::default(),
             rename: None,
             palette: None,
             paste: None,
@@ -244,7 +239,6 @@ impl Workspace {
             save_window: None,
             _subscriptions: vec![appearance, settings, activation, bounds],
         };
-        this.refresh_icon_font(cx);
         match initial {
             Initial::Ready { startup, spawner } => {
                 this.home = Some(spawner.clone());
@@ -404,13 +398,6 @@ impl Workspace {
         for layout in self.layouts.drain(..) {
             layout.conn.save_layout(layout.id, Vec::new(), String::new());
         }
-    }
-
-    fn refresh_icon_font(&mut self, cx: &mut Context<'_, Self>) {
-        let app = cx.global::<AppSettings>();
-        let family = app.client.font.family.clone().unwrap_or_default();
-        let fonts = app.fonts.clone();
-        self.nerd.update(&family, &fonts, cx);
     }
 
     fn next_id(&mut self) -> u64 {

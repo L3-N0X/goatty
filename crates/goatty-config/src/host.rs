@@ -157,7 +157,8 @@ impl Default for ZshSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PromptStyle {
-    /// Starship's modules with icons (best with a Nerd Font).
+    /// Starship's modules with Nerd Font icons (goatty draws them with its
+    /// bundled font whatever the terminal font is).
     #[default]
     Rich,
     /// Directory, git and status only, plain characters: works with any font.

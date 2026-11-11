@@ -173,7 +173,7 @@ impl SettingsWindow {
                 ui,
                 |v, _, cx| AppSettings::update(cx, |s| s.tabs.show = v),
             )))
-            .child(row(ui, "Program icons").desc("nvim, git, docker, python… in each tab. Needs a Nerd Font").control(toggle(
+            .child(row(ui, "Program icons").desc("nvim, git, docker, python… in each tab").control(toggle(
                 "tabs-icons",
                 s.tabs.icons,
                 ui,

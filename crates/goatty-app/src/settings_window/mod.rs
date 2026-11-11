@@ -259,6 +259,9 @@ pub enum ThemeTarget {
     Dark,
 }
 
+/// A generation's changed files, (file name, unified diff), or why not.
+type GenDiff = Result<Vec<(String, String)>, String>;
+
 /// What the last preview/apply/rollback said.
 #[derive(Debug, Clone)]
 pub struct Outcome {
@@ -342,6 +345,12 @@ pub struct SettingsWindow {
     confirm_reset: bool,
     /// Profile: every generation, not only the recent ones.
     gens_expanded: bool,
+    /// Profile: the generation whose details are open.
+    gen_open: Option<u32>,
+    /// Profile: the open generation's name, being edited.
+    gen_name: Entity<TextInput>,
+    /// Profile: a generation's file changes (`None`: loading).
+    gen_diff: Option<(u32, Option<GenDiff>)>,
     _subs: Vec<Subscription>,
 }
 
@@ -362,7 +371,13 @@ impl SettingsWindow {
         let theme_name = cx.new(|cx| TextInput::new("Name for a new theme", "", cx).label("Theme name"));
         let opener = cx.global::<AppSettings>().file.value.links.file_opener.clone().unwrap_or_default();
         let file_opener = cx.new(|cx| TextInput::new("code --goto {path}:{line}:{column}", opener, cx).label("Command to open files"));
+        let gen_name = cx.new(|cx| TextInput::new("before trying fish", "", cx).label("Name for this version"));
         let subs = vec![
+            cx.subscribe(&gen_name, |this, _, ev: &TextInputEvent, cx| {
+                if let TextInputEvent::Submitted(_) = ev {
+                    this.save_generation_name(cx);
+                }
+            }),
             // The colors can change underneath the editor (theme switch,
             // desktop light/dark, outside edits): keep the picker current.
             cx.observe_global::<AppSettings>(|this, cx| this.sync_picker(cx)),
@@ -454,6 +469,9 @@ impl SettingsWindow {
             copied: None,
             confirm_reset: false,
             gens_expanded: false,
+            gen_open: None,
+            gen_name,
+            gen_diff: None,
             _subs: subs,
         };
         this.load_host(cx);
@@ -480,6 +498,8 @@ impl SettingsWindow {
         self.host_error = None;
         self.outcome = None;
         self.generations.clear();
+        self.gen_open = None;
+        self.gen_diff = None;
         self.plugins = plugins::PluginsPage::default();
         self.diag = diagnostics::DiagPage::default();
         self.load_host(cx);
@@ -971,6 +991,10 @@ impl SettingsWindow {
 
     pub fn rollback(&mut self, generation: u32, cx: &mut Context<'_, Self>) {
         let Some(link) = self.link.clone() else { return };
+        let title = match self.generations.iter().find(|g| g.entry.number == generation).and_then(|g| g.entry.name.as_deref()) {
+            Some(name) => format!("Generation {generation} (\u{201c}{name}\u{201d})"),
+            None => format!("Generation {generation}"),
+        };
         self.busy = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -981,7 +1005,7 @@ impl SettingsWindow {
                     Ok(_) => Outcome {
                         ok: true,
                         lines: vec![format!(
-                            "Generation {generation} is active again, with its settings. New sessions use it; reload running shells to use it there too."
+                            "{title} is active again, with its settings. New sessions use it; reload running shells to use it there too."
                         )],
                         diff: Vec::new(),
                         reload: true,

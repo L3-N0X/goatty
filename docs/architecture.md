@@ -55,10 +55,11 @@ Threads per session: `s{id}-reader` (PTY → terminal → subscribers) and `s{id
 | `packages`| where a plugin's package is: system copy, goatty's managed copy, or missing |
 | `install` | download (curl/wget), verify, unpack, activate `bin/` and `plugins/` symlinks, uninstall packages |
 | `doctor`  | start a real managed shell and parse `goatty-status`                    |
-| `generation` | build → validate (`zsh -n`) → activate generations; list, rollback, diff |
-| `setup`   | shell setup and diagnostics as JSON (`Request`/`Reply`, protocol v9 `Shell`): `Status` (configuration, a real startup, the built-in tools), install built-in tools, the offered/dismissed markers; `goattyd shell status` prints the same `Status` |
+| `generation` | build → validate (`zsh -n`) → activate generations; list, rollback, diff; `info.json` |
+| `history` | what each generation changed against its base (settings, plugins, files), one-line summaries, names, file diffs |
+| `setup`   | shell setup and diagnostics as JSON (`Request`/`Reply`, protocol v9 `Shell`): `Status` (configuration, a real startup, the built-in tools), install built-in tools, the offered/dismissed markers, the generation history (list with changes, name, file diff); `goattyd shell status` prints the same `Status` |
 | `service` | `HostService`: host settings get/set(preview, apply)/generations/rollback, for the daemon API and `goatty --local` |
-| `cmd`     | `goattyd shell status|install|uninstall|dismiss|generations|diff|rollback` |
+| `cmd`     | `goattyd shell status|install|uninstall|dismiss|generations|name|diff|rollback` |
 | `plugins` | plugins on this host: `registry` (trusted sources, fetch → verify → snapshot), `lock` (installed files + approvals), `Plugins` (find, plan, install, uninstall, catalog; built-in ones included), `active` + `load_order` (what a generation renders, in slot order), `cmd` (`goattyd plugin …`) |
 | `dirs`    | XDG locations under `goatty/`                                           |
 
@@ -70,6 +71,7 @@ Design and startup sequence: [`managed-zsh.md`](managed-zsh.md). The zsh behavio
 main.rs        parse CLI (subcommands run without a window), pick what the window starts with (a connect plan, or a local PTY for `--local`), app::run
 commands.rs    `goatty settings …` / `goatty theme …` (headless)
 cli.rs         clap definition
+fonts.rs       the bundled JetBrainsMono Nerd Font (assets/fonts, `scripts/update-nerd-font.sh`): registered at start, the default terminal font when no installed Nerd Font comes first, the fallback of every terminal font, and the tab icons' font
 app.rs         GPUI bootstrap: settings, terminal windows (`Initial`: ready, or connecting in the window), OpenSettings handler
 settings.rs    AppSettings global: client settings file ⇄ live values, file polling, keybindings
 actions.rs     actions, name → action map, loading user keybindings (Terminal key context)
@@ -91,7 +93,7 @@ settings_window/
   plugins.rs   the Plugins page: installed list, each plugin's own page (schema-driven settings by group), browse, install review
   diagnostics.rs  the Diagnostics page: the host's `setup::Status` (features and their source, startup time, startup errors, your files), install missing tools, copy report
   hosts.rs     the Hosts page: open hosts in a tab or window, add/remove hosts, plain SSH per host, `~/.ssh/config` discovery
-  profile.rs   files (copy path, open folder), problems, export/import, generations, reset
+  profile.rs   files (copy path, open folder), problems, export/import, generations (summary, details: every change, file diff, name), reset
   about.rs     version, connection, links, "copy for a bug report"
 toast/
   mod.rs       Toast (level, title, body, buttons, key, lifetime) and the API: show/show_in/update/dismiss/dismiss_all, routed to a window's layer
@@ -107,7 +109,7 @@ workspace/
   mod.rs       root view per window: tabs of split panes, each tab on its own host (`Spawner`), connecting tabs (connect screen until the session is there), a saved layout per goattyd, spawning/closing panes, window title, closes with the last pane; command palette, paste confirmations, toast layer
   layout.rs    a tab's split tree (pure, unit-tested): n-ary splits with weights, split/remove/normalize, layout → leaf rects + dividers, neighbor, resize
   tab_bar.rs   the tab strip in both styles (`tabs.style`: modern / compact): switch, close, rename, drag to reorder, activity markers on background tabs
-  icons.rs     process name → Nerd Font glyph + theme color; finds a font that really has the glyphs (terminal font, then Symbols Nerd Font)
+  icons.rs     process name → Nerd Font glyph + theme color, drawn with the bundled font (tests check every code point against it)
   saved.rs     the window's layout as goattyd keeps it (JSON: tabs, split trees with session ids, names, focus, zoom, window size and state); `restore` claims and reattaches it
 close_confirm.rs  "Close this pane?" dialog when a program other than the shell still runs (`panes.confirm_close`, "Don't ask again")
 connect.rs     ConnectView, the connect screen in a tab: connects off the UI thread (local daemon or remote), turns RemoteProblem into questions (install / update and restart / plain SSH) and LocalProblem too (a local goattyd that's incompatible or an older build than the installed one: restarted right away without sessions, else asked), hands the tab its session or restored layout

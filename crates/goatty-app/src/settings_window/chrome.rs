@@ -396,7 +396,7 @@ impl SettingsWindow {
 
     // ---- Host changes ---------------------------------------------------------------
 
-    fn diff_view(&self, ui: Ui, cx: &Context<'_, Self>, diff: &[(String, String)]) -> impl IntoElement {
+    pub(super) fn diff_view(&self, ui: Ui, cx: &Context<'_, Self>, diff: &[(String, String)]) -> impl IntoElement {
         div()
             .id("diff")
             .max_h(px(240.))

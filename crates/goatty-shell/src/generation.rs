@@ -16,6 +16,10 @@
 //! A rollback switches `current` back and returns the generation, whose
 //! `host.json` the caller restores as the settings file, so the next build
 //! reproduces it instead of undoing the rollback.
+//!
+//! Each generation's `info.json` ([`Info`]) records when it was built, the
+//! generation it was built on, what changed since then and its name
+//! ([`crate::history`]).
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -23,8 +27,10 @@ use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 
 use crate::dirs::Dirs;
+use crate::history::{self, Changes};
 use crate::zsh::GeneratedFile;
 
 /// Generations kept (the active one is never removed).
@@ -49,6 +55,43 @@ impl Generation {
     }
 }
 
+/// A generation's `info.json`. `created` stays the first field: goatty
+/// before #55 read it with a string search.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Info {
+    pub created: u64,
+    /// The goatty version that built it.
+    pub goatty: String,
+    /// The generation that was active when it was built.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changes: Option<Changes>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// The `info.json` in generation directory `dir` (defaults if unreadable).
+pub fn read_info(dir: &Path) -> Info {
+    std::fs::read_to_string(dir.join("info.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+/// Replace `info.json` in `dir` (atomically: written next to it, renamed).
+pub(crate) fn write_info(dir: &Path, info: &Info) -> Result<()> {
+    let tmp = dir.join(format!(".info.tmp-{}", std::process::id()));
+    std::fs::write(&tmp, serde_json::to_string(info)? + "\n")?;
+    std::fs::rename(&tmp, dir.join("info.json")).with_context(|| format!("write {}", dir.join("info.json").display()))
+}
+
+/// Hold the generations lock: builders in other processes (goattyd,
+/// `goatty --local`, the CLI) wait.
+pub(crate) fn lock(dirs: &Dirs) -> Result<File> {
+    let lock = File::create(dirs.generations_dir().join(".lock"))?;
+    lock.lock()?;
+    Ok(lock)
+}
+
 /// The active generation's number.
 pub fn current(dirs: &Dirs) -> Option<u32> {
     let target = std::fs::read_link(dirs.current_link()).ok()?;
@@ -65,13 +108,7 @@ pub fn list(dirs: &Dirs) -> Vec<Generation> {
         .filter_map(|e| {
             let number: u32 = e.file_name().to_str()?.parse().ok()?;
             let path = e.path();
-            let created_unix = std::fs::read_to_string(path.join("info.json"))
-                .ok()
-                .and_then(|s| {
-                    s.split("\"created\":").nth(1).map(|r| r.trim_start().chars().take_while(char::is_ascii_digit).collect::<String>())
-                })
-                .and_then(|n| n.parse().ok())
-                .unwrap_or(0);
+            let created_unix = read_info(&path).created;
             Some(Generation { number, path, created_unix, active: active == Some(number) })
         })
         .collect();
@@ -96,9 +133,7 @@ pub struct Activated {
 pub fn activate(dirs: &Dirs, files: &[GeneratedFile], settings_json: &str) -> Result<Activated> {
     let gens = dirs.generations_dir();
     std::fs::create_dir_all(&gens).with_context(|| format!("create {}", gens.display()))?;
-    // Builders in other processes (goattyd, `goatty --local`, the CLI) wait.
-    let lock = File::create(gens.join(".lock"))?;
-    lock.lock()?;
+    let _lock = lock(dirs)?;
 
     if let Some(n) = current(dirs) {
         let path = gens.join(n.to_string());
@@ -123,8 +158,17 @@ pub fn activate(dirs: &Dirs, files: &[GeneratedFile], settings_json: &str) -> Re
             std::fs::write(path, &f.contents)?;
         }
         std::fs::write(staging.join("host.json"), settings_json)?;
-        let created = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        std::fs::write(staging.join("info.json"), format!("{{\"created\": {created}, \"goatty\": \"{}\"}}\n", env!("CARGO_PKG_VERSION")))?;
+        let version = env!("CARGO_PKG_VERSION");
+        let base = current(dirs).and_then(|n| list(dirs).into_iter().find(|g| g.number == n));
+        let tree = files.iter().map(|f| (f.name.clone(), f.contents.clone())).collect();
+        let info = Info {
+            created: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+            goatty: version.to_owned(),
+            parent: base.as_ref().map(|b| b.number),
+            changes: Some(base.map(|b| history::compare(&b, settings_json, &tree, version)).unwrap_or_default()),
+            name: None,
+        };
+        write_info(&staging, &info)?;
         validate(&zdir, files)?;
         std::fs::rename(&staging, gens.join(number.to_string()))?;
         Ok(())
@@ -185,14 +229,13 @@ pub fn rollback(dirs: &Dirs, to: Option<u32>) -> Result<Generation> {
         bail!("generation {} is incomplete", target.number);
     }
     // Locked like a build, so a concurrent build doesn't switch underneath.
-    let lock = File::create(dirs.generations_dir().join(".lock"))?;
-    lock.lock()?;
+    let _lock = lock(dirs)?;
     switch(dirs, target.number)?;
     Ok(Generation { active: true, ..target.clone() })
 }
 
 /// A changed file, as a unified diff.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileDiff {
     pub name: String,
     pub unified: String,
