@@ -47,7 +47,12 @@ impl SettingsWindow {
         let Some(host) = &self.host else { return };
         let issues: Vec<Issue> = host.issues.iter().map(|i| Issue::parse(i)).collect();
         let new: Vec<&Issue> = host.issues.iter().zip(&issues).filter(|(raw, _)| !before.contains(raw)).map(|(_, i)| i).collect();
-        let Some(first) = new.first() else { return };
+        let Some(first) = new.first() else {
+            if issues.is_empty() && !before.is_empty() {
+                toast::show(cx, Toast::success("The host's settings are fine again").key(crate::settings::HOST_TOAST_KEY));
+            }
+            return;
+        };
         let title = match issues.len() {
             1 => "A host setting couldn't be used".to_string(),
             n => format!("{n} host settings couldn't be used"),

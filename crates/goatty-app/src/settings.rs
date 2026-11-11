@@ -39,6 +39,10 @@ pub struct AppSettings {
     pub save_error: Option<String>,
     /// The toast showing `save_error`, dismissed once a save works again.
     save_toast: Option<toast::ToastId>,
+    /// The problems the user was last told about (or that were there at
+    /// start), so a change is announced against this and not against a
+    /// live preview that already moved `issues()`.
+    announced: Vec<Issue>,
     /// Built-in plus user themes (`themes/*.json`).
     pub themes: Arc<ThemeLibrary>,
     themes_stamp: Vec<(PathBuf, FileStamp)>,
@@ -96,6 +100,7 @@ impl AppSettings {
             key_errors: Vec::new(),
             save_error: None,
             save_toast: None,
+            announced: Vec::new(),
         };
         s.recompute();
         log::info!(
@@ -106,7 +111,8 @@ impl AppSettings {
             if s.client.theme.follow_system { " (following the system)" } else { "" }
         );
         s.key_errors = crate::actions::apply_keybindings(&s.client.keybindings, cx);
-        let issues = s.issues();
+        let issues = s.announceable();
+        s.announced = issues.clone();
         cx.set_global(s);
         // A file broken before goatty started: say so once a window is up.
         Self::announce(cx, &[], issues);
@@ -218,6 +224,9 @@ impl AppSettings {
         if save_toast.is_some() {
             cx.global_mut::<Self>().save_toast = save_toast;
         }
+        if save {
+            Self::announce_changes(cx);
+        }
     }
 
     /// Replace everything (profile import, reset). Same as [`update`](Self::update).
@@ -229,7 +238,6 @@ impl AppSettings {
     /// theme dropped into themes/).
     fn reload_if_changed(cx: &mut App) {
         let s = cx.global::<Self>();
-        let before = s.issues();
         if let Some(dir) = s.themes.dir.as_deref()
             && ThemeLibrary::stamp(dir) != s.themes_stamp
         {
@@ -250,10 +258,24 @@ impl AppSettings {
             }
             Self::replace(cx, file, None);
         }
-        let after = cx.global::<Self>().issues();
-        if after != before {
-            Self::announce(cx, &before, after);
+        Self::announce_changes(cx);
+    }
+
+    /// Announce what changed in the problems since the last announcement.
+    fn announce_changes(cx: &mut App) {
+        let s = cx.global::<Self>();
+        let after = s.announceable();
+        if after == s.announced {
+            return;
         }
+        let before = std::mem::replace(&mut cx.global_mut::<Self>().announced, after.clone());
+        Self::announce(cx, &before, after);
+    }
+
+    /// [`issues`](Self::issues) without a failed save, which has its own toast.
+    fn announceable(&self) -> Vec<Issue> {
+        let save = self.save_error.as_ref().map(|e| Issue::new("", e.clone()));
+        self.issues().into_iter().filter(|i| Some(i) != save.as_ref()).collect()
     }
 
     /// Tell the user about problems that weren't there `before` (#85): a
