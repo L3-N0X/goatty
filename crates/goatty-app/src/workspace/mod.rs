@@ -41,7 +41,7 @@ use goatty_proto::LayoutId;
 use goatty_term::TermSize;
 use gpui::{
     AppContext, Context, DragMoveEvent, Entity, Focusable, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, Styled,
-    Subscription, Window, div, prelude::*, px, relative,
+    Subscription, Task, Window, div, prelude::*, px, relative,
 };
 
 use crate::actions::*;
@@ -59,7 +59,7 @@ use crate::ui::style::Ui;
 use crate::ui::text_input::{TextInput, TextInputEvent};
 use icons::NerdFont;
 use layout::{Axis, Direction, Node, PaneId, Rect};
-use saved::{SavedTab, SavedWorkspace, Startup};
+use saved::{SavedTab, SavedWindow, SavedWorkspace, Startup};
 
 /// Width of the line between panes.
 const DIVIDER: f32 = 1.0;
@@ -176,8 +176,16 @@ pub struct Workspace {
     close: Option<(Entity<CloseConfirm>, CloseTarget, Subscription)>,
     toasts: Entity<ToastLayer>,
     layouts: Vec<HostLayout>,
+    /// The window's size and state, saved with the layouts.
+    window: SavedWindow,
+    /// A layout save waiting for the window to stop resizing.
+    save_window: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// How long the window's size has to settle before it's saved (a resize
+/// drag changes it every frame).
+const SAVE_WINDOW_AFTER: std::time::Duration = std::time::Duration::from_millis(500);
 
 impl Workspace {
     pub fn new(initial: Initial, window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
@@ -205,6 +213,7 @@ impl Workspace {
                 this.window_activated(window, cx);
             }
         });
+        let bounds = cx.observe_window_bounds(window, |this: &mut Self, window, cx| this.window_bounds_changed(window, cx));
         cx.set_global(crate::hosts::LastWorkspace(window.window_handle()));
         let toasts = cx.new(|cx| ToastLayer::new(window, cx));
         let mut this = Self {
@@ -219,7 +228,9 @@ impl Workspace {
             close: None,
             toasts,
             layouts: Vec::new(),
-            _subscriptions: vec![appearance, settings, activation],
+            window: SavedWindow::from_bounds(window.window_bounds()),
+            save_window: None,
+            _subscriptions: vec![appearance, settings, activation, bounds],
         };
         this.refresh_icon_font(cx);
         match initial {
@@ -229,6 +240,10 @@ impl Workspace {
                 match startup {
                     Startup::Session(session) => this.insert_pane(session, Placement::NewTab, spawner, window, cx),
                     Startup::Restore(r) => {
+                        if let Some(w) = r.window {
+                            w.apply(window);
+                            this.window = w;
+                        }
                         let active = this.insert_restored(r, &spawner, 0, window, cx);
                         this.activate(active, window, cx);
                     }
@@ -237,6 +252,18 @@ impl Workspace {
             Initial::Connect(plan) => this.open_connect_tab(plan, window, cx),
         }
         this
+    }
+
+    fn window_bounds_changed(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let now = SavedWindow::from_bounds(window.window_bounds());
+        if now == self.window {
+            return;
+        }
+        self.window = now;
+        self.save_window = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SAVE_WINDOW_AFTER).await;
+            this.update(cx, |this, cx| this.save_layout(cx)).ok();
+        }));
     }
 
     fn window_activated(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -326,7 +353,8 @@ impl Workspace {
             let (sessions, json) = match groups.iter_mut().find(|g| Arc::ptr_eq(&g.conn, &layout.conn)) {
                 Some(g) => {
                     let active = g.before_active.min(g.tabs.len() - 1);
-                    let saved = SavedWorkspace { version: saved::VERSION, tabs: std::mem::take(&mut g.tabs), active };
+                    let saved =
+                        SavedWorkspace { version: saved::VERSION, tabs: std::mem::take(&mut g.tabs), active, window: Some(self.window) };
                     match serde_json::to_string(&saved) {
                         Ok(j) => (std::mem::take(&mut g.sessions), j),
                         Err(e) => {
@@ -528,6 +556,15 @@ impl Workspace {
             }
             Startup::Restore(r) => {
                 let n = r.tabs.len();
+                // The window's only tab: the window is the restored one, so
+                // it takes the restored size (not when restoring into a
+                // window that has other tabs).
+                if self.tabs.len() == 1
+                    && let Some(w) = r.window
+                {
+                    w.apply(window);
+                    self.window = w;
+                }
                 self.tabs.remove(index);
                 let active = self.insert_restored(r, &spawner, index, window, cx);
                 if self.active > index {

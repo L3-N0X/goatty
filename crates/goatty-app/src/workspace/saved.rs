@@ -1,5 +1,6 @@
 //! A window's layout as goattyd keeps it (#118): tabs, their split trees
-//! with session ids as leaves, names, focus and zoom. The workspace saves
+//! with session ids as leaves, names, focus and zoom, and the window's
+//! size and state (#128). The workspace saves
 //! it on every change (`Connection::save_layout`); starting goatty again
 //! claims the newest layout no window holds and reattaches its sessions
 //! ([`restore`]).
@@ -15,6 +16,7 @@ use anyhow::Result;
 use goatty_client::Connection;
 use goatty_proto::{LayoutId, SessionId};
 use goatty_term::TermSize;
+use gpui::{WindowBounds, px, size};
 use serde::{Deserialize, Serialize};
 
 use super::layout::Node;
@@ -28,6 +30,67 @@ pub struct SavedWorkspace {
     pub tabs: Vec<SavedTab>,
     /// Index of the active tab.
     pub active: usize,
+    /// Missing in layouts saved before #128.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<SavedWindow>,
+}
+
+/// The window's size (the restore size while maximized or fullscreen) in
+/// logical pixels, and its state. Not its position: Wayland doesn't let
+/// windows place themselves, so a restored window opens centered.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SavedWindow {
+    pub width: f32,
+    pub height: f32,
+    #[serde(default)]
+    pub state: WindowState,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowState {
+    #[default]
+    Windowed,
+    Maximized,
+    Fullscreen,
+}
+
+impl SavedWindow {
+    /// A new window's size.
+    pub const DEFAULT: (f32, f32) = (960.0, 600.0);
+    /// Smaller than this is a broken value, not a window anyone wants back.
+    const MIN: (f32, f32) = (200.0, 100.0);
+    /// Larger than any display; caps a corrupt value.
+    const MAX: f32 = 16384.0;
+
+    pub fn from_bounds(bounds: WindowBounds) -> Self {
+        let (b, state) = match bounds {
+            WindowBounds::Windowed(b) => (b, WindowState::Windowed),
+            WindowBounds::Maximized(b) => (b, WindowState::Maximized),
+            WindowBounds::Fullscreen(b) => (b, WindowState::Fullscreen),
+        };
+        Self { width: f32::from(b.size.width), height: f32::from(b.size.height), state }
+    }
+
+    /// The size to use, clamped to something sane (a bad value falls back
+    /// to the default size).
+    pub fn size(&self) -> (f32, f32) {
+        let default = Self::DEFAULT;
+        let clamp = |v: f32, min: f32, d: f32| if v.is_finite() { v.clamp(min, Self::MAX) } else { d };
+        (clamp(self.width, Self::MIN.0, default.0), clamp(self.height, Self::MIN.1, default.1))
+    }
+
+    /// Bring an open window to this size and state.
+    pub fn apply(&self, window: &mut gpui::Window) {
+        let (w, h) = self.size();
+        window.resize(size(px(w), px(h)));
+        match self.state {
+            WindowState::Windowed => {}
+            WindowState::Maximized if !window.is_maximized() => window.zoom_window(),
+            WindowState::Fullscreen if !window.is_fullscreen() => window.toggle_fullscreen(),
+            _ => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -56,6 +119,7 @@ pub struct Restored {
     pub tabs: Vec<RestoredTab>,
     pub active: usize,
     pub sessions: HashMap<SessionId, Arc<Session>>,
+    pub window: Option<SavedWindow>,
 }
 
 /// How a window starts.
@@ -134,6 +198,7 @@ pub fn restore(conn: &Arc<Connection>, size: TermSize) -> Result<Option<Restored
             return Ok(None);
         }
     };
+    let window = saved.window;
     let alive: HashSet<SessionId> = info.sessions.iter().copied().collect();
     let Some((tabs, _)) = prune(saved.clone(), &alive) else { return Ok(None) };
     let mut sessions = HashMap::new();
@@ -149,7 +214,7 @@ pub fn restore(conn: &Arc<Connection>, size: TermSize) -> Result<Option<Restored
     let attached: HashSet<SessionId> = sessions.keys().copied().collect();
     let Some((tabs, active)) = prune(saved, &attached) else { return Ok(None) };
     log::info!("restored a window with {} tabs and {} sessions", tabs.len(), sessions.len());
-    Ok(Some(Restored { id: info.id, tabs, active, sessions }))
+    Ok(Some(Restored { id: info.id, tabs, active, sessions, window }))
 }
 
 #[cfg(test)]
@@ -173,12 +238,27 @@ mod tests {
             version: VERSION,
             tabs: vec![SavedTab { name: Some("build".into()), tree: split(3, 7), focused: 7, zoomed: true }, tab(Node::Leaf(9), 9)],
             active: 1,
+            window: Some(SavedWindow { width: 1200.0, height: 800.5, state: WindowState::Maximized }),
         };
         let json = serde_json::to_string(&saved).unwrap();
+        assert!(json.contains(r#""window":{"width":1200.0,"height":800.5,"state":"maximized"}"#), "{json}");
         assert_eq!(serde_json::from_str::<SavedWorkspace>(&json).unwrap(), saved);
         // Unset fields are optional.
         let short: SavedWorkspace = serde_json::from_str(r#"{"version":1,"tabs":[{"tree":{"leaf":4},"focused":4}],"active":0}"#).unwrap();
         assert_eq!(short.tabs[0], tab(Node::Leaf(4), 4));
+        assert_eq!(short.window, None);
+        let windowed: SavedWorkspace =
+            serde_json::from_str(r#"{"version":1,"tabs":[],"active":0,"window":{"width":800,"height":500}}"#).unwrap();
+        assert_eq!(windowed.window, Some(SavedWindow { width: 800.0, height: 500.0, state: WindowState::Windowed }));
+    }
+
+    #[test]
+    fn window_size_is_clamped() {
+        let d = SavedWindow::DEFAULT;
+        let w = |width, height| SavedWindow { width, height, state: WindowState::Windowed };
+        assert_eq!(w(1200.0, 700.0).size(), (1200.0, 700.0));
+        assert_eq!(w(10.0, 1e9).size(), (200.0, 16384.0));
+        assert_eq!(w(f32::NAN, f32::INFINITY).size(), d);
     }
 
     #[test]
@@ -191,6 +271,7 @@ mod tests {
                 tab(Node::Leaf(4), 4),
             ],
             active: 1,
+            window: None,
         };
         let alive: HashSet<SessionId> = [1, 4].into();
         let (tabs, active) = prune(saved.clone(), &alive).unwrap();
@@ -205,7 +286,7 @@ mod tests {
 
     #[test]
     fn a_session_shows_once() {
-        let saved = SavedWorkspace { version: VERSION, tabs: vec![tab(split(1, 2), 1), tab(split(2, 3), 3)], active: 1 };
+        let saved = SavedWorkspace { version: VERSION, tabs: vec![tab(split(1, 2), 1), tab(split(2, 3), 3)], active: 1, window: None };
         let (tabs, active) = prune(saved, &[1, 2, 3].into()).unwrap();
         assert_eq!(tabs[0].tree.leaves(), [1, 2]);
         assert_eq!(tabs[1].tree, Node::Leaf(3));
