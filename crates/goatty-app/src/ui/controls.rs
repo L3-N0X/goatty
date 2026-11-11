@@ -9,10 +9,11 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    AnyView, App, Bounds, Context, DispatchPhase, Div, ElementId, FontWeight, Hsla, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Render, SharedString, Stateful, Window, canvas, div, prelude::*, px, relative,
+    AnyView, App, Bounds, Context, DispatchPhase, Div, ElementId, FontWeight, Hsla, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Render, Role, SharedString, Stateful, Toggled, Window, canvas, div, prelude::*, px, relative,
 };
 
+use super::focus::{self, Ring, Scroller};
 use super::icons::Icon;
 use super::style::{Ui, radius, text};
 
@@ -21,8 +22,11 @@ type Callback = Rc<dyn Fn(&mut Window, &mut App)>;
 /// An on/off switch (Material 3: an outlined track with a small thumb when
 /// off, a filled track with a bigger thumb when on).
 pub fn toggle(id: impl Into<ElementId>, on: bool, ui: Ui, f: impl Fn(&mut Window, &mut App) + 'static) -> Stateful<Div> {
-    div()
-        .id(id)
+    let id: ElementId = id.into();
+    let el = div()
+        .id(id.clone())
+        .role(Role::Switch)
+        .aria_toggled(if on { Toggled::True } else { Toggled::False })
         .flex()
         .flex_shrink_0()
         .items_center()
@@ -34,10 +38,12 @@ pub fn toggle(id: impl Into<ElementId>, on: bool, ui: Ui, f: impl Fn(&mut Window
         .when(on, |d| d.bg(ui.accent).border_color(ui.accent).justify_end().pr(px(2.)))
         .when(!on, |d| d.bg(ui.field).border_color(ui.border).pl(px(4.)).hover(|s| s.border_color(ui.muted)))
         .child(div().rounded_full().when(on, |d| d.size(px(16.)).bg(ui.on_accent)).when(!on, |d| d.size(px(12.)).bg(ui.muted)))
-        .on_click(move |_, window, cx| f(window, cx))
+        .on_click(move |_, window, cx| f(window, cx));
+    focus::tab(el, &id, ui, Ring::Outer, Scroller::Page)
 }
 
-/// A row of mutually exclusive choices.
+/// A row of mutually exclusive choices. One option is reached with Tab (the
+/// selected one); Left/Right (or Up/Down) pick the neighbour, like a radio group.
 pub fn segmented<T: Clone + PartialEq + 'static>(
     id: &str,
     options: &[(T, &str)],
@@ -46,13 +52,22 @@ pub fn segmented<T: Clone + PartialEq + 'static>(
     f: impl Fn(T, &mut Window, &mut App) + 'static,
 ) -> Div {
     let f = Rc::new(f);
+    let any_selected = options.iter().any(|(v, _)| v == selected);
+    let values: Rc<Vec<T>> = Rc::new(options.iter().map(|(v, _)| v.clone()).collect());
+    let option_id = {
+        let id = id.to_owned();
+        move |i: usize| ElementId::from(SharedString::from(format!("{id}-{i}")))
+    };
     div().flex().flex_shrink_0().p(px(3.)).gap(px(2.)).rounded_full().bg(ui.field).children(options.iter().enumerate().map(
         |(i, (value, label))| {
             let on = value == selected;
             let value = value.clone();
-            let f = f.clone();
-            div()
-                .id(SharedString::from(format!("{id}-{i}")))
+            let (f, values, option_id) = (f.clone(), values.clone(), option_id.clone());
+            let el = div()
+                .id(option_id(i))
+                .role(Role::RadioButton)
+                .aria_selected(on)
+                .aria_label(SharedString::from(label.to_string()))
                 .h(px(28.))
                 .px(px(14.))
                 .flex()
@@ -63,11 +78,40 @@ pub fn segmented<T: Clone + PartialEq + 'static>(
                 .font_weight(FontWeight::MEDIUM)
                 .cursor_pointer()
                 .when(on, |d| d.bg(ui.accent).text_color(ui.on_accent))
-                .when(!on, |d| d.text_color(ui.muted).hover(|s| s.bg(ui.field_hover).text_color(ui.text)))
+                .when(!on, |d| d.bg(ui.field.opacity(0.0)).text_color(ui.muted).hover(|s| s.bg(ui.field_hover).text_color(ui.text)))
                 .child(SharedString::from(label.to_string()))
-                .on_click(move |_, window, cx| f(value.clone(), window, cx))
+                .on_key_down({
+                    let f = f.clone();
+                    move |ev, window, cx| {
+                        let Some(step) = arrow_step(ev) else { return };
+                        let Some(next) = i.checked_add_signed(step).filter(|n| *n < values.len()) else { return };
+                        cx.stop_propagation();
+                        f(values[next].clone(), window, cx);
+                        focus::focus(&option_id(next), window, cx);
+                    }
+                })
+                .on_click(move |_, window, cx| f(value.clone(), window, cx));
+            let el_id = option_id_of(id, i);
+            focus::tab_stop(el, &el_id, ui, Ring::Outer, Scroller::Page, on || !any_selected)
         },
     ))
+}
+
+fn option_id_of(id: &str, i: usize) -> ElementId {
+    SharedString::from(format!("{id}-{i}")).into()
+}
+
+/// Left/Up is -1, Right/Down is +1, for a key press without modifiers.
+fn arrow_step(ev: &KeyDownEvent) -> Option<isize> {
+    let k = &ev.keystroke;
+    if k.modifiers.modified() {
+        return None;
+    }
+    match k.key.as_str() {
+        "left" | "up" => Some(-1),
+        "right" | "down" => Some(1),
+        _ => None,
+    }
 }
 
 /// `[−] value [+]`.
@@ -79,8 +123,14 @@ pub fn stepper(
     inc: impl Fn(&mut Window, &mut App) + 'static,
 ) -> Div {
     let btn = |suffix: &str, icon: StepIcon, f: Callback| {
-        div()
-            .id(SharedString::from(format!("{id}-{suffix}")))
+        let el_id: ElementId = SharedString::from(format!("{id}-{suffix}")).into();
+        let el = div()
+            .id(el_id.clone())
+            .role(Role::Button)
+            .aria_label(match icon {
+                StepIcon::Minus => "Decrease",
+                StepIcon::Plus => "Increase",
+            })
             .size(px(28.))
             .flex()
             .items_center()
@@ -94,7 +144,8 @@ pub fn stepper(
                 StepIcon::Minus => div().w(px(10.)).h(px(2.)).rounded_full().bg(ui.muted),
                 StepIcon::Plus => div().child(Icon::Plus.svg().size(px(14.)).text_color(ui.muted)),
             })
-            .on_click(move |_, window, cx| f(window, cx))
+            .on_click(move |_, window, cx| f(window, cx));
+        focus::tab(el, &el_id, ui, Ring::Outer, Scroller::Page)
     };
     div()
         .flex()
@@ -160,8 +211,12 @@ pub fn button_with(
         ButtonKind::Ghost => (ui.field.opacity(0.0), ui.text, ui.field),
         ButtonKind::Danger => (ui.danger.opacity(0.12), ui.danger, ui.danger.opacity(0.2)),
     };
-    div()
-        .id(id)
+    let id: ElementId = id.into();
+    let label: SharedString = label.into();
+    let el = div()
+        .id(id.clone())
+        .role(Role::Button)
+        .aria_label(label.clone())
         .flex()
         .flex_shrink_0()
         .items_center()
@@ -176,8 +231,9 @@ pub fn button_with(
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
         .when_some(icon, |d, i| d.child(i.svg().size(px(15.)).text_color(fg)))
-        .child(label.into())
-        .on_click(move |_, window, cx| f(window, cx))
+        .child(label)
+        .on_click(move |_, window, cx| f(window, cx));
+    focus::tab(el, &id, ui, Ring::Outer, Scroller::Page)
 }
 
 /// A round icon-only button with a tooltip.
@@ -209,8 +265,10 @@ pub fn icon_button_tinted(
         Some(c) => svg.text_color(c),
         None => svg.text_color(ui.muted).group_hover(group.clone(), |s| s.text_color(ui.text)),
     };
-    div()
-        .id(id)
+    let el = div()
+        .id(id.clone())
+        .role(Role::Button)
+        .aria_label(tip.clone())
         .group(group)
         .flex()
         .flex_shrink_0()
@@ -222,7 +280,8 @@ pub fn icon_button_tinted(
         .hover(|s| s.bg(ui.field))
         .child(svg)
         .tooltip(tooltip(tip))
-        .on_click(move |_, window, cx| f(window, cx))
+        .on_click(move |_, window, cx| f(window, cx));
+    focus::tab(el, &id, ui, Ring::Outer, Scroller::Page)
 }
 
 /// How a badge is tinted.
@@ -328,8 +387,32 @@ pub fn slider(id: impl Into<ElementId>, value: f32, ui: Ui, f: impl Fn(f32, bool
     let f = Rc::new(f);
     let t = value.clamp(0.0, 1.0);
     const THUMB: f32 = 18.0;
-    div()
-        .id(id)
+    let keys = f.clone();
+    let el = div()
+        .id(id.clone())
+        .role(Role::Slider)
+        .aria_numeric_value(f64::from(t))
+        .aria_min_numeric_value(0.0)
+        .aria_max_numeric_value(1.0)
+        .aria_numeric_value_step(0.05)
+        .on_key_down(move |ev, window, cx| {
+            let k = &ev.keystroke;
+            if k.modifiers.modified() {
+                return;
+            }
+            let to = match k.key.as_str() {
+                "left" | "down" => t - 0.05,
+                "right" | "up" => t + 0.05,
+                "pagedown" => t - 0.2,
+                "pageup" => t + 0.2,
+                "home" => 0.0,
+                "end" => 1.0,
+                _ => return,
+            };
+            cx.stop_propagation();
+            // Every key press is a finished change: it saves.
+            keys(to.clamp(0.0, 1.0), true, window, cx);
+        })
         .relative()
         .w(px(180.))
         .h(px(28.))
@@ -371,7 +454,8 @@ pub fn slider(id: impl Into<ElementId>, value: f32, ui: Ui, f: impl Fn(f32, bool
             )
             .absolute()
             .size_full(),
-        )
+        );
+    focus::tab(el, &id, ui, Ring::Outer, Scroller::Page)
 }
 
 thread_local! {

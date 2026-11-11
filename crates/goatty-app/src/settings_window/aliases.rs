@@ -21,6 +21,7 @@ use gpui::{
 use super::kit::{self, card, chip, divider, field, modal, search_field, section};
 use super::{Page, SettingsWindow};
 use crate::ui::controls::{ButtonKind, Tone, badge, banner, button, button_with, icon_button, toggle};
+use crate::ui::focus::{self, Ring, Scroller};
 use crate::ui::icons::Icon;
 use crate::ui::style::{Ui, radius, text};
 use crate::ui::text_input::{TextInput, TextInputEvent};
@@ -62,6 +63,8 @@ pub struct AliasesPage {
     /// Groups the user folded or unfolded ([`group_key`]): user groups
     /// start open, plugin groups folded.
     toggled: HashSet<String>,
+    /// The form's frame: Tab stays inside it.
+    pub(super) modal_focus: gpui::FocusHandle,
     _subs: Vec<Subscription>,
 }
 
@@ -84,7 +87,16 @@ impl AliasesPage {
                 TextInputEvent::Submitted(_) => view.save_alias(cx),
             }));
         }
-        Self { filter, inputs, form: None, form_error: None, scope: Scope::All, toggled: HashSet::new(), _subs: subs }
+        Self {
+            filter,
+            inputs,
+            form: None,
+            form_error: None,
+            scope: Scope::All,
+            toggled: HashSet::new(),
+            modal_focus: cx.focus_handle(),
+            _subs: subs,
+        }
     }
 }
 
@@ -398,29 +410,31 @@ impl SettingsWindow {
         let mono = kit::mono(cx);
         let mut chips = div().flex().flex_wrap().justify_center().gap(px(8.));
         for (i, &(name, command, group)) in SUGGESTIONS.iter().enumerate() {
-            chips = chips.child(
-                div()
-                    .id(SharedString::from(format!("alias-suggest-{i}")))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .h(px(30.))
-                    .px(px(12.))
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(ui.border)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(ui.field))
-                    .text_size(px(text::SMALL))
-                    .font_family(mono.clone())
-                    .child(div().font_weight(FontWeight::BOLD).child(name))
-                    .child(div().text_color(ui.faint).child("→"))
-                    .child(div().text_color(ui.muted).child(command))
-                    .on_click({
-                        let f = self.act_window(cx, move |v, window, cx| v.open_alias_form(None, [name, command, group, ""], window, cx));
-                        move |_, window, cx| f(window, cx)
-                    }),
-            );
+            let eid: gpui::ElementId = SharedString::from(format!("alias-suggest-{i}")).into();
+            let chip = div()
+                .id(eid.clone())
+                .role(gpui::Role::Button)
+                .aria_label(SharedString::from(format!("Add alias {name}: {command}")))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .h(px(30.))
+                .px(px(12.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(ui.border)
+                .cursor_pointer()
+                .hover(|s| s.bg(ui.field))
+                .text_size(px(text::SMALL))
+                .font_family(mono.clone())
+                .child(div().font_weight(FontWeight::BOLD).child(name))
+                .child(div().text_color(ui.faint).child("→"))
+                .child(div().text_color(ui.muted).child(command))
+                .on_click({
+                    let f = self.act_window(cx, move |v, window, cx| v.open_alias_form(None, [name, command, group, ""], window, cx));
+                    move |_, window, cx| f(window, cx)
+                });
+            chips = chips.child(focus::tab(chip, &eid, ui, Ring::Outer, Scroller::Page));
         }
         card(ui)
             .pb(px(20.))
@@ -443,8 +457,12 @@ impl SettingsWindow {
         let plugin_off = matches!(g.source, Source::Plugin { enabled: false, .. });
         let count = if active == g.rows.len() { format!("{active}") } else { format!("{active} of {}", g.rows.len()) };
         let title = if g.title().is_empty() { "Ungrouped".to_string() } else { g.title().to_owned() };
+        let header_id: gpui::ElementId = SharedString::from(format!("alias-fold-{key}")).into();
         let header = div()
-            .id(SharedString::from(format!("alias-fold-{key}")))
+            .id(header_id.clone())
+            .role(gpui::Role::Button)
+            .aria_label(SharedString::from(title.clone()))
+            .aria_expanded(open)
             .flex()
             .items_center()
             .gap(px(10.))
@@ -478,6 +496,7 @@ impl SettingsWindow {
                     cx.notify();
                 })
             });
+        let header = focus::tab(header, &header_id, ui, Ring::Inner, Scroller::Page);
         let mut c = card(ui).child(header);
         if open {
             c = c.child(div().h(px(1.)).bg(ui.divider));
@@ -640,7 +659,7 @@ impl SettingsWindow {
                 let input = i.group.clone();
                 let label = g.clone();
                 list = list.child(
-                    kit::menu_item(ui, SharedString::from(format!("alias-group-{n}")), label.into(), None, false).on_mouse_down(
+                    kit::menu_item_mouse(ui, SharedString::from(format!("alias-group-{n}")), label.into(), None, false).on_mouse_down(
                         MouseButton::Left,
                         move |_, window, cx| {
                             input.update(cx, |input, cx| input.set_text(g.clone(), cx));
@@ -728,6 +747,7 @@ impl SettingsWindow {
             ));
         Some(
             modal(ui, "alias-modal", title, body, footer)
+                .track_focus(&self.aliases.modal_focus)
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|v, _, _, cx| {

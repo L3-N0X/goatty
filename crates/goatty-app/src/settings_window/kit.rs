@@ -15,11 +15,13 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Div, ElementId, Entity, Focusable, FontWeight, IntoElement, MouseButton, ParentElement,
-    RenderOnce, ScrollHandle, SharedString, Stateful, Styled, Window, anchored, canvas, deferred, div, point, prelude::*, px, relative,
+    RenderOnce, Role, ScrollHandle, SharedString, Stateful, Styled, Window, anchored, canvas, deferred, div, point, prelude::*, px,
+    relative,
 };
 
 use super::SettingsWindow;
 use crate::settings::AppSettings;
+use crate::ui::focus::{self, Ring, Scroller};
 use crate::ui::icons::Icon;
 use crate::ui::style::{Ui, radius, text};
 use crate::ui::text_input::TextInput;
@@ -206,11 +208,19 @@ thread_local! {
     /// The notes for the page being rendered, by row label, and the window
     /// they're for (other windows render rows too).
     static ROW_NOTES: RefCell<Option<(gpui::WindowId, HashMap<SharedString, RowNote>)>> = const { RefCell::new(None) };
+    /// Rows drawn so far this frame: each row's control gets a unique id.
+    static ROW_SEQ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Before rendering a page in `window`: what its rows should say.
 pub fn set_row_notes(window: gpui::WindowId, notes: HashMap<SharedString, RowNote>) {
     ROW_NOTES.with_borrow_mut(|n| *n = Some((window, notes)));
+    ROW_SEQ.set(0);
+}
+
+/// Keys that would activate or change a control: a disabled row swallows them.
+fn is_control_key(key: &str) -> bool {
+    matches!(key, "enter" | "space" | "left" | "right" | "up" | "down" | "home" | "end" | "pageup" | "pagedown")
 }
 
 fn row_note(window: &Window, label: &str) -> Option<RowNote> {
@@ -316,12 +326,33 @@ impl RenderOnce for Row {
                     }))
                     .children(note.problems.into_iter().map(|p| line(Icon::TriangleAlert, ui.warning, p)))
             });
+        let label_text = self.label.clone();
         let control = self.control.map(|c| {
+            let n = ROW_SEQ.get();
+            ROW_SEQ.set(n + 1);
+            // The group names the control for assistive technology.
+            let wrap = div().id(("row-control", n)).role(Role::Group).aria_label(label_text).flex_shrink_0();
             if disabled {
-                // Visible but inert: a cover takes the clicks.
-                div().relative().flex_shrink_0().opacity(0.45).child(c).child(div().absolute().inset_0().occlude()).into_any_element()
+                // Visible but inert: a cover takes the clicks and the keys.
+                wrap.relative()
+                    .opacity(0.45)
+                    .capture_key_down(|ev, window, cx| {
+                        if is_control_key(&ev.keystroke.key) && !ev.keystroke.modifiers.modified() {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                        }
+                    })
+                    .capture_key_up(|ev, window, cx| {
+                        if is_control_key(&ev.keystroke.key) && !ev.keystroke.modifiers.modified() {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                        }
+                    })
+                    .child(c)
+                    .child(div().absolute().inset_0().occlude())
+                    .into_any_element()
             } else {
-                div().flex_shrink_0().child(c).into_any_element()
+                wrap.child(c).into_any_element()
             }
         });
         let line = div()
@@ -358,13 +389,17 @@ impl RenderOnce for Row {
             .child(line)
             .when_some(self.below, |d, b| d.child(div().px(px(16.)).pb(px(14.)).child(b)));
         match self.click {
-            Some((id, f)) => body
-                .id(id)
-                .cursor_pointer()
-                .rounded(px(radius::CARD))
-                .hover(|s| s.bg(ui.surface_hover))
-                .on_click(move |ev, window, cx| f(ev, window, cx))
-                .into_any_element(),
+            Some((id, f)) => {
+                let el = body
+                    .id(id.clone())
+                    .role(Role::Button)
+                    .aria_label(self.label.clone())
+                    .cursor_pointer()
+                    .rounded(px(radius::CARD))
+                    .hover(|s| s.bg(ui.surface_hover))
+                    .on_click(move |ev, window, cx| f(ev, window, cx));
+                focus::tab(el, &id, ui, Ring::Inner, Scroller::Page).into_any_element()
+            }
             None => body.into_any_element(),
         }
     }
@@ -465,8 +500,13 @@ pub fn chip(
     selected: bool,
     f: impl Fn(&mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
-    div()
-        .id(id)
+    let id: ElementId = id.into();
+    let label: SharedString = label.into();
+    let el = div()
+        .id(id.clone())
+        .role(Role::Button)
+        .aria_label(label.clone())
+        .aria_toggled(if selected { gpui::Toggled::True } else { gpui::Toggled::False })
         .flex()
         .flex_shrink_0()
         .items_center()
@@ -481,9 +521,10 @@ pub fn chip(
         .when(selected, |d| d.pl(px(8.)).bg(ui.accent_soft).border_color(ui.accent_soft).text_color(ui.accent_text))
         .when(!selected, |d| d.border_color(ui.border).text_color(ui.muted).hover(|s| s.bg(ui.field).text_color(ui.text)))
         .when(selected, |d| d.child(Icon::Check.svg().size(px(14.)).text_color(ui.accent_text)))
-        .child(label.into())
+        .child(label)
         .when_some(count, |d, n| d.child(div().text_color(if selected { ui.accent_text } else { ui.faint }).child(n.to_string())))
-        .on_click(move |_, window, cx| f(window, cx))
+        .on_click(move |_, window, cx| f(window, cx));
+    focus::tab(el, &id, ui, Ring::Outer, Scroller::Page)
 }
 
 /// A dialog over the window: a scrim and a centered card.
@@ -519,8 +560,12 @@ pub fn modal(ui: Ui, id: &str, title: impl Into<SharedString>, body: impl IntoEl
 /// A visual choice: a preview over a label, ringed when selected (cursor
 /// shapes, tab styles). The caller adds `on_click`.
 pub fn choice_card(ui: Ui, id: impl Into<ElementId>, label: &'static str, selected: bool, preview: impl IntoElement) -> Stateful<Div> {
-    div()
-        .id(id)
+    let id: ElementId = id.into();
+    let el = div()
+        .id(id.clone())
+        .role(Role::RadioButton)
+        .aria_selected(selected)
+        .aria_label(label)
         .flex_1()
         .flex()
         .flex_col()
@@ -544,7 +589,8 @@ pub fn choice_card(ui: Ui, id: impl Into<ElementId>, label: &'static str, select
                 .text_color(if selected { ui.accent_text } else { ui.text })
                 .when(selected, |d| d.child(Icon::Check.svg().size(px(13.)).text_color(ui.accent_text)))
                 .child(label),
-        )
+        );
+    focus::tab(el, &id, ui, Ring::Inner, Scroller::Page)
 }
 
 /// A labelled field in a form.
@@ -585,8 +631,11 @@ impl<T> Opt<T> {
 
 /// The trigger of a dropdown: the current value and an up/down chevron.
 pub fn select_trigger(ui: Ui, id: SharedString, label: impl IntoElement, open: bool) -> Stateful<Div> {
-    div()
+    let eid: ElementId = id.clone().into();
+    let el = div()
         .id(id)
+        .role(Role::ComboBox)
+        .aria_expanded(open)
         .flex()
         .items_center()
         .justify_between()
@@ -603,13 +652,15 @@ pub fn select_trigger(ui: Ui, id: SharedString, label: impl IntoElement, open: b
         .cursor_pointer()
         .hover(|s| s.bg(ui.field_hover))
         .child(label)
-        .child(Icon::ChevronsUpDown.svg().size(px(14.)).text_color(ui.muted))
+        .child(Icon::ChevronsUpDown.svg().size(px(14.)).text_color(ui.muted));
+    focus::tab(el, &eid, ui, Ring::Outer, Scroller::Page)
 }
 
 /// The popover under a dropdown's trigger.
 pub fn menu(ui: Ui, id: impl Into<ElementId>) -> Stateful<Div> {
-    div()
+    let el = div()
         .id(id)
+        .role(Role::Menu)
         .flex()
         .flex_col()
         .min_w(px(240.))
@@ -622,13 +673,29 @@ pub fn menu(ui: Ui, id: impl Into<ElementId>) -> Stateful<Div> {
         .bg(ui.menu)
         .border_1()
         .border_color(ui.border)
-        .shadow_lg()
+        .shadow_lg();
+    // Keyboard focus scrolls the list, so it needs a handle to scroll.
+    match focus::menu_scroll() {
+        Some(scroll) => el.track_scroll(&scroll),
+        None => el,
+    }
 }
 
 /// A choice in a menu: label, optional description, a check when selected.
 pub fn menu_item(ui: Ui, id: impl Into<ElementId>, label: SharedString, desc: Option<SharedString>, selected: bool) -> Stateful<Div> {
+    let id: ElementId = id.into();
+    let el = menu_item_mouse(ui, id.clone(), label, desc, selected);
+    focus::tab(el, &id, ui, Ring::Inner, Scroller::Menu)
+}
+
+/// [`menu_item`] for suggestions under a text field: out of the tab order,
+/// because focusing one would take focus from the field that shows them.
+pub fn menu_item_mouse(ui: Ui, id: impl Into<ElementId>, label: SharedString, desc: Option<SharedString>, selected: bool) -> Stateful<Div> {
     div()
         .id(id)
+        .role(Role::MenuItem)
+        .aria_label(label.clone())
+        .aria_selected(selected)
         .flex()
         .items_center()
         .gap(px(10.))
@@ -656,6 +723,31 @@ pub fn menu_item(ui: Ui, id: impl Into<ElementId>, label: SharedString, desc: Op
         .child(div().w(px(16.)).flex_shrink_0().when(selected, |d| d.child(Icon::Check.svg().size(px(16.)).text_color(ui.accent_text))))
 }
 
+/// Up and Down move between the choices of an open menu and stop at its ends.
+fn menu_key(menu: &gpui::FocusHandle, ev: &gpui::KeyDownEvent, window: &mut Window, cx: &mut App) {
+    let k = &ev.keystroke;
+    if k.modifiers.modified() {
+        return;
+    }
+    let down = match k.key.as_str() {
+        "down" => true,
+        "up" => false,
+        _ => return,
+    };
+    cx.stop_propagation();
+    let before = window.focused(cx);
+    if down {
+        window.focus_next(cx);
+    } else {
+        window.focus_prev(cx);
+    }
+    if !menu.contains_focused(window, cx)
+        && let Some(before) = before
+    {
+        window.focus(&before, cx);
+    }
+}
+
 impl SettingsWindow {
     /// A trigger and, while it's open, its popover menu.
     pub(super) fn dropdown(&self, id: SharedString, trigger: Stateful<Div>, menu: impl IntoElement, cx: &Context<'_, Self>) -> AnyElement {
@@ -665,7 +757,31 @@ impl SettingsWindow {
         let trigger = trigger.on_mouse_down(MouseButton::Left, move |_, _, cx| {
             let _ = this.update(cx, |v, cx| v.toggle_menu(toggle_id.clone(), cx));
         });
+        // From the keyboard: Enter and Space toggle the menu, Down opens it.
+        let open_with_key = {
+            let (this, id) = (cx.entity().downgrade(), id.clone());
+            move |toggle: bool, window: &mut Window, cx: &mut App| {
+                let _ = this.update(cx, |v, cx| v.open_menu_from_key(id.clone(), toggle, window, cx));
+            }
+        };
+        let trigger = trigger
+            .on_click({
+                let open_with_key = open_with_key.clone();
+                move |ev, window, cx| {
+                    if ev.is_keyboard() {
+                        open_with_key(true, window, cx);
+                    }
+                }
+            })
+            .on_key_down(move |ev, window, cx| {
+                if ev.keystroke.key == "down" && !ev.keystroke.modifiers.modified() {
+                    cx.stop_propagation();
+                    open_with_key(false, window, cx);
+                }
+            });
         let this = cx.entity().downgrade();
+        let menu_focus = self.menu_focus.clone();
+        let keys_focus = menu_focus.clone();
         div()
             .relative()
             .flex_shrink_0()
@@ -677,6 +793,8 @@ impl SettingsWindow {
                             anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(12.)).child(
                                 div()
                                     .occlude()
+                                    .track_focus(&menu_focus)
+                                    .on_key_down(move |ev, window, cx| menu_key(&keys_focus, ev, window, cx))
                                     .on_mouse_down_out(move |_, _, cx| {
                                         let _ = this.update(cx, |v, cx| v.dismiss_menu(cx));
                                     })
@@ -706,18 +824,19 @@ impl SettingsWindow {
         let f = Rc::new(f);
         let mut list = menu(ui, SharedString::from(format!("{id}-menu")));
         if open {
+            // Opened from the keyboard: the chosen item takes focus once it exists.
+            let focus_on = self.menu_autofocus.replace(false).then(|| options.iter().position(|o| &o.value == selected).unwrap_or(0));
             for (i, o) in options.into_iter().enumerate() {
                 let on = &o.value == selected;
                 let (f, value, this) = (f.clone(), o.value, cx.entity().downgrade());
-                list = list.child(menu_item(ui, SharedString::from(format!("{id}-opt-{i}")), o.label, o.desc, on).on_click(
-                    move |_, window, cx| {
-                        f(value.clone(), window, cx);
-                        let _ = this.update(cx, |v, cx| {
-                            v.menu = None;
-                            cx.notify();
-                        });
-                    },
-                ));
+                let item_id = SharedString::from(format!("{id}-opt-{i}"));
+                if focus_on == Some(i) {
+                    focus::autofocus(item_id.clone().into());
+                }
+                list = list.child(menu_item(ui, item_id, o.label, o.desc, on).on_click(move |_, window, cx| {
+                    f(value.clone(), window, cx);
+                    let _ = this.update(cx, |v, cx| v.close_menu(window, cx));
+                }));
             }
         }
         self.dropdown(id.clone(), select_trigger(ui, id, div().child(current), open), list, cx)

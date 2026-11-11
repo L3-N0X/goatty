@@ -22,6 +22,7 @@ use serde_json::Value;
 use super::kit::{self, card, opt, row, search_field, section};
 use super::{Outcome, Page, SettingsWindow};
 use crate::ui::controls::{ButtonKind, Tone, badge, banner, button, button_with, icon_button, segmented, stepper, toggle, tooltip};
+use crate::ui::focus::{self, Ring, Scroller};
 use crate::ui::icons::Icon;
 use crate::ui::style::{Ui, radius, text};
 use crate::ui::text_input::{TextInput, TextInputEvent};
@@ -416,8 +417,11 @@ impl SettingsWindow {
         let missing = inst.packages.iter().any(|p| matches!(p.state, PackageState::Missing));
         let fetch = inst.builtin && inst.packages.iter().any(|p| p.available && p.needs_install());
         let open_id = id.clone();
-        div()
-            .id(SharedString::from(format!("plugin-{id}")))
+        let row_id: gpui::ElementId = SharedString::from(format!("plugin-{id}")).into();
+        let row = div()
+            .id(row_id.clone())
+            .role(gpui::Role::Button)
+            .aria_label(SharedString::from(inst.manifest.name.clone()))
             .flex()
             .items_center()
             .gap(px(14.))
@@ -476,8 +480,8 @@ impl SettingsWindow {
                 v.plugins.show_advanced = false;
                 v.scroll.set_offset(gpui::point(px(0.), px(0.)));
                 cx.notify();
-            }))
-            .into_any_element()
+            }));
+        focus::tab(row, &row_id, ui, Ring::Inner, Scroller::Page).into_any_element()
     }
 
     fn perm_icons(ui: Ui, perms: &[Permission]) -> impl IntoElement {

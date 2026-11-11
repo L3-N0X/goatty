@@ -21,3 +21,9 @@ One design language (Material 3 Expressive, the tonal-surface kind, with libadwa
 - **Narrow windows:** below `RAIL_BELOW` the sidebar becomes a navigation rail with a drawer. Check pages at the 760 px minimum width; give fixed-width columns a `min_w` and let them shrink.
 - **New settings:** add the row, then an entry in `search.rs`'s `INDEX` with the row's exact label, so search can find it and jump to it.
 - **Check it by eye.** Screenshot the page, light and dark theme, wide and at minimum width. `cargo test` can't see layout.
+- **Keyboard and screen readers.** Everything is reachable and usable without a mouse.
+  - Controls in `ui/controls.rs` and `kit.rs` get their tab stop, keyboard-only focus ring, scroll-into-view and role/label from `ui::focus::tab` (the element needs a unique id). A new clickable element built by hand must call it too, and `.on_click` gives Enter/Space for free.
+  - Radio-like groups (`segmented`) have one tab stop and arrow keys. Sliders take arrows, Home/End and PageUp/Down. The sidebar is one tab stop (Up/Down change the page), and Ctrl+PageUp/Down step through pages. Dropdowns open with Enter, Space or Down, and arrows move inside the menu; Esc closes it and gives focus back.
+  - Don't `.invisible()` a control keyboard users need: hidden elements aren't tab stops.
+  - A dialog traps Tab: give its frame a `FocusHandle` and add it to `SettingsWindow::move_focus`.
+

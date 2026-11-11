@@ -94,7 +94,7 @@ impl TextInput {
         let content: SharedString = text.into();
         let end = content.len();
         Self {
-            focus_handle: cx.focus_handle(),
+            focus_handle: cx.focus_handle().tab_stop(true),
             content,
             placeholder: placeholder.into(),
             selected_range: end..end,

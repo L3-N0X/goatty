@@ -14,6 +14,7 @@ use super::SettingsWindow;
 use super::kit::{self, card, chip, divider, search_field};
 use crate::settings::AppSettings;
 use crate::ui::controls::{ButtonKind, Tone, badge, banner, button_with, icon_button, icon_button_tinted, keycaps, pretty_keys, tooltip};
+use crate::ui::focus::{self, Ring, Scroller};
 use crate::ui::icons::Icon;
 use crate::ui::style::{Ui, text};
 use crate::ui::text_input::{TextInput, TextInputEvent};
@@ -39,7 +40,7 @@ pub struct ShortcutsPage {
     sort: Sort,
     collapsed: HashSet<&'static str>,
     /// The next keystroke becomes the search (instead of binding anything).
-    listening: bool,
+    pub(super) listening: bool,
     /// A pressed keystroke to search for (canonical).
     pressed: Option<String>,
     /// "Reset all" was clicked once; the second click resets.
@@ -279,8 +280,42 @@ impl SettingsWindow {
                 })
                 .when(!line.keys.is_empty() && !line.changed, |d| d.invisible().group_hover(group_id.clone(), |s| s.visible())),
             );
-        div()
-            .id(group_id.clone())
+        // The row is a tab stop: Enter records a new shortcut, Delete removes the last one.
+        let row_id: gpui::ElementId = group_id.clone().into();
+        let last_key = line.keys.last().cloned();
+        let row = div()
+            .id(row_id.clone())
+            .role(gpui::Role::Row)
+            .aria_label(line.action.label)
+            .aria_description("Enter adds a shortcut, Delete removes the last one")
+            .on_key_down({
+                let (row_id, this) = (row_id.clone(), cx.entity().downgrade());
+                move |ev, window, cx| {
+                    // Only the row itself: a button inside it has its own Enter.
+                    if ev.keystroke.modifiers.modified() || !focus::is_focused(&row_id, window) {
+                        return;
+                    }
+                    match ev.keystroke.key.as_str() {
+                        "enter" => {
+                            cx.stop_propagation();
+                            let _ = this.update(cx, |v, cx| {
+                                v.recording = Some(name);
+                                v.shortcuts.listening = false;
+                                v.shortcut_note = None;
+                                window.focus(&v.focus, cx);
+                                cx.notify();
+                            });
+                        }
+                        "delete" | "backspace" => {
+                            if let Some(key) = &last_key {
+                                cx.stop_propagation();
+                                AppSettings::update(cx, |s| keys::set_binding(&mut s.keybindings, key, None));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            })
             .group(group_id.clone())
             .flex()
             .flex_col()
@@ -319,16 +354,19 @@ impl SettingsWindow {
                         .child(Icon::TriangleAlert.svg().size(px(13.)).text_color(ui.warning))
                         .child(SharedString::from(w))
                 }))
-            }))
-            .into_any_element()
+            }));
+        focus::tab(row, &row_id, ui, Ring::Inner, Scroller::Page).into_any_element()
     }
 
     fn column_header(&self, ui: Ui, cx: &Context<'_, Self>) -> impl IntoElement {
         let sort = self.shortcuts.sort;
         let head = |id: &'static str, label: &'static str, mine: Sort| {
             let on = sort == mine;
-            div()
-                .id(id)
+            let id: gpui::ElementId = id.into();
+            let el = div()
+                .id(id.clone())
+                .role(gpui::Role::Button)
+                .aria_label(label)
                 .flex()
                 .items_center()
                 .gap(px(4.))
@@ -341,7 +379,8 @@ impl SettingsWindow {
                 .on_click(cx.listener(move |v, _, _, cx| {
                     v.shortcuts.sort = if v.shortcuts.sort == mine { Sort::Group } else { mine };
                     cx.notify();
-                }))
+                }));
+            focus::tab(el, &id, ui, Ring::Outer, Scroller::Page)
         };
         div()
             .flex()
@@ -483,27 +522,30 @@ impl SettingsWindow {
                 if gi > 0 {
                     table = table.child(div().h(px(1.)).bg(ui.divider));
                 }
-                table = table.child(
-                    div()
-                        .id(SharedString::from(format!("sc-group-{g}")))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .h(px(38.))
-                        .px(px(14.))
-                        .bg(ui.field.opacity(0.5))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(ui.field))
-                        .child((if folded { Icon::ChevronRight } else { Icon::ChevronDown }).svg().size(px(14.)).text_color(ui.muted))
-                        .child(div().text_size(px(text::LABEL)).font_weight(FontWeight::SEMIBOLD).child(g))
-                        .child(div().text_size(px(text::CAPTION)).text_color(ui.faint).child(rows.len().to_string()))
-                        .on_click(cx.listener(move |v, _, _, cx| {
-                            if !v.shortcuts.collapsed.remove(g) {
-                                v.shortcuts.collapsed.insert(g);
-                            }
-                            cx.notify();
-                        })),
-                );
+                let head_id: gpui::ElementId = SharedString::from(format!("sc-group-{g}")).into();
+                let head = div()
+                    .id(head_id.clone())
+                    .role(gpui::Role::Button)
+                    .aria_label(SharedString::from(format!("{g} shortcuts")))
+                    .aria_expanded(!folded)
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .h(px(38.))
+                    .px(px(14.))
+                    .bg(ui.field.opacity(0.5))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(ui.field))
+                    .child((if folded { Icon::ChevronRight } else { Icon::ChevronDown }).svg().size(px(14.)).text_color(ui.muted))
+                    .child(div().text_size(px(text::LABEL)).font_weight(FontWeight::SEMIBOLD).child(g))
+                    .child(div().text_size(px(text::CAPTION)).text_color(ui.faint).child(rows.len().to_string()))
+                    .on_click(cx.listener(move |v, _, _, cx| {
+                        if !v.shortcuts.collapsed.remove(g) {
+                            v.shortcuts.collapsed.insert(g);
+                        }
+                        cx.notify();
+                    }));
+                table = table.child(focus::tab(head, &head_id, ui, Ring::Inner, Scroller::Page));
                 if !folded {
                     for (i, l) in rows.iter().enumerate() {
                         if i > 0 {
