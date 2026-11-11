@@ -68,7 +68,7 @@ impl SettingsWindow {
             Toast::warning(title)
                 .body(body)
                 .key(crate::settings::HOST_TOAST_KEY)
-                .action("Show", move |_, cx| super::open_issue(cx, true, &path))
+                .action("Open settings", move |_, cx| super::open_issue(cx, true, &path))
                 .action("Copy", move |_, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(report.clone()));
                     toast::show(cx, Toast::success("Copied the problems").key(crate::settings::HOST_TOAST_KEY));

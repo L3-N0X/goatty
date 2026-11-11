@@ -43,6 +43,9 @@ pub struct AppSettings {
     /// start), so a change is announced against this and not against a
     /// live preview that already moved `issues()`.
     announced: Vec<Issue>,
+    /// Problems an edit cleared that didn't reach the disk (a failed save):
+    /// the all-clear for them waits until a save works.
+    owed_all_clear: Vec<Issue>,
     /// Built-in plus user themes (`themes/*.json`).
     pub themes: Arc<ThemeLibrary>,
     themes_stamp: Vec<(PathBuf, FileStamp)>,
@@ -101,6 +104,7 @@ impl AppSettings {
             save_error: None,
             save_toast: None,
             announced: Vec::new(),
+            owed_all_clear: Vec::new(),
         };
         s.recompute();
         log::info!(
@@ -265,15 +269,23 @@ impl AppSettings {
     fn announce_changes(cx: &mut App) {
         let s = cx.global::<Self>();
         let after = s.announceable();
-        if after == s.announced {
+        let save_failing = s.save_error.is_some();
+        let owes = !s.owed_all_clear.is_empty();
+        if after == s.announced && !(owes && !save_failing) {
             return;
         }
-        // The edit that cleared the last problem didn't reach the disk: hold
-        // the all-clear back until a save works.
-        if after.is_empty() && s.save_error.is_some() {
+        let g = cx.global_mut::<Self>();
+        let before = std::mem::replace(&mut g.announced, after.clone());
+        if after.is_empty() && save_failing {
+            // The edit that cleared the last problem didn't reach the disk:
+            // hold the all-clear back until a save works.
+            if !owes {
+                g.owed_all_clear = before;
+            }
             return;
         }
-        let before = std::mem::replace(&mut cx.global_mut::<Self>().announced, after.clone());
+        let owed = std::mem::take(&mut g.owed_all_clear);
+        let before = if after.is_empty() && !owed.is_empty() { owed } else { before };
         Self::announce(cx, &before, after);
     }
 
@@ -307,7 +319,7 @@ impl AppSettings {
         let t = Toast::warning(title)
             .body(body)
             .key(TOAST_KEY)
-            .action("Show", move |_, cx| crate::settings_window::open_issue(cx, false, &path))
+            .action("Open settings", move |_, cx| crate::settings_window::open_issue(cx, false, &path))
             .action("Copy", |_, cx| {
                 let report = cx.global::<Self>().report();
                 cx.write_to_clipboard(ClipboardItem::new_string(report));
