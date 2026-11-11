@@ -14,6 +14,7 @@ use rio_vt::performer::handler::Processor;
 use rio_vt::selection::{Selection, SelectionType};
 
 use crate::listener::Listener;
+use crate::marks::{Mark, MarkScanner};
 use crate::{Palette, TermMode, UiEvent};
 
 /// Grid size in cells plus the pixel size (for TIOCSWINSZ / XTWINOPS).
@@ -43,8 +44,18 @@ pub(crate) type Term = Crosswords<Listener>;
 
 pub(crate) struct Inner {
     pub(crate) term: Mutex<Term>,
-    parser: Mutex<Processor>,
+    parser: Mutex<Parser>,
     size: Arc<AtomicU32>,
+    /// For the marks rio-vt doesn't report (see `marks`).
+    ui: flume::Sender<UiEvent>,
+}
+
+/// rio-vt's parser plus the scanner for the OSC 133 marks it ignores; both
+/// see every byte, in order.
+#[derive(Default)]
+struct Parser {
+    vt: Processor,
+    marks: MarkScanner,
 }
 
 /// Shared handle to one terminal state machine. Cheap to clone.
@@ -72,9 +83,9 @@ impl Terminal {
         let (utx, urx) = flume::unbounded();
         let packed = Arc::new(AtomicU32::new(pack(size)));
         let palette: SharedPalette = Arc::new(parking_lot::RwLock::new(palette));
-        let listener = Listener { replies: rtx, ui: utx, answer_queries, palette: palette.clone(), size: packed.clone() };
+        let listener = Listener { replies: rtx, ui: utx.clone(), answer_queries, palette: palette.clone(), size: packed.clone() };
         let term = Crosswords::new(size.to_crosswords(), CursorShape::Block, listener, WindowId::from(0), 0, DEFAULT_SCROLLBACK);
-        let inner = Inner { term: Mutex::new(term), parser: Mutex::new(Processor::default()), size: packed };
+        let inner = Inner { term: Mutex::new(term), parser: Mutex::new(Parser::default()), size: packed, ui: utx };
         (Self { inner: Arc::new(inner), palette }, TerminalChannels { replies: rrx, ui: urx })
     }
 
@@ -109,8 +120,14 @@ impl Terminal {
     /// (false while the application holds a synchronized update, mode 2026).
     pub fn feed(&self, bytes: &[u8]) -> bool {
         let mut parser = self.inner.parser.lock();
+        let ui = &self.inner.ui;
+        parser.marks.scan(bytes, |mark| {
+            let _ = ui.send(match mark {
+                Mark::CommandFinished(exit) => UiEvent::CommandFinished { exit },
+            });
+        });
         let mut term = self.inner.term.lock();
-        parser.advance(&mut *term, bytes);
+        parser.vt.advance(&mut *term, bytes);
         if term.synchronized_output() {
             if term.sync_update_expired(rio_vt::time::Instant::now()) {
                 term.end_sync_update();

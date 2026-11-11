@@ -14,6 +14,7 @@ parking_lot.workspace = true
 anyhow.workspace = true
 log.workspace = true
 flume.workspace = true
+memchr.workspace = true
 
 [[example]]
 name = "vtbench"

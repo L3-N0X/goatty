@@ -8,7 +8,10 @@
 //!   icon and title; the active tab in the accent color.
 //!
 //! Both: click to switch, middle-click to close, double-click to rename,
-//! drag to reorder, double-click the empty space for a new tab.
+//! drag to reorder, double-click the empty space for a new tab. A
+//! background tab shows what happened in it since it was last shown (#122,
+//! `tabs.mark_bell` / `tabs.mark_activity`): a bell, or a dot for a
+//! finished command (red when it failed) or for new output.
 
 use goatty_config::TabStyle;
 use gpui::{
@@ -17,9 +20,11 @@ use gpui::{
 };
 
 use super::icons::IconColor;
-use super::{DraggedTab, Tab, Workspace};
+use super::{DraggedTab, Tab, Workspace, marks};
 use crate::actions::NewTab;
 use crate::settings::AppSettings;
+use crate::terminal::Activity;
+use crate::ui::controls::tooltip;
 use crate::ui::icons::Icon;
 use crate::ui::style::Ui;
 
@@ -83,6 +88,8 @@ struct TabView {
     active: bool,
     process: Option<String>,
     panes: usize,
+    /// What happened in it while in the background.
+    activity: Option<Activity>,
 }
 
 impl Workspace {
@@ -148,7 +155,38 @@ impl Workspace {
 
     fn tab_view(&self, index: usize, tab: &Tab, cx: &App) -> TabView {
         let process = tab.focused_view().and_then(|v| v.read(cx).process().map(str::to_string));
-        TabView { index, id: tab.id, label: self.tab_label(tab, cx).into(), active: index == self.active, process, panes: tab.panes.len() }
+        let active = index == self.active;
+        // Turning a mark off in the settings hides the ones already there.
+        let activity = tab.activity.filter(|&a| !active && marks(&cx.global::<AppSettings>().client.tabs, a));
+        TabView { index, id: tab.id, label: self.tab_label(tab, cx).into(), active, process, panes: tab.panes.len(), activity }
+    }
+
+    /// The activity marker, `size` px across: a bell, or a dot colored by
+    /// what happened. Hovering it says what it means.
+    fn activity_marker(&self, t: &TabView, size: f32, c: Colors) -> Option<AnyElement> {
+        let activity = t.activity?;
+        let (tip, color) = match activity {
+            Activity::Bell => ("Rang the bell", c.ui.accent),
+            Activity::Failed => ("A command failed", c.ui.danger),
+            Activity::Finished => ("A command finished", c.ui.success),
+            Activity::Output => ("New output", c.ui.muted),
+        };
+        let mark = match activity {
+            Activity::Bell => Icon::Bell.svg().size(px(size)).text_color(color).into_any_element(),
+            _ => div().size(px(size * 0.55)).rounded_full().bg(color).into_any_element(),
+        };
+        Some(
+            div()
+                .id(gpui::ElementId::NamedInteger("tab-activity".into(), t.id))
+                .flex_none()
+                .size(px(size))
+                .flex()
+                .items_center()
+                .justify_center()
+                .tooltip(tooltip(tip))
+                .child(mark)
+                .into_any_element(),
+        )
     }
 
     /// The program icon in `size` px, or `None` (no Nerd Font, unknown
@@ -238,6 +276,7 @@ impl Workspace {
             .when(!t.active, |d| d.invisible().group_hover(group, |s| s.visible()))
             .on_click(cx.listener(move |this, _, window, cx| this.close_tab_at(index, window, cx)));
         let title = self.tab_title(&t, cx);
+        let marker = self.activity_marker(&t, 13.0, c);
         self.tab_shell(&t, cx)
             .flex_basis(px(220.))
             .flex_shrink(1.)
@@ -253,6 +292,7 @@ impl Workspace {
             .when(!t.active, |d| d.text_color(c.ui.muted).hover(|s| s.bg(c.hover).text_color(c.ui.text)))
             .child(icon)
             .child(title)
+            .children(marker)
             .when(t.panes > 1, |d| {
                 d.child(div().flex_none().text_xs().text_color(c.ui.muted).child(SharedString::from(format!("{}", t.panes))))
             })
@@ -265,6 +305,7 @@ impl Workspace {
         let fg = if t.active { c.ui.on_accent } else { c.ui.muted };
         let icon = self.process_icon(t.process.as_deref(), 12.0, t.active.then_some(fg), c, cx);
         let title = self.tab_title(&t, cx);
+        let marker = self.activity_marker(&t, 11.0, c);
         let number = SharedString::from(format!("{}", t.index + 1));
         self.tab_shell(&t, cx)
             .flex_shrink(1.)
@@ -278,6 +319,7 @@ impl Workspace {
             .child(div().flex_none().opacity(0.7).child(number))
             .children(icon)
             .child(title)
+            .children(marker)
             .when(t.panes > 1, |d| d.child(div().flex_none().opacity(0.7).child(SharedString::from(format!("[{}]", t.panes)))))
             .into_any_element()
     }
