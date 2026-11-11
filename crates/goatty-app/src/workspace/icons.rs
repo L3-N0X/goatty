@@ -1,17 +1,7 @@
 //! Icons for the program running in a tab: Nerd Font glyphs for known
-//! tools, shown only when an installed font really has the glyph.
-//!
-//! Where the glyphs come from: the terminal font if it's a patched Nerd Font
-//! (JetBrainsMono Nerd Font, …), else the symbols-only font ("Symbols Nerd
-//! Font Mono"). Without either, tabs fall back to goatty's own terminal icon.
-
-use std::collections::HashSet;
-
-use gpui::{App, Font, SharedString};
-
-/// Families that carry only the Nerd Font symbols, tried after the
-/// terminal font.
-const SYMBOL_FONTS: &[&str] = &["Symbols Nerd Font Mono", "Symbols Nerd Font"];
+//! tools, drawn with the bundled JetBrainsMono Nerd Font (`crate::fonts`),
+//! whatever the terminal font is. The tests check every code point against
+//! that font.
 
 /// What a tab shows for a program: a glyph and a theme color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,7 +19,7 @@ pub enum IconColor {
     Ansi(u8),
 }
 
-// Nerd Fonts v3 code points.
+// Nerd Fonts v3 code points (names as in its `glyphnames.json`).
 const TERMINAL: char = '\u{e795}'; // nf-dev-terminal
 const VIM: char = '\u{e62b}'; // nf-custom-vim
 const NEOVIM: char = '\u{f36f}'; // nf-linux-neovim
@@ -60,7 +50,8 @@ const SHIELD: char = '\u{f132}'; // nf-fa-shield
 const CLOCK: char = '\u{f017}'; // nf-fa-clock_o
 const ROBOT: char = '\u{f06a9}'; // nf-md-robot
 
-/// Every glyph the table uses (checked against the font once).
+/// Every glyph the table uses.
+#[cfg(test)]
 const ALL_GLYPHS: &[char] = &[
     TERMINAL, VIM, NEOVIM, EMACS, PENCIL, GIT, GITHUB, DOCKER, KUBERNETES, PYTHON, NODE, NPM, RUST, GO, RUBY, JAVA, LUA, DATABASE, SERVER,
     CHART, BOOK, FOLDER, SEARCH, GLOBE, COGS, COLUMNS, SHIELD, CLOCK, ROBOT,
@@ -111,51 +102,6 @@ pub fn icon_for(process: &str) -> Option<ProcessIcon> {
     Some(ProcessIcon { glyph, color })
 }
 
-/// The font that draws Nerd Font glyphs here, and which of ours it has.
-#[derive(Debug, Clone, Default)]
-pub struct NerdFont {
-    pub font: Option<Font>,
-    has: HashSet<char>,
-    /// What this was computed for: the terminal font and how many fonts
-    /// were installed.
-    key: Option<(SharedString, usize)>,
-}
-
-impl NerdFont {
-    /// Find the font for `terminal_family` among `installed` families.
-    /// Cheap to call again: only recomputes when the inputs changed.
-    pub fn update(&mut self, terminal_family: &str, installed: &[String], cx: &App) {
-        let key = Some((SharedString::from(terminal_family.to_string()), installed.len()));
-        if self.key == key {
-            return;
-        }
-        *self = Self { key, ..Self::default() };
-        let text = cx.text_system();
-        let candidates = std::iter::once(terminal_family).chain(SYMBOL_FONTS.iter().copied());
-        for family in candidates.filter(|f| installed.iter().any(|i| i == f)) {
-            let font = gpui::font(family.to_string());
-            let id = text.resolve_font(&font);
-            let has: HashSet<char> = ALL_GLYPHS.iter().copied().filter(|&c| text.advance(id, gpui::px(14.), c).is_ok()).collect();
-            // A real Nerd Font has (nearly) all of them; one that lacks the
-            // terminal glyph isn't one.
-            if has.contains(&TERMINAL) {
-                log::info!("tab icons: {family} ({}/{} glyphs)", has.len(), ALL_GLYPHS.len());
-                self.font = Some(font);
-                self.has = has;
-                return;
-            }
-        }
-        log::info!("tab icons: no Nerd Font installed; tabs show goatty's own icon");
-    }
-
-    /// The icon for `process`, if goatty knows the program and the font
-    /// has its glyph.
-    pub fn icon(&self, process: &str) -> Option<ProcessIcon> {
-        self.font.as_ref()?;
-        icon_for(process).filter(|i| self.has.contains(&i.glyph))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,5 +127,14 @@ mod tests {
         for n in ["lua", "psql", "ssh", "htop", "man", "yazi", "fzf", "curl", "make", "tmux", "sudo", "watch", "claude", "zsh"] {
             assert!(ALL_GLYPHS.contains(&icon_for(n).unwrap().glyph), "{n}");
         }
+    }
+
+    /// Every code point is in the bundled font (an unknown or mistyped one
+    /// would draw as a box).
+    #[test]
+    fn glyphs_in_bundled_font() {
+        let missing: Vec<String> =
+            ALL_GLYPHS.iter().filter(|&&c| !crate::fonts::tests::has_glyph(c)).map(|c| format!("U+{:X}", *c as u32)).collect();
+        assert!(missing.is_empty(), "not in the bundled Nerd Font: {missing:?}");
     }
 }

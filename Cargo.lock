@@ -2020,6 +2020,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "ttf-parser",
 ]
 
 [[package]]

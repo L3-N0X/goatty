@@ -19,7 +19,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div, prelude::*, px, rgb,
 };
 
-use super::icons::IconColor;
+use super::icons::{IconColor, icon_for};
 use super::{DraggedTab, Tab, Workspace, marks};
 use crate::actions::NewTab;
 use crate::settings::AppSettings;
@@ -189,21 +189,20 @@ impl Workspace {
         )
     }
 
-    /// The program icon in `size` px, or `None` (no Nerd Font, unknown
-    /// program, icons off). `on_accent`: drawn on the accent color.
+    /// The program icon in `size` px, or `None` (unknown program, icons
+    /// off). `on_accent`: drawn on the accent color.
     fn process_icon(&self, process: Option<&str>, size: f32, color: Option<Hsla>, c: Colors, cx: &App) -> Option<AnyElement> {
         if !cx.global::<AppSettings>().client.tabs.icons {
             return None;
         }
-        let icon = self.nerd.icon(process?)?;
-        let font = self.nerd.font.clone()?;
+        let icon = icon_for(process?)?;
         Some(
             div()
                 .flex_none()
                 .w(px(size + 2.))
                 .flex()
                 .justify_center()
-                .font(font)
+                .font(crate::fonts::icons())
                 .text_size(px(size))
                 .line_height(px(size + 2.))
                 .text_color(color.unwrap_or_else(|| c.icon(icon.color, cx)))

@@ -88,7 +88,7 @@ XDG variables are respected. History stays in the file plain zsh would use (`${Z
 
 Each built-in plugin has its own page under Plugins with all its settings; Prompt and History also show the Starship and Atuin switches. `host.json` version 1 had the switches as `shell.zsh.{autosuggestions, syntax_highlighting, fzf}`, `prompt.starship`, `history.atuin` and the options as `prompt.prefer_user_config`, `history.atuin_up_arrow`: loading one moves them to `plugins.*` (version 2; only keys the file had, so it stays sparse).
 
-`.zshrc` is off by default because most `.zshrc` files load their own prompt and plugins, which would fight goatty's. With it on, it runs after compinit and before goatty's plugins, so goatty's prompt still wins. Turn off the Starship plugin to keep your own prompt. The `minimal` prompt style uses plain characters only, for fonts without Nerd Font symbols (#46).
+`.zshrc` is off by default because most `.zshrc` files load their own prompt and plugins, which would fight goatty's. With it on, it runs after compinit and before goatty's plugins, so goatty's prompt still wins. Turn off the Starship plugin to keep your own prompt. The default `rich` prompt uses Nerd Font symbols; goatty draws them with its bundled JetBrainsMono Nerd Font whatever the terminal font is. The `minimal` style uses plain characters only, for a plainer look.
 
 Each plugin checks for its tool at shell startup and is skipped if the tool is missing. Binaries come from `$commands`, which sees the PATH after the user's `.zprofile` ran; zsh plugins come from their package's `system_paths` (distro/Homebrew/NixOS), then the managed copy. A system install always wins over a managed one.
 
@@ -121,7 +121,7 @@ Pinned 2026-11-07 to releases at least two weeks old. Checksums were computed fr
 
 ## First run and the GUI
 
-On the very first start (no `settings.json`, no `~/.local/state/goatty/welcome-shown`), goatty opens a **welcome window** with three steps: a theme (or follow the desktop) and the text size; the built-in tools of the window's host, the missing ones preselected and installed one at a time with progress, plus the prompt style (icons need a Nerd Font); then the shortcuts worth knowing. Everything else keeps its defaults. The command palette's "Welcome and setup" opens it again.
+On the very first start (no `settings.json`, no `~/.local/state/goatty/welcome-shown`), goatty opens a **welcome window** with three steps: a theme (or follow the desktop) and the text size; the built-in tools of the window's host, the missing ones preselected and installed one at a time with progress, plus the prompt style; then the shortcuts worth knowing. Everything else keeps its defaults. The command palette's "Welcome and setup" opens it again.
 
 When a tab connects to a host (local or remote) whose managed shell misses default tools, a sticky toast offers to install them: Install / Not now / Don't ask again. That happens once per host per run, never while the welcome window is open, and never after "Don't ask again" (the same marker as `goatty-setup --dismiss`). The in-shell hint stays quiet in sessions of a goatty window that offers the setup itself (goattyd sets `GOATTY_GUI_SETUP=1` for clients with protocol v9, `goatty --local` always; the shell unsets it after startup), and on hosts where a window already offered it (`shell-setup-offered`). Installing reloads the host's running shells, so an idle prompt has the new tools at once.
 
@@ -157,4 +157,4 @@ Installed plugins (Stage 5, [`plugins.md`](plugins.md)) render into `plugins-ear
 
 ## Not done yet
 
-Caching tool init scripts (#41), installs for macOS and other architectures (#42), managed completions for installed tools (#43), importing existing history into Atuin on first install (#44), updating managed tools after a pin bump (#45), Nerd Font symbols for the default prompt (#46), an interactive GUI smoke test (#47), and the terminal side of shell integration (#28).
+Caching tool init scripts (#41), installs for macOS and other architectures (#42), managed completions for installed tools (#43), importing existing history into Atuin on first install (#44), updating managed tools after a pin bump (#45), an interactive GUI smoke test (#47), and the terminal side of shell integration (#28).

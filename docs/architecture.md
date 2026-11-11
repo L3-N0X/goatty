@@ -70,6 +70,7 @@ Design and startup sequence: [`managed-zsh.md`](managed-zsh.md). The zsh behavio
 main.rs        parse CLI (subcommands run without a window), pick what the window starts with (a connect plan, or a local PTY for `--local`), app::run
 commands.rs    `goatty settings …` / `goatty theme …` (headless)
 cli.rs         clap definition
+fonts.rs       the bundled JetBrainsMono Nerd Font (assets/fonts, `scripts/update-nerd-font.sh`): registered at start, the default terminal font when no installed Nerd Font comes first, the fallback of every terminal font, and the tab icons' font
 app.rs         GPUI bootstrap: settings, terminal windows (`Initial`: ready, or connecting in the window), OpenSettings handler
 settings.rs    AppSettings global: client settings file ⇄ live values, file polling, keybindings
 actions.rs     actions, name → action map, loading user keybindings (Terminal key context)
@@ -107,7 +108,7 @@ workspace/
   mod.rs       root view per window: tabs of split panes, each tab on its own host (`Spawner`), connecting tabs (connect screen until the session is there), a saved layout per goattyd, spawning/closing panes, window title, closes with the last pane; command palette, paste confirmations, toast layer
   layout.rs    a tab's split tree (pure, unit-tested): n-ary splits with weights, split/remove/normalize, layout → leaf rects + dividers, neighbor, resize
   tab_bar.rs   the tab strip in both styles (`tabs.style`: modern / compact): switch, close, rename, drag to reorder, activity markers on background tabs
-  icons.rs     process name → Nerd Font glyph + theme color; finds a font that really has the glyphs (terminal font, then Symbols Nerd Font)
+  icons.rs     process name → Nerd Font glyph + theme color, drawn with the bundled font (tests check every code point against it)
   saved.rs     the window's layout as goattyd keeps it (JSON: tabs, split trees with session ids, names, focus, zoom, window size and state); `restore` claims and reattaches it
 close_confirm.rs  "Close this pane?" dialog when a program other than the shell still runs (`panes.confirm_close`, "Don't ask again")
 connect.rs     ConnectView, the connect screen in a tab: connects off the UI thread (local daemon or remote), turns RemoteProblem into questions (install / update and restart / plain SSH) and LocalProblem too (a local goattyd that's incompatible or an older build than the installed one: restarted right away without sessions, else asked), hands the tab its session or restored layout

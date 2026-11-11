@@ -31,6 +31,8 @@ flume = "0.12"
 memchr = "2"
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
+# Tests read the bundled font (already in the tree through gpui).
+ttf-parser = "0.25"
 serde_json = "1"
 # Settings documents: report the path of an invalid value.
 serde_path_to_error = "0.1"
