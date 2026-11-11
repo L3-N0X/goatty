@@ -141,6 +141,19 @@ impl ThemeLibrary {
         (s.overrides.apply(base), issue)
     }
 
+    /// Every theme `s` names that doesn't exist: `theme.name`, or both
+    /// `theme.light` and `theme.dark` when following the system (the one
+    /// not in use now too, before the desktop switches to it).
+    pub fn check(&self, s: &ThemeSettings) -> Vec<Issue> {
+        let fields: &[(&str, &str)] =
+            if s.follow_system { &[("theme.light", &s.light), ("theme.dark", &s.dark)] } else { &[("theme.name", &s.name)] };
+        fields
+            .iter()
+            .filter(|(_, id)| self.get(id).is_none())
+            .map(|(field, id)| Issue::new(*field, format!("unknown theme {id:?}; using the default")))
+            .collect()
+    }
+
     /// An id for a new theme called `name` that doesn't clash with existing
     /// themes (built-in or user).
     pub fn unique_id(&self, name: &str) -> String {
@@ -196,6 +209,19 @@ mod tests {
         assert_eq!(slugify("My Night Theme!"), "my-night-theme");
         assert_eq!(slugify("  Tokyo  Night (Storm) "), "tokyo-night-storm");
         assert_eq!(slugify("???"), "theme");
+    }
+
+    #[test]
+    fn check_reports_every_unknown_theme() {
+        let lib = ThemeLibrary::default();
+        let mut s = ThemeSettings::default();
+        assert!(lib.check(&s).is_empty());
+        s.follow_system = false;
+        s.name = "nope".into();
+        s.dark = "also-nope".into();
+        assert_eq!(lib.check(&s).iter().map(|i| i.path.as_str()).collect::<Vec<_>>(), ["theme.name"]);
+        s.follow_system = true;
+        assert_eq!(lib.check(&s).iter().map(|i| i.path.as_str()).collect::<Vec<_>>(), ["theme.dark"], "the unused one too");
     }
 
     #[test]

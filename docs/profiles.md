@@ -20,7 +20,14 @@ The split follows where a setting takes effect. The window draws text, so fonts 
 - **Versions and migrations.** Each document has a `"version"`. Older versions run through `Document::migrations()`, a list of `(from_version, fn(&mut Value))`. A newer version is read as well as possible and flagged.
 - **Validation.** `Document::validate` clamps ranges (font size 6–48, line height 1–2, padding 0–48, opacity 0.1–1, history 100–10M), reports unknown theme and action names, and drops empty values.
 - **Sparse save.** Only values that differ from the defaults are written, so improved defaults reach everyone who never changed that setting. The previous file goes to `backups/<name>-<unix time>.json` (newest 20 kept), and the new one replaces it atomically (temp file + rename). Unchanged content isn't rewritten.
-- **Environment overrides.** `GOATTY_*` variables (table in `goatty-config/src/lib.rs`) apply on top for one run and are never saved. The settings window edits the file value and lists the overrides that are active.
+- **Environment overrides.** `GOATTY_*` variables apply on top for one run and are never saved. `ClientSettings::ENV_KEYS` / `HostSettings::ENV_KEYS` say which settings each one replaces, so the settings window can mark those rows.
+- **Checks against the machine.** Some values parse but can't work here: `ClientSettings::check_environment` reports a `font.family` that isn't installed (or no installed `font.fallbacks`) and a `links.file_opener` program that isn't on PATH; `ThemeLibrary::check` reports unknown `theme.name`, or `theme.light` *and* `theme.dark` when following the system (the unused one too). On the host, `HostService` adds a `shell.program` that isn't installed there and plugin settings that don't fit their schema. These are issues like any other; nothing is rewritten.
+
+### Where problems show up
+
+- **On the row** (#53): each settings row knows the keys it edits (`settings_window/search.rs`, `Entry::keys`). An issue whose path is that key or inside it (`terminal.padding.top` → Padding) shows as a warning line under the row's description. A row whose setting a `GOATTY_*` variable replaces says "Set by GOATTY_FONT_SIZE for this run" and its control is disabled. Host pages show a banner only for problems no row on that page covers. Host issues travel as text (`path: message`) and are read back with `Issue::parse`; an issue about a value changed in the unapplied draft is hidden.
+- **Profile page:** every problem (this computer's and the host's) with the setting it's about, a "Show" button that jumps to the row, and "Copy all", which copies them as text for a bug report. The Diagnostics page links there.
+- **Toast** (#85): when goatty starts with problems, or a reload of `settings.json` or `themes/` brings new ones (an edit in an editor), a warning toast keyed `settings.issues` shows the first one, with "Open settings" (opens the settings at that row, else the Profile page) and "Copy" (this computer's report only; Profile's "Copy all" has both). Fixing the last problem replaces it with "The settings on this computer are fine again". New problems in the host's `host.json` (seen when the settings window loads it again) get their own warning toast keyed `settings.host.issues`, with the same buttons, and an all-clear when the last one is gone. Edits made in the settings window are announced too (a live preview isn't: the change is announced when it's saved). A failed save shows an error toast with the reason.
 
 ## Applying host settings: generations
 
@@ -78,7 +85,7 @@ Settings travel as JSON documents rather than typed structs, so a schema change 
 | History | size, duplicates, leading space, sharing, Atuin, Atuin on Up | staged |
 | Aliases | yours first, then each plugin's (folded); filters All / Mine / From plugins; add/edit in a dialog (group completes existing groups) | staged |
 | Plugins | installed and built-in plugins, each with its own page (settings by the manifest's groups, advanced folded; tools; permissions; aliases); browse the registries; install review | staged / installs right away |
-| Profile | status, file locations (copy, open folder), env overrides, export/import, generations with rollback, reset | – |
+| Profile | problems (show, copy all), file locations (copy, open folder), env overrides, export/import, generations with rollback, reset | – |
 | About | version, what the window is connected to, links, a summary to copy into bug reports | – |
 
 Host edits collect in a draft. A floating bar at the bottom offers **Discard**, **Preview** (the host computes the diff of the generated files, shown colored) and **Apply** (a new generation, validated first); the sidebar marks the pages with unapplied changes. When an apply or a rollback changed the shell configuration, the bar offers **Reload running shells** (or **Not now**); see below. Calls to the daemon run off the UI thread. With `--local` there is no daemon, and the window uses `goatty_shell::HostService` in-process: same code path, same files.
@@ -151,4 +158,4 @@ goattyd settings path | show [KEY] [--all] | validate [FILE] | set KEY VALUE | u
 
 ## Not done yet
 
-Problems and env overrides shown on their row (#53), shortcut conflict warnings (#54), per-generation change summaries (#55), proper monospace detection (#57) and keyboard navigation in the settings window (#58).
+Shortcut conflict warnings (#54), per-generation change summaries (#55), proper monospace detection (#57) and keyboard navigation in the settings window (#58).

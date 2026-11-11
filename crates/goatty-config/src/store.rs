@@ -44,6 +44,48 @@ impl Issue {
     pub fn new(path: impl Into<String>, message: impl Into<String>) -> Self {
         Self { path: path.into(), message: message.into() }
     }
+
+    /// Read back an issue written with `Display` (host issues travel as
+    /// text): `font.size: too big` has the path `font.size`. Text without
+    /// a leading dotted path is a whole-document issue.
+    pub fn parse(text: &str) -> Self {
+        if let Some((path, message)) = text.split_once(": ")
+            && !path.is_empty()
+            && !path.starts_with('.')
+            && path.chars().all(|c| c.is_ascii_alphanumeric() || "._-/".contains(c))
+        {
+            return Self::new(path, message);
+        }
+        Self::new("", text)
+    }
+
+    /// Whether this is about the setting `key` or something inside it
+    /// (`terminal.padding.top` is about `terminal.padding`).
+    pub fn concerns(&self, key: &str) -> bool {
+        !key.is_empty() && (self.path == key || self.path.strip_prefix(key).is_some_and(|rest| rest.starts_with('.')))
+    }
+}
+
+/// Problems as text to paste into a bug report or a chat: a heading per
+/// source, one issue per line.
+pub fn report<'a>(sections: impl IntoIterator<Item = (&'a str, &'a [Issue])>) -> String {
+    let mut out = String::new();
+    for (title, issues) in sections {
+        if issues.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(title);
+        out.push('\n');
+        for i in issues {
+            out.push_str("- ");
+            out.push_str(&i.to_string());
+            out.push('\n');
+        }
+    }
+    out
 }
 
 impl fmt::Display for Issue {
@@ -521,6 +563,30 @@ mod tests {
         assert_eq!(out["font"]["size"], 15.0);
         assert_eq!(out["version"], 1);
         assert!(out.get("terminal").is_none(), "defaults aren't written: {out}");
+    }
+
+    #[test]
+    fn issues_round_trip_through_text() {
+        for i in [
+            Issue::new("font.size", "400 is outside 6–48; using 48"),
+            Issue::new("keybindings.ctrl-k", "unknown action \"x\""),
+            Issue::new("themes/nord-ish.json", "not a goatty theme (expected value: line 1); skipped"),
+            Issue::new("", "not valid JSON (expected `:` at line 3 column 9); using defaults"),
+        ] {
+            assert_eq!(Issue::parse(&i.to_string()), i);
+        }
+        assert_eq!(Issue::parse("can't read /x: denied").path, "", "a sentence is not a path");
+        assert_eq!(Issue::parse("plain words").path, "");
+
+        let i = Issue::new("terminal.padding.top", "x");
+        assert!(i.concerns("terminal.padding"));
+        assert!(i.concerns("terminal.padding.top"));
+        assert!(!i.concerns("terminal.pad"));
+        assert!(!i.concerns(""));
+        assert!(!Issue::new("", "x").concerns("font"));
+
+        let text = report([("settings.json", &[Issue::new("font.size", "big")][..]), ("themes", &[][..])]);
+        assert_eq!(text, "settings.json\n- font.size: big\n");
     }
 
     #[test]

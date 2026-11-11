@@ -666,14 +666,65 @@ impl ClientSettings {
         }
     }
 
-    /// Names of the `GOATTY_*` variables currently overriding settings.
+    /// Names of the `GOATTY_*` variables [`apply_env`](Self::apply_env)
+    /// accepts. One it ignores (an empty `GOATTY_THEME`, a size that isn't
+    /// a number) overrides nothing, so its rows stay editable.
     pub fn env_overrides(var: impl Fn(&str) -> Option<String>) -> Vec<&'static str> {
-        ["GOATTY_FONT", "GOATTY_FONT_SIZE", "GOATTY_RENDER", "GOATTY_THEME", "GOATTY_STATS"]
-            .into_iter()
-            .filter(|k| var(k).is_some())
-            .collect()
+        let accepted = |name: &str| {
+            let v = var(name);
+            match name {
+                "GOATTY_FONT_SIZE" => v.is_some_and(|s| s.parse::<f32>().is_ok()),
+                "GOATTY_RENDER" => matches!(v.as_deref(), Some("shaped" | "glyphs")),
+                "GOATTY_STATS" => v.is_some(),
+                _ => v.is_some_and(|s| !s.is_empty()),
+            }
+        };
+        Self::ENV_KEYS.iter().map(|(name, _)| *name).filter(|k| accepted(k)).collect()
+    }
+
+    /// Each `GOATTY_*` variable [`apply_env`](Self::apply_env) reads, with
+    /// the settings it replaces (the settings window marks their rows).
+    pub const ENV_KEYS: &'static [(&'static str, &'static [&'static str])] = &[
+        ("GOATTY_FONT", &["font.family"]),
+        ("GOATTY_FONT_SIZE", &["font.size"]),
+        ("GOATTY_RENDER", &["terminal.renderer"]),
+        ("GOATTY_THEME", &["theme.name", "theme.follow_system"]),
+        ("GOATTY_STATS", &["debug.stats"]),
+    ];
+
+    /// The settings a `GOATTY_*` variable called `name` replaces.
+    pub fn env_keys(name: &str) -> &'static [&'static str] {
+        Self::ENV_KEYS.iter().find(|(n, _)| *n == name).map_or(&[], |(_, k)| k)
+    }
+
+    /// Checks that need this machine (installed fonts, programs on PATH),
+    /// made after the `GOATTY_*` overrides: things that parse but won't
+    /// work as written. Nothing is changed; goatty already falls back.
+    pub fn check_environment(&self, fonts: &[String], has_program: impl Fn(&str) -> bool) -> Vec<Issue> {
+        let mut issues = Vec::new();
+        let installed = |name: &str| fonts.iter().any(|f| f.eq_ignore_ascii_case(name));
+        // Fallbacks are matched exactly, as `FontSettings::resolve_family` does.
+        let fallback_installed = |name: &str| fonts.iter().any(|f| f == name);
+        match self.font.family.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
+            Some(f) if !GENERIC_FONTS.contains(&f) && !fonts.is_empty() && !installed(f) => {
+                issues.push(Issue::new("font.family", format!("{f:?} isn't installed; the system picks another font")));
+            }
+            None if !fonts.is_empty() && !self.font.fallbacks.is_empty() && !self.font.fallbacks.iter().any(|f| fallback_installed(f)) => {
+                issues.push(Issue::new("font.fallbacks", "none of these fonts is installed; using the system's monospace font"));
+            }
+            _ => {}
+        }
+        if let Some(program) = self.links.file_opener.as_deref().and_then(split_words).and_then(|w| w.into_iter().next())
+            && !has_program(&program)
+        {
+            issues.push(Issue::new("links.file_opener", format!("{program:?} isn't installed or not on PATH; opening files will fail")));
+        }
+        issues
     }
 }
+
+/// Font names that pick a font by kind rather than by family.
+const GENERIC_FONTS: &[&str] = &["monospace", "sans-serif", "serif", "system-ui"];
 
 #[cfg(test)]
 mod tests {
@@ -782,6 +833,52 @@ mod tests {
         s.terminal.padding.left = 20.0;
         let json = store::to_json(&s, &[]);
         assert_eq!(parse(&json).value.terminal.padding, s.terminal.padding, "{json}");
+    }
+
+    #[test]
+    fn environment_checks() {
+        let fonts: Vec<String> = ["DejaVu Sans Mono", "Fira Code"].map(String::from).to_vec();
+        let ok = |_: &str| true;
+        let paths = |s: &ClientSettings, has: &dyn Fn(&str) -> bool| {
+            s.check_environment(&fonts, has).into_iter().map(|i| i.path).collect::<Vec<_>>()
+        };
+        let mut s = ClientSettings::default();
+        assert!(paths(&s, &ok).is_empty());
+        s.font.family = Some("fira code".into());
+        assert!(paths(&s, &ok).is_empty(), "case doesn't matter");
+        s.font.family = Some("monospace".into());
+        assert!(paths(&s, &ok).is_empty(), "generic names are fine");
+        s.font.family = Some("Iosevka".into());
+        let issues = s.check_environment(&fonts, ok);
+        assert_eq!(issues[0].path, "font.family");
+        assert!(issues[0].message.contains("the system picks another font"), "{}", issues[0]);
+        assert!(s.check_environment(&[], ok).is_empty(), "no font list: nothing to check against");
+
+        s.font.family = None;
+        s.font.fallbacks = vec!["Nope Mono".into()];
+        assert_eq!(paths(&s, &ok), ["font.fallbacks"]);
+        s.font.fallbacks = vec!["fira code".into()];
+        assert_eq!(paths(&s, &ok), ["font.fallbacks"], "fallbacks are matched exactly, like the resolver does");
+        s.font.fallbacks = vec!["Fira Code".into()];
+        assert!(paths(&s, &ok).is_empty());
+
+        let mut s = ClientSettings::default();
+        s.links.file_opener = Some("'my editor' --goto {path}".into());
+        assert_eq!(paths(&s, &|p| p != "my editor"), ["links.file_opener"]);
+        assert!(paths(&s, &ok).is_empty());
+    }
+
+    #[test]
+    fn env_keys_name_real_settings() {
+        for (var, keys) in ClientSettings::ENV_KEYS {
+            for k in *keys {
+                assert!(crate::store::is_known_key::<ClientSettings>(k), "{var}: {k}");
+            }
+        }
+        assert!(ClientSettings::env_overrides(|k| (k == "GOATTY_THEME").then(String::new)).is_empty(), "an empty value is ignored");
+        let vars = [("GOATTY_FONT_SIZE", "huge"), ("GOATTY_RENDER", "glyphs"), ("GOATTY_THEME", "nord"), ("GOATTY_STATS", "")];
+        let var = |k: &str| vars.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string());
+        assert_eq!(ClientSettings::env_overrides(var), ["GOATTY_RENDER", "GOATTY_THEME", "GOATTY_STATS"]);
     }
 
     #[test]
