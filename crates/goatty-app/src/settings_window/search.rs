@@ -103,7 +103,7 @@ pub const INDEX: &[Entry] = &[
     e(Page::Profile, "Files", "Appearance, shortcuts, workspace and hosts", "settings.json config file path"),
     e(Page::Profile, "Share", "Export a profile", "backup save file"),
     e(Page::Profile, "Share", "Import a profile", "restore load file"),
-    e(Page::Profile, "Shell configuration history", "Generation", "rollback generations undo"),
+    e(Page::Profile, "Shell configuration history", "Generation", "rollback generations undo name changes diff what changed"),
     e(Page::Profile, "Reset", "Reset appearance, shortcuts and workspace", "defaults factory reset"),
     e(Page::About, "Details", "goatty", "version about update bug report"),
 ];

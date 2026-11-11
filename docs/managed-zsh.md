@@ -54,7 +54,7 @@ Rules that came out of testing against real zsh (`crates/goatty-shell/tests/zsh_
   zsh/.zshenv .zprofile .zshrc  static, from crates/goatty-shell/zsh/
   zsh/integration.zsh           OSC 133 + OSC 7
   zsh/starship.toml             generated from the prompt settings; used unless you prefer your own starship.toml
-  host.json, info.json          the settings it was built from, when
+  host.json, info.json          the settings it was built from; when, by which goatty, on which generation, what changed, its name
 ~/.local/share/goatty/current → generations/<n>   the active one
 ~/.local/share/goatty/tools/<package>/<version>/   managed installs (built-in and registry plugins' packages)
 ~/.local/share/goatty/bin/<exe>                 → active managed binary (appended to the shell's PATH)

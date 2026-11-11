@@ -1,4 +1,4 @@
-//! The `shell` commands (`goattyd shell status|install|uninstall|dismiss`),
+//! The `shell` commands (`goattyd shell status|install|uninstall|dismiss|generations|name|diff|rollback`),
 //! printing to stdout. They run on the host whose shells they manage, which
 //! for a remote goattyd is the remote host: `goatty-setup` in a remote
 //! session installs there.
@@ -14,6 +14,7 @@ use crate::builtins::{self, BUILTINS, Builtin};
 use crate::dirs::Dirs;
 use crate::doctor;
 use crate::generation;
+use crate::history;
 use crate::launch::Launcher;
 use crate::packages::{self, Location};
 use crate::plugins::{Candidate, Plugins};
@@ -242,10 +243,11 @@ pub fn dismiss(launcher: &Launcher) -> Result<()> {
     Ok(())
 }
 
-/// `goattyd shell generations`: the built configurations, newest last.
+/// `goattyd shell generations`: the built configurations, newest last,
+/// with their names and what each changed.
 pub fn generations(launcher: &Launcher) -> Result<()> {
     let dirs = dirs_of(launcher)?;
-    let list = generation::list(dirs);
+    let list = history::list(dirs);
     if list.is_empty() {
         println!("No generations yet: one is built when the first managed shell starts.");
     }
@@ -258,16 +260,36 @@ pub fn generations(launcher: &Launcher) -> Result<()> {
             3600..86400 => format!("{}h ago", age / 3600),
             _ => format!("{}d ago", age / 86400),
         };
-        println!("{} {:>4}  {ago:<10} {}", if g.active { "*" } else { " " }, g.number, tilde(&g.path));
+        let name = g.name.as_deref().map(|n| format!("\"{n}\"  ")).unwrap_or_default();
+        println!("{} {:>4}  {ago:<9} {name}{}", if g.active { "*" } else { " " }, g.number, g.summary());
     }
     Ok(())
 }
 
-/// `goattyd shell diff`: what the next session's configuration would change.
-pub fn diff(host: &Effective<HostSettings>, launcher: &Launcher) -> Result<()> {
-    let diffs = launcher.preview(&host.value);
+/// `goattyd shell name N [NAME]`: name a generation (no name: remove it).
+pub fn name(launcher: &Launcher, number: u32, name: &[String]) -> Result<()> {
+    let name = name.join(" ");
+    history::set_name(dirs_of(launcher)?, number, Some(&name))?;
+    if name.trim().is_empty() {
+        println!("Generation {number} has no name now.");
+    } else {
+        println!("Generation {number} is \"{}\" now.", name.split_whitespace().collect::<Vec<_>>().join(" "));
+    }
+    Ok(())
+}
+
+/// `goattyd shell diff`: what the next session's configuration would
+/// change; with a generation, what that one changed in the generated files.
+pub fn diff(host: &Effective<HostSettings>, launcher: &Launcher, generation: Option<u32>) -> Result<()> {
+    let diffs: Vec<generation::FileDiff> = match generation {
+        Some(n) => history::file_diff(dirs_of(launcher)?, n)?,
+        None => launcher.preview(&host.value),
+    };
     if diffs.is_empty() {
-        println!("The active generation matches the current settings.");
+        println!(
+            "{}",
+            if generation.is_some() { "No generated file changed." } else { "The active generation matches the current settings." }
+        );
     }
     for d in diffs {
         print!("{}", d.unified);
