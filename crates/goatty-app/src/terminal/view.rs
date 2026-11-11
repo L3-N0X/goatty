@@ -264,9 +264,11 @@ impl TerminalView {
     /// start and whenever the settings change (live, no restart).
     fn apply_settings(&mut self, app: &AppSettings) {
         let s: &ClientSettings = &app.client;
-        let family = s.font.family.clone().unwrap_or_else(|| "monospace".into());
-        if self.font.family.as_ref() != family.as_str() {
-            self.font = crate::fonts::terminal(&family);
+        // Compare the whole font: the initial `monospace` placeholder has the
+        // same family as an explicit `monospace` but no bundled fallback.
+        let font = crate::fonts::terminal(s.font.family.as_deref().unwrap_or("monospace"));
+        if self.font != font {
+            self.font = font;
         }
         self.font_size = px((s.font.size + self.zoom).clamp(FontSettings::MIN_SIZE, FontSettings::MAX_SIZE));
         self.line_height = s.font.line_height;
