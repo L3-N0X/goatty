@@ -10,7 +10,7 @@ use crate::settings::AppSettings;
 use crate::settings_window;
 use crate::toast::{self, Toast};
 use crate::workspace::Workspace;
-use crate::workspace::saved::Startup;
+use crate::workspace::saved::{SavedWindow, Startup};
 
 /// What a terminal window starts with.
 pub enum Initial {
@@ -56,7 +56,9 @@ pub fn open_terminal_window(cx: &mut App, initial: Initial, open_settings: Optio
         }
         ready => (ready, open_settings),
     };
-    let bounds = Bounds::centered(None, size(px(960.), px(600.)), cx);
+    // A restored layout resizes the window when it arrives (`Workspace`).
+    let (w, h) = SavedWindow::DEFAULT;
+    let bounds = Bounds::centered(None, size(px(w), px(h)), cx);
     let opened = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
