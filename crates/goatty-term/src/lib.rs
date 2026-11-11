@@ -15,6 +15,7 @@ mod frame;
 pub mod input;
 mod links;
 mod listener;
+mod marks;
 pub mod paste;
 pub mod process;
 pub mod pty;

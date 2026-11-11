@@ -73,6 +73,9 @@ pub const INDEX: &[Entry] = &[
     e(Page::Workspace, "Tabs", "Style", "tab style modern compact").keys(&["tabs.style"]),
     e(Page::Workspace, "Tabs", "Show the tab bar", "hide tabs").keys(&["tabs.show"]),
     e(Page::Workspace, "Tabs", "Program icons", "nerd font icon tab").keys(&["tabs.icons"]),
+    e(Page::Workspace, "Tabs", "Mark tabs that ring the bell", "bell alert notify background attention").keys(&["tabs.mark_bell"]),
+    e(Page::Workspace, "Tabs", "Mark tabs with activity", "activity output command finished done notify background osc 133")
+        .keys(&["tabs.mark_activity"]),
     e(Page::Workspace, "Panes", "Fade inactive panes", "dim split focus").keys(&["panes.dim_inactive"]),
     e(Page::Workspace, "Panes", "Ask before closing a running program", "confirm close quit").keys(&["panes.confirm_close"]),
     e(Page::Hosts, "Connecting", "Open hosts in", "ssh window tab remote").keys(&["ssh.open_in"]),

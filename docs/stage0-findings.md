@@ -28,6 +28,16 @@
 
 rio-vt is not the bottleneck: these numbers are above what a PTY delivers.
 
+`Terminal::feed` also scans for OSC 133 marks, which rio-vt ignores (#122). Medians of 10 interleaved runs on today's hardware, without and with the scan:
+
+| Workload | Without | With |
+|---|---|---|
+| Plain ASCII | 674 MB/s | 624 MB/s |
+| Heavy SGR | 263 MB/s | 255 MB/s |
+| CJK / emoji / combining | 131 MB/s | 130 MB/s |
+
+The ASCII gap is mostly run-to-run noise (single runs range from 620 to 710 MB/s either way). The scan only runs `memchr` between escape sequences.
+
 ### End-to-end in the window (`scripts/bench.sh`, same workload in every terminal)
 
 | Terminal | `seq 1 3000000` (23 MB) | Colored flood (100 MB) |

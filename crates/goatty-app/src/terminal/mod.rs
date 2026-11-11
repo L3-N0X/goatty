@@ -8,4 +8,4 @@ mod links;
 mod stats;
 mod view;
 
-pub use view::{PasteRequest, TerminalEvent, TerminalView};
+pub use view::{Activity, PasteRequest, TerminalEvent, TerminalView};

@@ -43,6 +43,7 @@ icons! {
     AppWindow => "app-window.svg",
     ArrowLeft => "arrow-left.svg",
     ArrowUpDown => "arrow-up-down.svg",
+    Bell => "bell.svg",
     BookOpen => "book-open.svg",
     Bug => "bug.svg",
     Check => "check.svg",

@@ -58,6 +58,22 @@ pub enum TerminalEvent {
     /// A paste needs confirming first; send the user's choice back with
     /// [`TerminalView::paste_text`].
     ConfirmPaste(PasteRequest),
+    /// Something happened that a background tab can show (#122).
+    Activity(Activity),
+}
+
+/// What happened in a pane, for the tab's activity marker. Ordered by how
+/// much it deserves attention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Activity {
+    /// New output.
+    Output,
+    /// A command finished (OSC 133, needs shell integration).
+    Finished,
+    /// A command finished with a non-zero exit status.
+    Failed,
+    /// The program rang the bell.
+    Bell,
 }
 
 /// A paste waiting for the user: the text and why it was stopped.
@@ -114,6 +130,8 @@ pub struct TerminalView {
     cursor_visible: bool,
     last_activity: Instant,
     last_bytes: u64,
+    /// `bytes_in` when output was last reported as [`Activity::Output`].
+    seen_bytes: u64,
     /// Title set by the application (OSC 0/2).
     app_title: String,
     /// Last decorated title reported via [`TerminalEvent::TitleChanged`].
@@ -202,6 +220,8 @@ impl TerminalView {
             .detach();
         }
 
+        // The attach snapshot is already in; only output after it counts.
+        let seen_bytes = session.bytes_in.load(Ordering::Relaxed);
         let mut view = Self {
             session,
             focus,
@@ -224,6 +244,7 @@ impl TerminalView {
             cursor_visible: true,
             last_activity: Instant::now(),
             last_bytes: 0,
+            seen_bytes,
             app_title: DEFAULT_TITLE.into(),
             title: String::new(),
             process: None,
@@ -304,8 +325,18 @@ impl TerminalView {
                 UiEvent::ResetTitle => self.app_title = DEFAULT_TITLE.into(),
                 UiEvent::ClipboardStore(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
                 UiEvent::CwdChanged => cwd_changed = true,
-                UiEvent::Bell | UiEvent::Exit => {}
+                UiEvent::Bell => cx.emit(TerminalEvent::Activity(Activity::Bell)),
+                UiEvent::CommandFinished { exit } => {
+                    let failed = exit.is_some_and(|code| code != 0);
+                    cx.emit(TerminalEvent::Activity(if failed { Activity::Failed } else { Activity::Finished }));
+                }
+                UiEvent::Exit => {}
             }
+        }
+        let bytes = self.session.bytes_in.load(Ordering::Relaxed);
+        if bytes != self.seen_bytes {
+            self.seen_bytes = bytes;
+            cx.emit(TerminalEvent::Activity(Activity::Output));
         }
         // Host and link state (reconnecting…) are part of the title, so
         // re-check even without a Title event.

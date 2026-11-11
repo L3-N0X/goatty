@@ -106,7 +106,7 @@ ui/
 workspace/
   mod.rs       root view per window: tabs of split panes, each tab on its own host (`Spawner`), connecting tabs (connect screen until the session is there), a saved layout per goattyd, spawning/closing panes, window title, closes with the last pane; command palette, paste confirmations, toast layer
   layout.rs    a tab's split tree (pure, unit-tested): n-ary splits with weights, split/remove/normalize, layout → leaf rects + dividers, neighbor, resize
-  tab_bar.rs   the tab strip in both styles (`tabs.style`: modern / compact): switch, close, rename, drag to reorder
+  tab_bar.rs   the tab strip in both styles (`tabs.style`: modern / compact): switch, close, rename, drag to reorder, activity markers on background tabs
   icons.rs     process name → Nerd Font glyph + theme color; finds a font that really has the glyphs (terminal font, then Symbols Nerd Font)
   saved.rs     the window's layout as goattyd keeps it (JSON: tabs, split trees with session ids, names, focus, zoom); `restore` claims and reattaches it
 close_confirm.rs  "Close this pane?" dialog when a program other than the shell still runs (`panes.confirm_close`, "Don't ask again")
@@ -130,6 +130,8 @@ View tree: `Workspace` → tab bar + the active tab's panes (`TerminalView`s, ab
 
 Tabs and panes (#30): every pane is its own session from the window's `Spawner` (another `Create` on the same `Connection`, or another local PTY), started in the focused pane's OSC 7 directory and created off the UI thread. Closing a pane kills its session; closing the window only detaches. Closing asks first (`close_confirm.rs`) when a pane's foreground program isn't a shell and `panes.confirm_close` is on. Pane and tab shortcuts are actions handled on the workspace's root div (they bubble up from the focused `TerminalView`); Alt+digit / Alt+arrow `cx.propagate()` when there's no such tab or pane, so the key still reaches the shell. Dividers are GPUI drags (`DividerDrag` + `on_drag_move` on the pane area). Background tabs aren't rendered, so their output costs no frames.
 
+Activity markers (#122): a pane emits `TerminalEvent::Activity` for a bell, a finished command (OSC 133;D, from `goatty-term`'s mark scanner, failed when the status isn't 0) and new output (`bytes_in` grew; output from before the view existed, such as the attach snapshot, doesn't count). The workspace keeps the strongest one per background tab (bell > failed > finished > output) if `tabs.mark_bell` / `tabs.mark_activity` want it. Rendering the workspace clears the active tab's marker, however it became active.
+
 Restoring windows (#118): the workspace sends its layout with `Connection::save_layout` (protocol v7 `SaveLayout`, fire-and-forget, only when the JSON changed, re-sent after a reconnect) whenever tabs, splits, sizes, names, focus or zoom change. The JSON (`workspace/saved.rs`, `version` 1) is opaque to goattyd, which only keeps the session list and which connection holds the layout (`goatty-daemon/src/layouts.rs`). A connection ending frees its layout. `goatty` in reattach mode sends `ClaimLayout`: the daemon hands out the newest free layout that still shows a running session, to one window only (a second window gets the next free layout, else the newest detached session as before, else a new shell). Sessions that ended drop out of the tree (`Node::map_leaves`). `--new`, `--attach` and `--local` start a fresh layout.
 
 Foreground program: `goatty_term::process::ForegroundWatch` checks the PTY's foreground process group (`tcgetpgrp` → `/proc/<pid>/comm|cmdline`) shortly after output or input, never while idle. goattyd sends changes as `ServerMsg::Process` (v6; also right after `Attached`, and in `SessionInfo.process`); `--local` watches its own PTY. Tabs use it for the icon and as the title fallback (app title → program unless it's a shell → directory name).
@@ -150,7 +152,7 @@ Input: GPUI dispatches a bound action before the view's raw `on_key_down`. Short
 | IME / compose (#21)                    | `terminal/view.rs`: implement `EntityInputHandler`, register it in the element's paint |
 | Box drawing (#24)                      | `terminal/element.rs` (+ a new `terminal/boxdraw.rs`)                 |
 | Kitty keyboard (#22)                   | `goatty-term/src/input.rs`, fed from `terminal/keys.rs`               |
-| Shell integration, terminal side (#28) | `goatty-term` listener (OSC 133/7 → `UiEvent`) + daemon `SessionInfo`; the zsh side is in `goatty-shell/zsh/integration.zsh` |
+| Shell integration, terminal side (#28) | `goatty-term` listener (OSC 7 → `UiEvent`), `goatty-term/src/marks.rs` (OSC 133, which rio-vt ignores → `UiEvent::CommandFinished`) + daemon `SessionInfo`; the zsh side is in `goatty-shell/zsh/integration.zsh` |
 | Managed zsh features, tool versions    | `goatty-shell/zsh/zshrc.zsh` (load order matters, see `managed-zsh.md`); the tools are built-in plugins: `goatty-shell/plugins/<id>/plugin.toml` (+ `builtins.rs` to list a new one) |
 | First-run setup, shell diagnostics     | host side: `goatty-shell/src/setup.rs` (new operations go in its `Request`/`Reply`, no protocol bump); GUI: `welcome.rs`, `shell_setup.rs`, `settings_window/diagnostics.rs` |
 | Bash/Fish adapters (Stage 6)           | `goatty-shell`: a sibling of `zsh.rs` + its startup files; `Launcher::launch` picks by program |
