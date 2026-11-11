@@ -63,6 +63,7 @@ impl SavedWindow {
     /// Larger than any display; caps a corrupt value.
     const MAX: f32 = 16384.0;
 
+    /// The size and state in `bounds`, as the platform reports them.
     pub fn from_bounds(bounds: WindowBounds) -> Self {
         let (b, state) = match bounds {
             WindowBounds::Windowed(b) => (b, WindowState::Windowed),
@@ -70,6 +71,26 @@ impl SavedWindow {
             WindowBounds::Fullscreen(b) => (b, WindowState::Fullscreen),
         };
         Self { width: f32::from(b.size.width), height: f32::from(b.size.height), state }
+    }
+
+    /// What `window` shows now, given what was captured before (`last`).
+    pub fn capture(window: &gpui::Window, last: SavedWindow) -> Self {
+        Self::merge(window.window_bounds(), window.is_fullscreen(), last)
+    }
+
+    /// X11 reports a maximized window's current size (not its restore
+    /// size) and never reports fullscreen in its bounds. So fullscreen
+    /// comes from `fullscreen`, and a window that isn't windowed keeps the
+    /// last windowed size (Wayland's restore bounds are that size too).
+    fn merge(bounds: WindowBounds, fullscreen: bool, last: SavedWindow) -> Self {
+        let mut now = Self::from_bounds(bounds);
+        if fullscreen {
+            now.state = WindowState::Fullscreen;
+        }
+        if now.state != WindowState::Windowed {
+            (now.width, now.height) = (last.width, last.height);
+        }
+        now
     }
 
     /// The size to use, clamped to something sane (a bad value falls back
@@ -259,6 +280,19 @@ mod tests {
         assert_eq!(w(1200.0, 700.0).size(), (1200.0, 700.0));
         assert_eq!(w(10.0, 1e9).size(), (200.0, 16384.0));
         assert_eq!(w(f32::NAN, f32::INFINITY).size(), d);
+    }
+
+    #[test]
+    fn maximized_and_fullscreen_keep_the_windowed_size() {
+        let b = |w: f32, h: f32| gpui::Bounds::new(gpui::point(px(0.), px(0.)), size(px(w), px(h)));
+        let windowed = SavedWindow { width: 1000.0, height: 700.0, state: WindowState::Windowed };
+        assert_eq!(SavedWindow::merge(WindowBounds::Windowed(b(1100.0, 750.0)), false, windowed).width, 1100.0);
+        // X11: the maximized size, not the restore size.
+        let max = SavedWindow::merge(WindowBounds::Maximized(b(2560.0, 1400.0)), false, windowed);
+        assert_eq!(max, SavedWindow { state: WindowState::Maximized, ..windowed });
+        // X11: fullscreen only from `is_fullscreen`.
+        let full = SavedWindow::merge(WindowBounds::Windowed(b(2560.0, 1440.0)), true, max);
+        assert_eq!(full, SavedWindow { state: WindowState::Fullscreen, ..windowed });
     }
 
     #[test]

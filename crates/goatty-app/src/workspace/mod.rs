@@ -254,8 +254,10 @@ impl Workspace {
         this
     }
 
+    /// The window was resized, maximized or went fullscreen: save its size
+    /// with the layout once it settles.
     fn window_bounds_changed(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        let now = SavedWindow::from_bounds(window.window_bounds());
+        let now = SavedWindow::capture(window, self.window);
         if now == self.window {
             return;
         }
