@@ -7,13 +7,16 @@
 //! handles before it builds a page ([`begin`]) and a control takes one by its
 //! element id ([`tab`]). Ids are unique per window, which GPUI needs anyway.
 //! Outside [`begin`]/[`end`] (every other window) controls stay mouse-only.
+//!
+//! Components that render while the window lays out (a `RenderOnce` row, a
+//! child view) run after [`end`]: they open the pool again with [`enter`].
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 
 use gpui::{
-    App, Bounds, BoxShadow, ElementId, FocusHandle, InteractiveElement, ParentElement, Pixels, ScrollHandle, Styled, Window, canvas, point,
-    px,
+    App, Bounds, BoxShadow, ElementId, FocusHandle, InteractiveElement, ParentElement, Pixels, ScrollHandle, Styled, Window, WindowId,
+    canvas, point, px,
 };
 
 use super::style::Ui;
@@ -43,7 +46,14 @@ pub enum Ring {
 #[derive(Default)]
 struct Pool {
     active: bool,
+    /// The window [`begin`] was last called for: the only one that gets tab stops.
+    owner: Option<WindowId>,
     spare: Vec<FocusHandle>,
+    /// How many spare handles [`begin`] keeps ready (at least [`SPARE`]);
+    /// doubles when a frame ran out.
+    want: usize,
+    /// A control found no spare handle this frame, so it has no tab stop yet.
+    starved: bool,
     used: HashMap<ElementId, FocusHandle>,
     page: Option<ScrollHandle>,
     menu: Option<ScrollHandle>,
@@ -52,27 +62,71 @@ struct Pool {
     revealed: Option<ElementId>,
     /// Focus this control when it is first painted.
     autofocus: Option<ElementId>,
+    /// Focus the first control painted in the page (the frames since it was
+    /// asked for: it gives up when the page has none).
+    first_on_page: Option<u8>,
 }
 
 thread_local! {
     static POOL: RefCell<Pool> = RefCell::new(Pool::default());
 }
 
-/// Before building a page: refill the pool and say what scrolls.
-pub fn begin(cx: &mut App, page: &ScrollHandle, menu: &ScrollHandle) {
+/// Before building a page of `window`: refill the pool and say what scrolls.
+pub fn begin(cx: &mut App, window: &Window, page: &ScrollHandle, menu: &ScrollHandle) {
     POOL.with_borrow_mut(|p| {
-        while p.spare.len() < SPARE {
+        let want = p.want.max(SPARE);
+        while p.spare.len() < want {
             p.spare.push(cx.focus_handle());
         }
         p.active = true;
+        p.owner = Some(window.window_handle().window_id());
+        p.starved = false;
         p.page = Some(page.clone());
         p.menu = Some(menu.clone());
+        if let Some(frames) = &mut p.first_on_page {
+            *frames += 1;
+            if *frames > 1 {
+                p.first_on_page = None;
+            }
+        }
     });
 }
 
-/// After building the page.
-pub fn end() {
-    POOL.with_borrow_mut(|p| p.active = false);
+/// After building the page. Whether some control got no handle (the window
+/// should draw again: [`begin`] has made more ready by then).
+pub fn end() -> bool {
+    POOL.with_borrow_mut(|p| {
+        p.active = false;
+        std::mem::take(&mut p.starved)
+    })
+}
+
+/// A scope opened by [`enter`].
+#[must_use]
+pub struct Scope(bool);
+
+/// For a component that renders while `window` lays out, after [`end`]:
+/// its controls get tab stops if `window` is the one the pool serves.
+/// Give the scope back to [`leave`] when the component has been built.
+pub fn enter(window: &Window) -> Scope {
+    POOL.with_borrow_mut(|p| {
+        let was = p.active;
+        p.active = p.owner == Some(window.window_handle().window_id());
+        Scope(was)
+    })
+}
+
+/// Close a scope of [`enter`]. Draws `window` again if a control found no
+/// handle (it will have one then).
+pub fn leave(scope: Scope, window: &mut Window) {
+    let starved = POOL.with_borrow_mut(|p| {
+        p.active = scope.0;
+        // A scope inside the build phase leaves the flag for [`end`].
+        !scope.0 && std::mem::take(&mut p.starved)
+    });
+    if starved {
+        window.refresh();
+    }
 }
 
 /// The scroll handle of the open dropdown menu, for `menu()` to track.
@@ -88,7 +142,11 @@ fn take(id: &ElementId) -> Option<FocusHandle> {
         if let Some(h) = p.used.get(id) {
             return Some(h.clone());
         }
-        let h = p.spare.pop()?;
+        let Some(h) = p.spare.pop() else {
+            p.want = p.want.max(SPARE) * 2;
+            p.starved = true;
+            return None;
+        };
         p.used.insert(id.clone(), h.clone());
         Some(h)
     })
@@ -109,6 +167,12 @@ pub fn focus(id: &ElementId, window: &mut Window, cx: &mut App) {
 /// opened from the keyboard and whose items don't exist yet).
 pub fn autofocus(id: ElementId) {
     POOL.with_borrow_mut(|p| p.autofocus = Some(id));
+}
+
+/// Focus the first control painted in the page, once (the page after the
+/// drawer closed from the keyboard: nothing there to name yet).
+pub fn autofocus_first_on_page() {
+    POOL.with_borrow_mut(|p| p.first_on_page = Some(0));
 }
 
 /// Whether control `id` is a tab stop of this window.
@@ -147,13 +211,46 @@ where
     let watch = handle.clone();
     let id = id.clone();
     el.track_focus(&handle).focus_visible(move |s| s.shadow(shadow(ui, ring))).child(
-        canvas(|_, _, _| (), move |bounds, _, window, cx| on_paint(&watch, &id, bounds, scroller, window, cx)).absolute().size_full(),
+        canvas(|_, _, _| (), move |bounds, _, window, cx| on_paint(&watch, &id, bounds, scroller, stop, window, cx)).absolute().size_full(),
     )
 }
 
-fn on_paint(handle: &FocusHandle, id: &ElementId, bounds: Bounds<Pixels>, scroller: Scroller, window: &mut Window, cx: &mut App) {
-    if POOL.with_borrow(|p| p.autofocus.as_ref() == Some(id)) {
-        POOL.with_borrow_mut(|p| p.autofocus = None);
+/// `el` (an action that fades in on hover, with the element id `id`) shows
+/// while focus is on it or inside it, so the controls in it stay in the tab
+/// order and are seen when reached. Hide it with `opacity(0.)`, never
+/// `invisible()`: a hidden element has no tab stops.
+pub fn show_when_focused<E>(el: E, id: &ElementId) -> E
+where
+    E: InteractiveElement + Styled,
+{
+    match take(id) {
+        Some(handle) => el.track_focus(&handle.tab_stop(false)).in_focus(|s| s.opacity(1.)),
+        None => el,
+    }
+}
+
+fn on_paint(
+    handle: &FocusHandle,
+    id: &ElementId,
+    bounds: Bounds<Pixels>,
+    scroller: Scroller,
+    stop: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let first = POOL.with_borrow_mut(|p| {
+        let here = p.autofocus.as_ref() == Some(id)
+            || (stop
+                && scroller == Scroller::Page
+                && p.first_on_page.is_some()
+                && p.page.as_ref().is_some_and(|s| s.bounds().contains(&bounds.center())));
+        if here {
+            p.autofocus = None;
+            p.first_on_page = None;
+        }
+        here
+    });
+    if first {
         window.focus(handle, cx);
     }
     let reveal = POOL.with_borrow_mut(|p| {

@@ -65,6 +65,11 @@ pub struct AliasesPage {
     toggled: HashSet<String>,
     /// The form's frame: Tab stays inside it.
     pub(super) modal_focus: gpui::FocusHandle,
+    /// What had focus when the form opened.
+    opener: Option<gpui::FocusHandle>,
+    /// Where focus goes on the next frame, after the form closed (its
+    /// fields are gone, and focus on a missing element drops every key).
+    pub(super) restore: Option<gpui::FocusHandle>,
     _subs: Vec<Subscription>,
 }
 
@@ -72,10 +77,10 @@ impl AliasesPage {
     pub fn new(cx: &mut Context<'_, SettingsWindow>) -> Self {
         let filter = cx.new(|cx| TextInput::new("Search aliases and commands", "", cx).bare());
         let inputs = Inputs {
-            name: cx.new(|cx| TextInput::new("gst", "", cx)),
-            command: cx.new(|cx| TextInput::new("git status", "", cx)),
-            group: cx.new(|cx| TextInput::new("Optional", "", cx)),
-            description: cx.new(|cx| TextInput::new("Optional", "", cx)),
+            name: cx.new(|cx| TextInput::new("gst", "", cx).label("Alias name")),
+            command: cx.new(|cx| TextInput::new("git status", "", cx).label("Command")),
+            group: cx.new(|cx| TextInput::new("Optional", "", cx).label("Group")),
+            description: cx.new(|cx| TextInput::new("Optional", "", cx).label("Description")),
         };
         let mut subs = vec![cx.subscribe(&filter, |_, _, _: &TextInputEvent, cx| cx.notify())];
         for input in [&inputs.name, &inputs.command, &inputs.group, &inputs.description] {
@@ -95,6 +100,8 @@ impl AliasesPage {
             scope: Scope::All,
             toggled: HashSet::new(),
             modal_focus: cx.focus_handle(),
+            opener: None,
+            restore: None,
             _subs: subs,
         }
     }
@@ -209,15 +216,20 @@ impl SettingsWindow {
         }
         // Editing starts at the command; a new alias at its name.
         let first = if editing.is_some() || !fields[0].is_empty() { &i.command } else { &i.name };
+        self.aliases.opener = window.focused(cx);
         window.focus(&first.focus_handle(cx), cx);
         self.aliases.form = Some(editing);
         self.aliases.form_error = None;
         cx.notify();
     }
 
-    pub(super) fn close_alias_form(&mut self, cx: &mut Context<'_, Self>) {
+    /// Close the form. Focus goes back to what opened it (`to_opener`), or to
+    /// the page when that may be gone (after saving, which can rename the row).
+    pub(super) fn close_alias_form(&mut self, to_opener: bool, cx: &mut Context<'_, Self>) {
         self.aliases.form = None;
         self.aliases.form_error = None;
+        let opener = self.aliases.opener.take().filter(|_| to_opener);
+        self.aliases.restore = Some(opener.unwrap_or_else(|| self.focus.clone()));
         cx.notify();
     }
 
@@ -251,12 +263,12 @@ impl SettingsWindow {
             }
             h.aliases.insert(name, UserAlias { command, group, description, enabled });
         });
-        self.close_alias_form(cx);
+        self.close_alias_form(false, cx);
     }
 
     fn delete_alias(&mut self, name: String, cx: &mut Context<'_, Self>) {
         if self.aliases.form.as_ref().is_some_and(|e| e.as_deref() == Some(name.as_str())) {
-            self.close_alias_form(cx);
+            self.close_alias_form(false, cx);
         }
         self.edit_host(cx, move |h| {
             h.aliases.remove(&name);
@@ -474,7 +486,7 @@ impl SettingsWindow {
             .when(!open, |d| d.rounded_b(px(radius::CARD)))
             .child((if open { Icon::ChevronDown } else { Icon::ChevronRight }).svg().size(px(15.)).text_color(ui.muted))
             .when(plugin, |d| d.child(Icon::Puzzle.svg().size(px(15.)).text_color(ui.muted)))
-            .child(div().text_size(px(text::BODY)).font_weight(FontWeight::SEMIBOLD).child(SharedString::from(title)))
+            .child(div().text_size(px(text::BODY)).font_weight(FontWeight::SEMIBOLD).child(SharedString::from(title.clone())))
             .child(div().text_size(px(text::SMALL)).text_color(ui.faint).child(SharedString::from(count)))
             .child(div().flex_1())
             .when(plugin_off, |d| d.child(badge("Plugin off", Tone::Warning, ui)))
@@ -486,6 +498,7 @@ impl SettingsWindow {
                     ui,
                     self.act(cx, move |v, cx| v.set_group_enabled(&group, !any_on, cx)),
                 )
+                .aria_label(SharedString::from(format!("All {title} aliases")))
             })
             .on_click({
                 let key = key.clone();
@@ -546,18 +559,17 @@ impl SettingsWindow {
             };
             text_col = text_col.child(div().text_size(px(text::SMALL)).text_color(color).child(SharedString::from(n.clone())));
         }
+        // Hidden until the row is hovered or focus is in it, but never `invisible()`:
+        // keyboard users need these as tab stops.
+        let actions_id: gpui::ElementId = id("actions").into();
         let actions = match &target {
             Target::User(name) => {
                 let (edit_name, delete_name) = (name.clone(), name.clone());
-                div()
-                    .flex()
-                    .gap(px(2.))
-                    .invisible()
-                    .group_hover(gid.clone(), |s| s.visible())
+                focus::show_when_focused(div().flex().gap(px(2.)).opacity(0.).group_hover(gid.clone(), |s| s.opacity(1.)), &actions_id)
                     .child(icon_button(
                         id("edit"),
                         Icon::Pencil,
-                        "Edit",
+                        format!("Edit alias {edit_name}"),
                         ui,
                         self.act_window(cx, move |v, window, cx| {
                             let Some(a) = v.host_value().and_then(|h| h.aliases.get(&edit_name)).cloned() else { return };
@@ -567,7 +579,7 @@ impl SettingsWindow {
                     .child(icon_button(
                         id("delete"),
                         Icon::Trash,
-                        "Delete",
+                        format!("Delete alias {delete_name}"),
                         ui,
                         self.act(cx, move |v, cx| v.delete_alias(delete_name.clone(), cx)),
                     ))
@@ -577,11 +589,7 @@ impl SettingsWindow {
                 let mine = self.host_value().is_some_and(|h| h.aliases.contains_key(&name));
                 let settings =
                     r.condition.is_some() && !r.active && r.enabled && r.note.as_deref().is_some_and(|n| n.starts_with("only while"));
-                div()
-                    .flex()
-                    .gap(px(2.))
-                    .invisible()
-                    .group_hover(gid.clone(), |s| s.visible())
+                focus::show_when_focused(div().flex().gap(px(2.)).opacity(0.).group_hover(gid.clone(), |s| s.opacity(1.)), &actions_id)
                     .when(settings, |d| {
                         let pid = g.plugin_id().unwrap_or_default().to_owned();
                         d.child(icon_button(
@@ -599,7 +607,7 @@ impl SettingsWindow {
                         d.child(icon_button(
                             id("customize"),
                             Icon::Copy,
-                            "Make my own version",
+                            format!("Make my own version of {name}"),
                             ui,
                             self.act_window(cx, move |v, window, cx| v.open_alias_form(None, [&name, &expansion, &plugin, ""], window, cx)),
                         ))
@@ -619,6 +627,7 @@ impl SettingsWindow {
             .child({
                 let target = target.clone();
                 toggle(id("on"), on, ui, self.act(cx, move |v, cx| v.set_alias_enabled(target.clone(), !on, cx)))
+                    .aria_label(SharedString::from(format!("Alias {}", r.name)))
             })
             .child(
                 div()
@@ -737,7 +746,7 @@ impl SettingsWindow {
             .items_center()
             .gap(px(8.))
             .child(kit::hint(ui, "Applied with the other shell changes").mr(px(8.)))
-            .child(button("alias-cancel", "Cancel", ButtonKind::Ghost, ui, self.act(cx, |v, cx| v.close_alias_form(cx))))
+            .child(button("alias-cancel", "Cancel", ButtonKind::Ghost, ui, self.act(cx, |v, cx| v.close_alias_form(true, cx))))
             .child(button(
                 "alias-save",
                 if editing.is_some() { "Save" } else { "Add alias" },
@@ -752,7 +761,7 @@ impl SettingsWindow {
                     MouseButton::Left,
                     cx.listener(|v, _, _, cx| {
                         // A click on the scrim (not the card, which occludes) closes.
-                        v.close_alias_form(cx)
+                        v.close_alias_form(true, cx)
                     }),
                 )
                 .into_any_element(),

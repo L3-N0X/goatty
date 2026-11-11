@@ -205,31 +205,36 @@ impl SettingsWindow {
         let chips = div().flex().flex_wrap().items_center().gap(px(8.)).children(line.keys.iter().enumerate().map(|(ki, k)| {
             let key = k.clone();
             let gid = SharedString::from(format!("sc-key-{name}-{ki}"));
+            let rm_id: gpui::ElementId = SharedString::from(format!("sc-rm-{name}-{ki}")).into();
+            // Hidden until the key is hovered or focused, but a tab stop all along (an
+            // `invisible()` one isn't), so any binding can be removed from the keyboard.
+            let remove = div()
+                .id(rm_id.clone())
+                .role(gpui::Role::Button)
+                .aria_label(SharedString::from(format!("Remove {} from {}", pretty_keys(k), line.action.label)))
+                .size(px(18.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .opacity(0.)
+                .group_hover(gid.clone(), |s| s.opacity(1.))
+                .in_focus(|s| s.opacity(1.))
+                .cursor_pointer()
+                .hover(|s| s.bg(ui.danger.opacity(0.15)))
+                .child(Icon::Close.svg().size(px(12.)).text_color(ui.muted))
+                .tooltip(tooltip("Remove this shortcut"))
+                .on_click(move |_, _, cx| AppSettings::update(cx, |s| keys::set_binding(&mut s.keybindings, &key, None)));
             div()
                 .id(gid.clone())
-                .group(gid.clone())
+                .group(gid)
                 .relative()
                 .flex()
                 .items_center()
                 .gap(px(4.))
                 .when(problem[ki], |d| d.p(px(2.)).rounded(px(8.)).border_1().border_color(ui.warning))
                 .child(keycaps(k, ui))
-                .child(
-                    div()
-                        .id(SharedString::from(format!("sc-rm-{name}-{ki}")))
-                        .size(px(18.))
-                        .rounded_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .invisible()
-                        .group_hover(gid, |s| s.visible())
-                        .cursor_pointer()
-                        .hover(|s| s.bg(ui.danger.opacity(0.15)))
-                        .child(Icon::Close.svg().size(px(12.)).text_color(ui.muted))
-                        .tooltip(tooltip("Remove this shortcut"))
-                        .on_click(move |_, _, cx| AppSettings::update(cx, |s| keys::set_binding(&mut s.keybindings, &key, None))),
-                )
+                .child(focus::tab(remove, &rm_id, ui, Ring::Outer, Scroller::Page))
         }));
         let cell = if recording {
             div()
@@ -278,7 +283,10 @@ impl SettingsWindow {
                         cx.notify();
                     });
                 })
-                .when(!line.keys.is_empty() && !line.changed, |d| d.invisible().group_hover(group_id.clone(), |s| s.visible())),
+                .when(!line.keys.is_empty() && !line.changed, |d| {
+                    // Enter on the row does the same: hidden until hover or focus, still a tab stop.
+                    d.opacity(0.).group_hover(group_id.clone(), |s| s.opacity(1.)).in_focus(|s| s.opacity(1.))
+                }),
             );
         // The row is a tab stop: Enter records a new shortcut, Delete removes the last one.
         let row_id: gpui::ElementId = group_id.clone().into();

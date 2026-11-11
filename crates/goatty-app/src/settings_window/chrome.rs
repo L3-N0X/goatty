@@ -17,7 +17,7 @@ use crate::ui::style::{Ui, radius, text};
 use gpui::Focusable;
 
 /// Narrower windows get a navigation rail instead of the sidebar.
-const RAIL_BELOW: f32 = 920.;
+pub(super) const RAIL_BELOW: f32 = 920.;
 
 /// How long a row opened from a search result stays highlighted.
 const HIGHLIGHT: Duration = Duration::from_millis(1800);
@@ -64,16 +64,25 @@ impl SettingsWindow {
             // Into the page.
             "enter" | "space" | "right" => {
                 cx.stop_propagation();
-                self.drawer = false;
+                if self.drawer {
+                    // The page's controls are behind the drawer and the drawer is
+                    // drawn after them: the first control painted without it gets focus.
+                    self.drawer = false;
+                    focus::autofocus_first_on_page();
+                } else {
+                    window.focus_next(cx);
+                }
                 cx.notify();
-                window.focus_next(cx);
                 return;
             }
             _ => return,
         };
         cx.stop_propagation();
         self.search.update(cx, |i, cx| i.set_text("", cx));
+        // Up and Down browse the pages: the drawer stays until a page is chosen.
+        let drawer = self.drawer;
         self.go(Page::ALL[to], cx);
+        self.drawer = drawer;
     }
 
     /// The pages as one tab stop around `items`: the focus ring is on the current page.
@@ -529,7 +538,7 @@ impl SettingsWindow {
                 self.drawer = false;
                 window.focus(&self.nav_focus, cx);
             } else if self.aliases_modal_open() {
-                self.close_alias_form(cx);
+                self.close_alias_form(true, cx);
             } else if !self.search.read(cx).text().is_empty() {
                 self.search.update(cx, |i, cx| i.set_text("", cx));
                 window.focus(&self.focus, cx);
@@ -560,7 +569,10 @@ impl SettingsWindow {
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let ui = Ui::get(cx);
-        focus::begin(cx, &self.scroll, &self.menu_scroll);
+        focus::begin(cx, window, &self.scroll, &self.menu_scroll);
+        if let Some(back) = self.aliases.restore.take() {
+            window.focus(&back, cx);
+        }
         let focus_row = self.highlighted(cx);
         kit::set_focus_row(focus_row, &self.scroll);
         let query = self.search.read(cx).text().trim().to_lowercase();
@@ -604,13 +616,15 @@ impl Render for SettingsWindow {
                 .inset_0()
                 .bg(ui.scrim)
                 .occlude()
-                .on_click(cx.listener(|v, _, _, cx| {
+                .on_click(cx.listener(|v, _, window, cx| {
                     v.drawer = false;
+                    window.focus(&v.nav_focus, cx);
                     cx.notify();
                 }))
                 .child(
                     div()
                         .id("drawer")
+                        .track_focus(&self.drawer_trap)
                         .h_full()
                         .w(px(280.))
                         .occlude()
@@ -666,7 +680,10 @@ impl Render for SettingsWindow {
             )
             .children(drawer)
             .children(modal);
-        focus::end();
+        if focus::end() {
+            // Some controls had no focus handle: the next frame has more.
+            window.refresh();
+        }
         root
     }
 }

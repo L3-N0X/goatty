@@ -23,13 +23,13 @@ impl SettingsWindow {
         let links = section(ui, "Links")
             .child(row(ui, "Open links").desc("Web addresses, file paths and links programs mark up").control(self.select(
                 "links-open-on",
+                "Open links",
                 opts(&[
                     (LinkClick::CtrlClick, ctrl, "Hold the key to see where a link goes"),
                     (LinkClick::Click, "Click", "Any click on a link opens it"),
                     (LinkClick::Off, "Never", "Links are plain text"),
                 ]),
                 &s.links.open_on,
-                ui,
                 cx,
                 |v, _, cx| AppSettings::update(cx, |s| s.links.open_on = v),
             )))
@@ -51,7 +51,7 @@ impl SettingsWindow {
             opts(&[(CopyOnSelect::Clipboard, "Clipboard", ""), (CopyOnSelect::Primary, "Off", "")])
         };
         let selection = section(ui, "Selection").child(row(ui, "Copy selected text").desc("When you select with the mouse").control(
-            self.select("copy-on-select", copy_opts, &s.selection.copy_on_select, ui, cx, |v, _, cx| {
+            self.select("copy-on-select", "Copy selected text", copy_opts, &s.selection.copy_on_select, cx, |v, _, cx| {
                 AppSettings::update(cx, |s| s.selection.copy_on_select = v)
             }),
         ));
@@ -69,21 +69,21 @@ impl SettingsWindow {
         let pasting = section(ui, "Pasting")
             .child(row(ui, "Middle click pastes").desc("Hold Shift in programs that use the mouse").control(self.select(
                 "middle-click",
+                "Middle click pastes",
                 middle_opts,
                 &s.paste.middle_click,
-                ui,
                 cx,
                 |v, _, cx| AppSettings::update(cx, |s| s.paste.middle_click = v),
             )))
             .child(row(ui, "Ask before pasting").desc("Shows what's in it, cleans it up or makes it one line").control(self.select(
                 "paste-confirm",
+                "Ask before pasting",
                 opts(&[
                     (PasteConfirm::Suspicious, "When it looks risky", "Would run at once, hidden characters, curl | sh, over 256 KiB"),
                     (PasteConfirm::Multiline, "Risky or several lines", "Also any paste with line breaks"),
                     (PasteConfirm::Never, "Never", "Paste everything as is"),
                 ]),
                 &s.paste.confirm,
-                ui,
                 cx,
                 |v, _, cx| AppSettings::update(cx, |s| s.paste.confirm = v),
             )));
@@ -154,12 +154,12 @@ impl SettingsWindow {
         let startup = section(ui, "Startup")
             .child(row(ui, "When goatty starts").desc("Sessions keep running when you close a window").control(self.select(
                 "on-launch",
+                "When goatty starts",
                 opts(&[
                     (OnLaunch::Reattach, "Restore the last window", "Its tabs and splits, with their sessions"),
                     (OnLaunch::New, "Start a new session", "An empty window with a fresh shell"),
                 ]),
                 &s.workspace.on_launch,
-                ui,
                 cx,
                 |v, _, cx| AppSettings::update(cx, |s| s.workspace.on_launch = v),
             )))
@@ -187,13 +187,13 @@ impl SettingsWindow {
             )))
             .child(row(ui, "Mark tabs with activity").desc("A dot on a background tab until you look at it").control(self.select(
                 "tabs-mark-activity",
+                "Mark tabs with activity",
                 opts(&[
                     (TabActivity::Finished, "When a command finishes", "Red when it failed. Needs shell integration"),
                     (TabActivity::Output, "On any output", "Also finished commands; progress bars and clocks count too"),
                     (TabActivity::Off, "Never", "Only the bell, if that's on"),
                 ]),
                 &s.tabs.mark_activity,
-                ui,
                 cx,
                 |v, _, cx| AppSettings::update(cx, |s| s.tabs.mark_activity = v),
             )))

@@ -44,6 +44,10 @@ pub const CONTEXT: &str = "SettingsWindow";
 /// The key context while no shortcut is being recorded.
 const NAVIGATING: &str = "SettingsWindow && !recording";
 
+/// The most tab stops [`SettingsWindow::move_focus`] walks to get back into a
+/// dialog or menu.
+const TRAP_STEPS: usize = 2048;
+
 /// A color that was typed or dragged is saved this long after the last change
 /// (letting go of the mouse or pressing Enter saves right away).
 const COLOR_SAVE_DELAY: Duration = Duration::from_millis(600);
@@ -297,6 +301,8 @@ pub struct SettingsWindow {
     nav_focus: FocusHandle,
     /// The same for the sidebar in the drawer.
     drawer_focus: FocusHandle,
+    /// The open drawer's frame: Tab stays inside it.
+    drawer_trap: FocusHandle,
     /// "Search settings" in the sidebar.
     search: Entity<TextInput>,
     font_filter: Entity<TextInput>,
@@ -351,11 +357,11 @@ impl SettingsWindow {
         window.focus(&focus, cx);
         let font_filter = cx.new(|cx| TextInput::new("Search fonts", "", cx).bare());
         let search = cx.new(|cx| TextInput::new("Search settings", "", cx).bare());
-        let shell_path = cx.new(|cx| TextInput::new("/usr/bin/nu", "", cx));
+        let shell_path = cx.new(|cx| TextInput::new("/usr/bin/nu", "", cx).label("Shell program"));
         let picker = cx.new(|cx| ColorPicker::new(cx.global::<AppSettings>().colors.get(ColorSlot::Background), cx));
-        let theme_name = cx.new(|cx| TextInput::new("Name for a new theme", "", cx));
+        let theme_name = cx.new(|cx| TextInput::new("Name for a new theme", "", cx).label("Theme name"));
         let opener = cx.global::<AppSettings>().file.value.links.file_opener.clone().unwrap_or_default();
-        let file_opener = cx.new(|cx| TextInput::new("code --goto {path}:{line}:{column}", opener, cx));
+        let file_opener = cx.new(|cx| TextInput::new("code --goto {path}:{line}:{column}", opener, cx).label("Command to open files"));
         let subs = vec![
             // The colors can change underneath the editor (theme switch,
             // desktop light/dark, outside edits): keep the picker current.
@@ -418,6 +424,7 @@ impl SettingsWindow {
             menu_autofocus: Cell::new(false),
             nav_focus: cx.focus_handle(),
             drawer_focus: cx.focus_handle(),
+            drawer_trap: cx.focus_handle(),
             search,
             font_filter,
             shell_path,
@@ -755,40 +762,47 @@ impl SettingsWindow {
         self.move_focus(false, window, cx);
     }
 
-    /// Tab and Shift+Tab. A dialog or an open menu keeps focus to itself.
+    /// Tab and Shift+Tab. A dialog, an open menu or the drawer keeps focus to itself.
     fn move_focus(&mut self, forward: bool, window: &mut Window, cx: &mut Context<'_, Self>) {
         let trap = if self.aliases_modal_open() {
             Some(self.aliases.modal_focus.clone())
         } else if self.menu.is_some() {
             Some(self.menu_focus.clone())
+        } else if self.drawer && f32::from(window.viewport_size().width) < chrome::RAIL_BELOW {
+            Some(self.drawer_trap.clone())
         } else {
             None
         };
         let before = window.focused(cx);
-        if forward {
-            window.focus_next(cx);
-        } else {
-            window.focus_prev(cx);
-        }
-        if let Some(trap) = trap
-            && !trap.contains_focused(window, cx)
-        {
-            // Past the end: around to the other end.
+        let step = |window: &mut Window, cx: &mut Context<'_, Self>| {
             if forward {
                 window.focus_next(cx);
             } else {
                 window.focus_prev(cx);
             }
-            if !trap.contains_focused(window, cx)
-                && let Some(before) = before
-            {
-                window.focus(&before, cx);
+        };
+        step(window, cx);
+        let Some(trap) = trap else { return };
+        // Past the end: GPUI's tab order wraps around the whole window, so keep
+        // going until it comes back in, at the other end of the trap.
+        for _ in 0..TRAP_STEPS {
+            if trap.contains_focused(window, cx) {
+                return;
             }
+            step(window, cx);
+        }
+        // Nothing in the trap can take focus: stay where we were.
+        if let Some(before) = before {
+            window.focus(&before, cx);
         }
     }
 
     /// Ctrl+PageDown / Ctrl+PageUp: the next or previous page.
     fn step_page(&mut self, delta: isize, window: &mut Window, cx: &mut Context<'_, Self>) {
+        // The page behind a dialog isn't reachable.
+        if self.aliases_modal_open() {
+            return;
+        }
         let at = Page::ALL.iter().position(|p| *p == self.page).unwrap_or(0);
         let Some(next) = at.checked_add_signed(delta).and_then(|i| Page::ALL.get(i)).copied() else { return };
         self.search.update(cx, |i, cx| i.set_text("", cx));

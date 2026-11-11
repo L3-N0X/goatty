@@ -398,7 +398,11 @@ impl RenderOnce for Row {
                     .rounded(px(radius::CARD))
                     .hover(|s| s.bg(ui.surface_hover))
                     .on_click(move |ev, window, cx| f(ev, window, cx));
-                focus::tab(el, &id, ui, Ring::Inner, Scroller::Page).into_any_element()
+                // A row renders while the window lays out, after the page was built.
+                let scope = focus::enter(window);
+                let el = focus::tab(el, &id, ui, Ring::Inner, Scroller::Page);
+                focus::leave(scope, window);
+                el.into_any_element()
             }
             None => body.into_any_element(),
         }
@@ -630,11 +634,22 @@ impl<T> Opt<T> {
 }
 
 /// The trigger of a dropdown: the current value and an up/down chevron.
-pub fn select_trigger(ui: Ui, id: SharedString, label: impl IntoElement, open: bool) -> Stateful<Div> {
+/// `name` is the setting it changes and `value` what it shows, for screen
+/// readers ("Theme, combo box, Dracula").
+pub fn select_trigger(
+    ui: Ui,
+    id: SharedString,
+    name: impl Into<SharedString>,
+    value: impl Into<SharedString>,
+    label: impl IntoElement,
+    open: bool,
+) -> Stateful<Div> {
     let eid: ElementId = id.clone().into();
     let el = div()
         .id(id)
         .role(Role::ComboBox)
+        .aria_label(name)
+        .aria_value(value)
         .aria_expanded(open)
         .flex()
         .items_center()
@@ -808,16 +823,17 @@ impl SettingsWindow {
             .into_any_element()
     }
 
-    /// A dropdown of `options`; `f` gets the chosen value.
+    /// A dropdown of `options` for the setting `name`; `f` gets the chosen value.
     pub(super) fn select<T: Clone + PartialEq + 'static>(
         &self,
         id: &str,
+        name: &str,
         options: Vec<Opt<T>>,
         selected: &T,
-        ui: Ui,
         cx: &Context<'_, Self>,
         f: impl Fn(T, &mut Window, &mut App) + 'static,
     ) -> AnyElement {
+        let ui = Ui::get(cx);
         let id: SharedString = id.to_owned().into();
         let open = self.menu.as_ref() == Some(&id);
         let current = options.iter().find(|o| &o.value == selected).map(|o| o.label.clone()).unwrap_or_default();
@@ -839,6 +855,7 @@ impl SettingsWindow {
                 }));
             }
         }
-        self.dropdown(id.clone(), select_trigger(ui, id, div().child(current), open), list, cx)
+        let trigger = select_trigger(ui, id.clone(), name.to_owned(), current.clone(), div().child(current), open);
+        self.dropdown(id, trigger, list, cx)
     }
 }

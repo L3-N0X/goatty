@@ -533,9 +533,10 @@ impl SettingsWindow {
             )
             .when(current.is_none(), |d| d.child(badge("Auto", Tone::Neutral, ui).h(px(18.)).px(px(6.))));
         let filter = self.font_filter.clone();
-        let trigger = select_trigger(ui, id.clone(), label, open).on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            window.focus(&filter.focus_handle(cx), cx);
-        });
+        let trigger =
+            select_trigger(ui, id.clone(), "Font", resolved.clone(), label, open).on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                window.focus(&filter.focus_handle(cx), cx);
+            });
         let mut list =
             div().flex().flex_col().w(px(320.)).p(px(5.)).rounded(px(14.)).bg(ui.menu).border_1().border_color(ui.border).shadow_lg();
         if open {

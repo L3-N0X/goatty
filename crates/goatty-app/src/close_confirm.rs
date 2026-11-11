@@ -155,7 +155,7 @@ impl Render for CloseConfirm {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(toggle("close-dont-ask", self.dont_ask, ui, flip))
+                    .child(toggle("close-dont-ask", self.dont_ask, ui, flip).aria_label("Don't ask again"))
                     .child(div().text_xs().text_color(ui.muted).child("Don't ask again (Settings → Workspace)")),
             )
             .child(

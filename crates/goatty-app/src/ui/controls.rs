@@ -43,7 +43,7 @@ pub fn toggle(id: impl Into<ElementId>, on: bool, ui: Ui, f: impl Fn(&mut Window
 }
 
 /// A row of mutually exclusive choices. One option is reached with Tab (the
-/// selected one); Left/Right (or Up/Down) pick the neighbour, like a radio group.
+/// selected one, or the first if none is); Left/Right (or Up/Down) pick the neighbour, like a radio group.
 pub fn segmented<T: Clone + PartialEq + 'static>(
     id: &str,
     options: &[(T, &str)],
@@ -92,7 +92,8 @@ pub fn segmented<T: Clone + PartialEq + 'static>(
                 })
                 .on_click(move |_, window, cx| f(value.clone(), window, cx));
             let el_id = option_id_of(id, i);
-            focus::tab_stop(el, &el_id, ui, Ring::Outer, Scroller::Page, on || !any_selected)
+            // No option selected (a value from a newer file): the first one stays reachable.
+            focus::tab_stop(el, &el_id, ui, Ring::Outer, Scroller::Page, on || (!any_selected && i == 0))
         },
     ))
 }

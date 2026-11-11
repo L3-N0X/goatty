@@ -27,8 +27,8 @@ pub struct HostsPage {
 
 impl HostsPage {
     pub fn new(cx: &mut Context<'_, SettingsWindow>) -> Self {
-        let host = cx.new(|cx| TextInput::new("user@host, or a name from ~/.ssh/config", "", cx));
-        let name = cx.new(|cx| TextInput::new("Optional", "", cx));
+        let host = cx.new(|cx| TextInput::new("user@host, or a name from ~/.ssh/config", "", cx).label("Host"));
+        let name = cx.new(|cx| TextInput::new("Optional", "", cx).label("Name"));
         let mut subs = vec![cx.observe_global::<HostList>(|_, cx| cx.notify())];
         for input in [&host, &name] {
             subs.push(cx.subscribe(input, |view, _, ev: &TextInputEvent, cx| match ev {
@@ -92,9 +92,12 @@ impl SettingsWindow {
                 .items_center()
                 .gap(px(8.))
                 .child(div().text_size(px(text::SMALL)).text_color(ui.muted).child("Plain SSH"))
-                .child(toggle(("host-plain", hash(&e.host)), plain, ui, move |_, cx| {
-                    AppSettings::update(cx, |s| s.ssh.edit(&host, !discovered, |h| h.plain = !plain));
-                }))
+                .child(
+                    toggle(("host-plain", hash(&e.host)), plain, ui, move |_, cx| {
+                        AppSettings::update(cx, |s| s.ssh.edit(&host, !discovered, |h| h.plain = !plain));
+                    })
+                    .aria_label(SharedString::from(format!("Plain SSH for {}", e.label))),
+                )
                 .tooltip(tooltip("Run ssh in a local session instead of goattyd on the host: nothing gets installed there"))
         };
         let connect = {
