@@ -1,7 +1,7 @@
 //! The Terminal page (links, selection, pasting) and the Workspace page
 //! (startup, tabs, panes).
 
-use goatty_config::{CopyOnSelect, LinkClick, MiddleClick, OnLaunch, PaneSettings, PasteConfirm, TabBarShow, TabStyle};
+use goatty_config::{CopyOnSelect, LinkClick, MiddleClick, OnLaunch, PaneSettings, PasteConfirm, TabActivity, TabBarShow, TabStyle};
 use gpui::{AnyElement, Context, FontWeight, IntoElement, ParentElement, SharedString, Styled, div, prelude::*, px};
 
 use super::appearance::opts;
@@ -178,6 +178,24 @@ impl SettingsWindow {
                 s.tabs.icons,
                 ui,
                 client(|s| s.tabs.icons = !s.tabs.icons),
+            )))
+            .child(row(ui, "Mark tabs that ring the bell").desc("A bell on a background tab whose program rang it").control(toggle(
+                "tabs-mark-bell",
+                s.tabs.mark_bell,
+                ui,
+                client(|s| s.tabs.mark_bell = !s.tabs.mark_bell),
+            )))
+            .child(row(ui, "Mark tabs with activity").desc("A dot on a background tab until you look at it").control(self.select(
+                "tabs-mark-activity",
+                opts(&[
+                    (TabActivity::Finished, "When a command finishes", "Red when it failed. Needs shell integration"),
+                    (TabActivity::Output, "On any output", "Also finished commands; progress bars and clocks count too"),
+                    (TabActivity::Off, "Never", "Only the bell, if that's on"),
+                ]),
+                &s.tabs.mark_activity,
+                ui,
+                cx,
+                |v, _, cx| AppSettings::update(cx, |s| s.tabs.mark_activity = v),
             )))
             .footer("Double-click a tab to rename it, middle-click to close it, drag to move it.");
         let max = PaneSettings::MAX_DIM;

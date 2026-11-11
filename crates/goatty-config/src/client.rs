@@ -266,6 +266,19 @@ pub enum TabBarShow {
     Multiple,
 }
 
+/// What marks a background tab as having new activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TabActivity {
+    /// A command finished (OSC 133, from shell integration). The mark
+    /// shows whether it failed.
+    #[default]
+    Finished,
+    /// Any new output.
+    Output,
+    Off,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TabSettings {
@@ -274,11 +287,15 @@ pub struct TabSettings {
     /// Icon of the running program (Nerd Font glyphs, when a Nerd Font is
     /// installed).
     pub icons: bool,
+    /// Mark a background tab whose program rang the bell.
+    pub mark_bell: bool,
+    /// When to mark a background tab as having new activity.
+    pub mark_activity: TabActivity,
 }
 
 impl Default for TabSettings {
     fn default() -> Self {
-        Self { style: TabStyle::Modern, show: TabBarShow::Always, icons: true }
+        Self { style: TabStyle::Modern, show: TabBarShow::Always, icons: true, mark_bell: true, mark_activity: TabActivity::Finished }
     }
 }
 
@@ -752,6 +769,15 @@ mod tests {
         let s = with(&[("GOATTY_FONT_SIZE", "huge"), ("GOATTY_RENDER", "fancy"), ("GOATTY_FONT", "")]);
         assert_eq!(s, ClientSettings::default());
         assert_eq!(with(&[("GOATTY_FONT_SIZE", "500")]).font.size, FontSettings::MAX_SIZE);
+    }
+
+    #[test]
+    fn tab_markers() {
+        let t = TabSettings::default();
+        assert!(t.mark_bell);
+        assert_eq!(t.mark_activity, TabActivity::Finished);
+        let t: TabSettings = serde_json::from_str(r#"{"mark_bell": false, "mark_activity": "output"}"#).unwrap();
+        assert_eq!((t.mark_bell, t.mark_activity), (false, TabActivity::Output));
     }
 
     #[test]

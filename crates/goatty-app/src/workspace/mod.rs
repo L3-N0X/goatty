@@ -36,7 +36,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use goatty_client::Connection;
-use goatty_config::TabBarShow;
+use goatty_config::{TabActivity, TabBarShow, TabSettings};
 use goatty_proto::LayoutId;
 use goatty_term::TermSize;
 use gpui::{
@@ -53,7 +53,7 @@ use crate::paste_confirm::{PasteConfirm, PasteConfirmEvent};
 use crate::session::AttachMode;
 use crate::session::{Session, Spawner};
 use crate::settings::AppSettings;
-use crate::terminal::{PasteRequest, TerminalEvent, TerminalView};
+use crate::terminal::{Activity, PasteRequest, TerminalEvent, TerminalView};
 use crate::toast::{self, Toast, ToastLayer};
 use crate::ui::style::Ui;
 use crate::ui::text_input::{TextInput, TextInputEvent};
@@ -88,6 +88,18 @@ struct Tab {
     /// The connect screen, until the tab's session is there (its tree is
     /// then a single placeholder leaf without a pane).
     connecting: Option<(Entity<ConnectView>, Subscription)>,
+    /// The most important thing that happened in its panes while it was in
+    /// the background (#122); cleared when it's shown.
+    activity: Option<Activity>,
+}
+
+/// Do the tab settings show this kind of activity?
+fn marks(tabs: &TabSettings, activity: Activity) -> bool {
+    match activity {
+        Activity::Bell => tabs.mark_bell,
+        Activity::Finished | Activity::Failed => tabs.mark_activity != TabActivity::Off,
+        Activity::Output => tabs.mark_activity == TabActivity::Output,
+    }
 }
 
 impl Tab {
@@ -288,7 +300,17 @@ impl Workspace {
             let Some(tree) = tree else { continue };
             let focused = pane_of.get(&t.focused).copied().unwrap_or(panes[0].id);
             let id = self.next_id();
-            let tab = Tab { id, tree, panes, focused, zoomed: t.zoomed, name: t.name, host: Some(spawner.clone()), connecting: None };
+            let tab = Tab {
+                id,
+                tree,
+                panes,
+                focused,
+                zoomed: t.zoomed,
+                name: t.name,
+                host: Some(spawner.clone()),
+                connecting: None,
+                activity: None,
+            };
             self.tabs.insert(at, tab);
             at += 1;
         }
@@ -479,6 +501,7 @@ impl Workspace {
             name: None,
             host: None,
             connecting: Some((view, sub)),
+            activity: None,
         };
         let at = if self.tabs.is_empty() { 0 } else { self.active + 1 };
         self.tabs.insert(at, tab);
@@ -634,6 +657,7 @@ impl Workspace {
                     name: None,
                     host: Some(spawner),
                     connecting: None,
+                    activity: None,
                 };
                 // New tabs open after the current one, like browsers.
                 let at = if self.tabs.is_empty() { 0 } else { self.active + 1 };
@@ -789,6 +813,22 @@ impl Workspace {
             }
             TerminalEvent::Exited => self.remove_pane(id, window, cx),
             TerminalEvent::ConfirmPaste(request) => self.confirm_paste(id, request.clone(), window, cx),
+            TerminalEvent::Activity(activity) => self.mark_activity(id, *activity, cx),
+        }
+    }
+
+    /// Mark the pane's tab if it's in the background and the settings
+    /// want this kind of activity shown. A stronger mark (a bell over a
+    /// finished command over output) replaces a weaker one.
+    fn mark_activity(&mut self, pane: PaneId, activity: Activity, cx: &mut Context<'_, Self>) {
+        let Some((index, _)) = self.find_pane(pane) else { return };
+        if index == self.active || !marks(&cx.global::<AppSettings>().client.tabs, activity) {
+            return;
+        }
+        let tab = &mut self.tabs[index];
+        if tab.activity < Some(activity) {
+            tab.activity = Some(activity);
+            cx.notify();
         }
     }
 
@@ -1171,6 +1211,10 @@ pub fn background_appearance(t: &goatty_config::TerminalSettings) -> gpui::Windo
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
+        // However a tab became the active one, it's being looked at now.
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.activity = None;
+        }
         let tabs = &cx.global::<AppSettings>().client.tabs;
         let show_bar = tabs.show == TabBarShow::Always || self.tabs.len() > 1;
         div()

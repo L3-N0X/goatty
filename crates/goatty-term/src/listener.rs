@@ -18,6 +18,11 @@ pub enum UiEvent {
     /// OSC 52 clipboard write from the application.
     ClipboardStore(String),
     CwdChanged,
+    /// The shell reported that a command finished (OSC 133;D), with its
+    /// exit status when known. Needs shell integration.
+    CommandFinished {
+        exit: Option<i32>,
+    },
     Exit,
 }
 
