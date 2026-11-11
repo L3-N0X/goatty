@@ -266,7 +266,7 @@ impl TerminalView {
         let s: &ClientSettings = &app.client;
         let family = s.font.family.clone().unwrap_or_else(|| "monospace".into());
         if self.font.family.as_ref() != family.as_str() {
-            self.font = gpui::font(family);
+            self.font = crate::fonts::terminal(&family);
         }
         self.font_size = px((s.font.size + self.zoom).clamp(FontSettings::MIN_SIZE, FontSettings::MAX_SIZE));
         self.line_height = s.font.line_height;

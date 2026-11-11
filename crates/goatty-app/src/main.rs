@@ -12,6 +12,7 @@ mod close_confirm;
 mod command_palette;
 mod commands;
 mod connect;
+mod fonts;
 mod hosts;
 mod paste_confirm;
 mod session;

@@ -246,30 +246,28 @@ impl SettingsWindow {
                 })
                 .collect();
             let this = cx.entity().downgrade();
-            let look = section(ui, "Prompt")
-                .child(row(ui, "Starship").desc("Git status, durations and more. Off: goatty's small built-in prompt").control(toggle(
-                    "starship",
-                    starship,
-                    ui,
-                    self.toggle_plugin(cx, "starship"),
-                )))
-                .child(
-                    row(ui, "Style")
-                        .desc(needs(starship, "Minimal uses plain characters, for fonts without Nerd Font symbols"))
-                        .disabled(!starship)
-                        .control(segmented("style", &[(PromptStyle::Rich, "Rich"), (PromptStyle::Minimal, "Minimal")], &p.style, ui, {
+            let look =
+                section(ui, "Prompt")
+                    .child(row(ui, "Starship").desc("Git status, durations and more. Off: goatty's small built-in prompt").control(toggle(
+                        "starship",
+                        starship,
+                        ui,
+                        self.toggle_plugin(cx, "starship"),
+                    )))
+                    .child(row(ui, "Style").desc(needs(starship, "Minimal uses plain characters only")).disabled(!starship).control(
+                        segmented("style", &[(PromptStyle::Rich, "Rich"), (PromptStyle::Minimal, "Minimal")], &p.style, ui, {
                             let this = this.clone();
                             move |st, _, cx| {
                                 let _ = this.update(cx, |v, cx| v.edit_host(cx, |h| h.prompt.style = st));
                             }
-                        })),
-                )
-                .child(
-                    row(ui, "Use my own starship.toml")
-                        .desc(needs(starship, "~/.config/starship.toml, when it exists, instead of these settings"))
-                        .disabled(!starship)
-                        .control(toggle("own-starship", own, ui, self.toggle_plugin_bool(cx, "starship", "prefer_user_config"))),
-                );
+                        }),
+                    ))
+                    .child(
+                        row(ui, "Use my own starship.toml")
+                            .desc(needs(starship, "~/.config/starship.toml, when it exists, instead of these settings"))
+                            .disabled(!starship)
+                            .control(toggle("own-starship", own, ui, self.toggle_plugin_bool(cx, "starship", "prefer_user_config"))),
+                    );
             let layout = section(ui, "Layout")
                 .child(row(ui, "Input on its own line").desc("Type commands on a line below the directory").control(toggle(
                     "two-line",

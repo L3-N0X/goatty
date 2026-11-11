@@ -65,14 +65,33 @@ impl FontSettings {
     pub const MIN_LINE_HEIGHT: f32 = 1.0;
     pub const MAX_LINE_HEIGHT: f32 = 2.0;
 
-    /// The family to use, given the names of installed fonts.
-    pub fn resolve_family(&self, installed: &[String]) -> String {
+    /// The font goatty ships and registers at start (`goatty-app`'s
+    /// `assets/fonts`): Nerd Font icons work without installing anything.
+    pub const BUNDLED: &str = "JetBrainsMono Nerd Font";
+
+    /// The family to use, given the fonts installed on the system (without
+    /// the bundled one):
+    /// 1. the explicit `family`;
+    /// 2. the first of `fallbacks` that is an installed Nerd Font, so the
+    ///    prompt's icons draw in the user's own Nerd Font;
+    /// 3. the first of `fallbacks` that is installed, counting
+    ///    [`Self::BUNDLED`] as installed;
+    /// 4. [`Self::BUNDLED`].
+    pub fn resolve_family(&self, system: &[String]) -> String {
+        let installed = |f: &&String| system.iter().any(|i| i == *f);
         self.family
             .clone()
             .filter(|f| !f.is_empty())
-            .or_else(|| self.fallbacks.iter().find(|f| installed.iter().any(|i| i == *f)).cloned())
-            .unwrap_or_else(|| "monospace".into())
+            .or_else(|| self.fallbacks.iter().filter(installed).find(|f| is_nerd_font(f)).cloned())
+            .or_else(|| self.fallbacks.iter().find(|f| installed(f) || *f == Self::BUNDLED).cloned())
+            .unwrap_or_else(|| Self::BUNDLED.into())
     }
+}
+
+/// Whether a family is patched with the Nerd Font symbols, by its name
+/// ("JetBrainsMono Nerd Font", "FiraCode Nerd Font Mono", "Hack NF").
+fn is_nerd_font(family: &str) -> bool {
+    family.contains("Nerd Font") || family.ends_with(" NF") || family.ends_with(" NFM") || family.ends_with(" NFP")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -727,7 +746,10 @@ impl ClientSettings {
                 issues.push(Issue::new("font.family", format!("{f:?} isn't installed; the system picks another font")));
             }
             None if !fonts.is_empty() && !self.font.fallbacks.is_empty() && !self.font.fallbacks.iter().any(|f| fallback_installed(f)) => {
-                issues.push(Issue::new("font.fallbacks", "none of these fonts is installed; using the system's monospace font"));
+                issues.push(Issue::new(
+                    "font.fallbacks",
+                    format!("none of these fonts is installed; using the bundled {}", FontSettings::BUNDLED),
+                ));
             }
             _ => {}
         }
@@ -783,10 +805,20 @@ mod tests {
     #[test]
     fn font_resolution() {
         let f = FontSettings::default();
-        assert_eq!(f.resolve_family(&["Fira Code".into(), "DejaVu Sans Mono".into()]), "Fira Code");
-        assert_eq!(f.resolve_family(&[]), "monospace");
+        let system = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        // Nothing (or no Nerd Font) installed: the bundled one, ahead of
+        // plain fonts that come later in the list.
+        assert_eq!(f.resolve_family(&[]), FontSettings::BUNDLED);
+        assert_eq!(f.resolve_family(&system(&["Fira Code", "DejaVu Sans Mono"])), FontSettings::BUNDLED);
+        // An installed Nerd Font from the list wins over the bundled one.
+        assert_eq!(f.resolve_family(&system(&["DejaVu Sans Mono", "FiraCode Nerd Font"])), "FiraCode Nerd Font");
+        // A list without the bundled font is taken in order.
+        let plain = FontSettings { fallbacks: system(&["Fira Code", "DejaVu Sans Mono"]), ..f.clone() };
+        assert_eq!(plain.resolve_family(&system(&["DejaVu Sans Mono", "Fira Code"])), "Fira Code");
+        assert_eq!(plain.resolve_family(&system(&["Hack"])), FontSettings::BUNDLED);
         let explicit = FontSettings { family: Some("Iosevka".into()), ..f };
         assert_eq!(explicit.resolve_family(&[]), "Iosevka");
+        assert!(is_nerd_font("Hack NF") && is_nerd_font("JetBrainsMono Nerd Font Mono") && !is_nerd_font("Fira Code"));
     }
 
     #[test]

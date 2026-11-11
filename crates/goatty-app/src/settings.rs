@@ -28,8 +28,10 @@ pub struct AppSettings {
     pub env_overrides: Vec<&'static str>,
     pub path: Option<PathBuf>,
     stamp: FileStamp,
-    /// Installed font families, sorted.
+    /// Font families goatty can use (installed plus bundled), sorted.
     pub fonts: Arc<Vec<String>>,
+    /// Font families installed on the system, without the bundled one.
+    system_fonts: Arc<Vec<String>>,
     /// Proportional font for goatty's own windows (GPUI's default UI font
     /// name doesn't resolve on every Linux system).
     pub ui_font: gpui::SharedString,
@@ -75,6 +77,7 @@ impl AppSettings {
         for issue in &file.issues {
             log::warn!("settings: {issue}");
         }
+        let system_fonts = crate::fonts::register(cx);
         let mut fonts = cx.text_system().all_font_names();
         fonts.sort_by_key(|f| f.to_lowercase());
         fonts.dedup();
@@ -99,6 +102,7 @@ impl AppSettings {
             path,
             stamp,
             fonts: Arc::new(fonts),
+            system_fonts: Arc::new(system_fonts),
             ui_font,
             key_errors: Vec::new(),
             save_error: None,
@@ -134,7 +138,7 @@ impl AppSettings {
         let mut v = self.file.value.clone();
         v.apply_env(|k| std::env::var(k).ok());
         self.env_issues = v.check_environment(&self.fonts, has_program);
-        v.font.family = Some(v.font.resolve_family(&self.fonts));
+        v.font.family = Some(v.font.resolve_family(&self.system_fonts));
         let (colors, _) = self.themes.resolve(&v.theme, self.system_dark);
         self.colors = colors;
         self.theme_issues = self.themes.check(&v.theme);
