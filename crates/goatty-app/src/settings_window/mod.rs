@@ -530,11 +530,13 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Open (or close) the dropdown `id`.
-    pub fn toggle_menu(&mut self, id: SharedString, cx: &mut Context<'_, Self>) {
-        self.menu_opener = None;
+    /// Open (or close) the dropdown `id` with the mouse. `trigger` gets focus
+    /// back when Esc closes the menu, even if it was reached with Tab.
+    pub fn toggle_menu(&mut self, id: SharedString, trigger: gpui::FocusHandle, cx: &mut Context<'_, Self>) {
         let just_closed = self.menu_dismissed.take().is_some_and(|(d, at)| d == id && at.elapsed() < Duration::from_millis(300));
-        self.menu = if just_closed || self.menu.as_ref() == Some(&id) { None } else { Some(id) };
+        let open = !(just_closed || self.menu.as_ref() == Some(&id));
+        self.menu_opener = open.then_some(trigger);
+        self.menu = open.then_some(id);
         cx.notify();
     }
 

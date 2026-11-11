@@ -12,7 +12,7 @@
 //! child view) run after [`end`]: they open the pool again with [`enter`].
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use gpui::{
     App, Bounds, BoxShadow, ElementId, FocusHandle, InteractiveElement, ParentElement, Pixels, ScrollHandle, Styled, Window, WindowId,
@@ -62,9 +62,26 @@ struct Pool {
     revealed: Option<ElementId>,
     /// Focus this control when it is first painted.
     autofocus: Option<ElementId>,
-    /// Focus the first control painted in the page (the frames since it was
-    /// asked for: it gives up when the page has none).
-    first_on_page: Option<u8>,
+    /// Focus is waiting for a control to exist (see [`hand_over`]).
+    pending: Option<Pending>,
+    /// The controls built since [`begin`]: a focused one that isn't here any
+    /// more is gone, and so is the focus (see [`rescue`]).
+    built: HashSet<ElementId>,
+}
+
+struct Pending {
+    target: Handover,
+    /// Where focus waits: while it is still here, the user hasn't moved.
+    root: FocusHandle,
+}
+
+/// The control focus should end up on, once it exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Handover {
+    /// This control.
+    Control(ElementId),
+    /// The first control painted in the page.
+    FirstOnPage,
 }
 
 thread_local! {
@@ -81,13 +98,12 @@ pub fn begin(cx: &mut App, window: &Window, page: &ScrollHandle, menu: &ScrollHa
         p.active = true;
         p.owner = Some(window.window_handle().window_id());
         p.starved = false;
+        p.built.clear();
         p.page = Some(page.clone());
         p.menu = Some(menu.clone());
-        if let Some(frames) = &mut p.first_on_page {
-            *frames += 1;
-            if *frames > 1 {
-                p.first_on_page = None;
-            }
+        // The user moved focus on their own: stop waiting.
+        if p.pending.as_ref().is_some_and(|h| window.focused(cx).as_ref() != Some(&h.root)) {
+            p.pending = None;
         }
     });
 }
@@ -140,7 +156,9 @@ fn take(id: &ElementId) -> Option<FocusHandle> {
             return None;
         }
         if let Some(h) = p.used.get(id) {
-            return Some(h.clone());
+            let h = h.clone();
+            p.built.insert(id.clone());
+            return Some(h);
         }
         let Some(h) = p.spare.pop() else {
             p.want = p.want.max(SPARE) * 2;
@@ -148,6 +166,7 @@ fn take(id: &ElementId) -> Option<FocusHandle> {
             return None;
         };
         p.used.insert(id.clone(), h.clone());
+        p.built.insert(id.clone());
         Some(h)
     })
 }
@@ -169,10 +188,27 @@ pub fn autofocus(id: ElementId) {
     POOL.with_borrow_mut(|p| p.autofocus = Some(id));
 }
 
-/// Focus the first control painted in the page, once (the page after the
-/// drawer closed from the keyboard: nothing there to name yet).
-pub fn autofocus_first_on_page() {
-    POOL.with_borrow_mut(|p| p.first_on_page = Some(0));
+/// Move focus to `root`, which always exists, and on to `target` as soon as
+/// that is painted (the page after the drawer closed, a row after one of its
+/// buttons removed itself). It keeps waiting, over any number of frames
+/// (a page still loading), until `target` shows up or the user moves focus.
+pub fn hand_over(root: &FocusHandle, target: Handover, window: &mut Window, cx: &mut App) {
+    window.focus(root, cx);
+    POOL.with_borrow_mut(|p| p.pending = Some(Pending { target, root: root.clone() }));
+}
+
+/// Call once the window has been laid out (every control is built by then):
+/// if the focused control is no longer there, say a button that removed
+/// itself, focus would sit on nothing and drop every key, so it goes to
+/// `root`.
+pub fn rescue(root: &FocusHandle, window: &mut Window, cx: &mut App) {
+    let Some(focused) = window.focused(cx) else { return };
+    let gone = POOL.with_borrow(|p| {
+        p.owner == Some(window.window_handle().window_id()) && p.used.iter().any(|(id, h)| *h == focused && !p.built.contains(id))
+    });
+    if gone {
+        window.focus(root, cx);
+    }
 }
 
 /// Whether control `id` is a tab stop of this window.
@@ -239,14 +275,18 @@ fn on_paint(
     cx: &mut App,
 ) {
     let first = POOL.with_borrow_mut(|p| {
-        let here = p.autofocus.as_ref() == Some(id)
-            || (stop
-                && scroller == Scroller::Page
-                && p.first_on_page.is_some()
-                && p.page.as_ref().is_some_and(|s| s.bounds().contains(&bounds.center())));
+        let waited_for = p.pending.as_ref().is_some_and(|h| match &h.target {
+            Handover::Control(c) => c == id,
+            Handover::FirstOnPage => {
+                stop && scroller == Scroller::Page && p.page.as_ref().is_some_and(|s| s.bounds().contains(&bounds.center()))
+            }
+        });
+        let here = waited_for || p.autofocus.as_ref() == Some(id);
         if here {
             p.autofocus = None;
-            p.first_on_page = None;
+        }
+        if waited_for {
+            p.pending = None;
         }
         here
     });

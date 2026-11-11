@@ -562,6 +562,7 @@ impl SettingsWindow {
         // Hidden until the row is hovered or focus is in it, but never `invisible()`:
         // keyboard users need these as tab stops.
         let actions_id: gpui::ElementId = id("actions").into();
+        let header_id: gpui::ElementId = SharedString::from(format!("alias-fold-{}", group_key(g))).into();
         let actions = match &target {
             Target::User(name) => {
                 let (edit_name, delete_name) = (name.clone(), name.clone());
@@ -581,7 +582,11 @@ impl SettingsWindow {
                         Icon::Trash,
                         format!("Delete alias {delete_name}"),
                         ui,
-                        self.act(cx, move |v, cx| v.delete_alias(delete_name.clone(), cx)),
+                        self.act_window(cx, move |v, window, cx| {
+                            // The row is going: focus waits on the group's header.
+                            focus::hand_over(&v.focus, focus::Handover::Control(header_id.clone()), window, cx);
+                            v.delete_alias(delete_name.clone(), cx);
+                        }),
                     ))
             }
             Target::Plugin { .. } => {

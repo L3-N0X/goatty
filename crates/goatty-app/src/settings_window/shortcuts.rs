@@ -202,10 +202,15 @@ impl SettingsWindow {
             warnings.insert(0, msg.clone());
         }
         let group_id = SharedString::from(format!("sc-{name}"));
+        // A button that removes itself hands focus back to the row it was in.
+        let row_elem: gpui::ElementId = group_id.clone().into();
+        let page_focus = self.focus.clone();
         let chips = div().flex().flex_wrap().items_center().gap(px(8.)).children(line.keys.iter().enumerate().map(|(ki, k)| {
             let key = k.clone();
+            let (row_elem, page_focus) = (row_elem.clone(), page_focus.clone());
             let gid = SharedString::from(format!("sc-key-{name}-{ki}"));
             let rm_id: gpui::ElementId = SharedString::from(format!("sc-rm-{name}-{ki}")).into();
+            let rm_focus = rm_id.clone();
             // Hidden until the key is hovered or focused, but a tab stop all along (an
             // `invisible()` one isn't), so any binding can be removed from the keyboard.
             let remove = div()
@@ -224,7 +229,12 @@ impl SettingsWindow {
                 .hover(|s| s.bg(ui.danger.opacity(0.15)))
                 .child(Icon::Close.svg().size(px(12.)).text_color(ui.muted))
                 .tooltip(tooltip("Remove this shortcut"))
-                .on_click(move |_, _, cx| AppSettings::update(cx, |s| keys::set_binding(&mut s.keybindings, &key, None)));
+                .on_click(move |_, window, cx| {
+                    if focus::is_focused(&rm_focus, window) {
+                        focus::hand_over(&page_focus, focus::Handover::Control(row_elem.clone()), window, cx);
+                    }
+                    AppSettings::update(cx, |s| keys::set_binding(&mut s.keybindings, &key, None));
+                });
             div()
                 .id(gid.clone())
                 .group(gid)
@@ -265,13 +275,16 @@ impl SettingsWindow {
             .justify_end()
             .gap(px(2.))
             .when(line.changed, |d| {
-                d.child(icon_button(
-                    SharedString::from(format!("sc-reset-{name}")),
-                    Icon::RotateCcw,
-                    "Reset to the default",
-                    ui,
-                    move |_, cx| AppSettings::update(cx, |s| keys::reset_action(&mut s.keybindings, name)),
-                ))
+                let (row_elem, page_focus) = (row_elem.clone(), page_focus.clone());
+                let reset_id = SharedString::from(format!("sc-reset-{name}"));
+                let reset_focus: gpui::ElementId = reset_id.clone().into();
+                d.child(icon_button(reset_id, Icon::RotateCcw, "Reset to the default", ui, move |window, cx| {
+                    // The button goes away once the row is back to its default.
+                    if focus::is_focused(&reset_focus, window) {
+                        focus::hand_over(&page_focus, focus::Handover::Control(row_elem.clone()), window, cx);
+                    }
+                    AppSettings::update(cx, |s| keys::reset_action(&mut s.keybindings, name));
+                }))
             })
             .child(
                 icon_button(SharedString::from(format!("sc-add-{name}")), Icon::Plus, "Add a shortcut", ui, move |window, cx| {

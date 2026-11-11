@@ -769,8 +769,10 @@ impl SettingsWindow {
         let open = self.menu.as_ref() == Some(&id);
         let this = cx.entity().downgrade();
         let toggle_id = id.clone();
+        let trigger_id: ElementId = id.clone().into();
         let trigger = trigger.on_mouse_down(MouseButton::Left, move |_, _, cx| {
-            let _ = this.update(cx, |v, cx| v.toggle_menu(toggle_id.clone(), cx));
+            let trigger = focus::handle(&trigger_id, cx);
+            let _ = this.update(cx, |v, cx| v.toggle_menu(toggle_id.clone(), trigger, cx));
         });
         // From the keyboard: Enter and Space toggle the menu, Down opens it.
         let open_with_key = {

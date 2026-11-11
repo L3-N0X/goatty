@@ -4,7 +4,8 @@
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled, Window, div, prelude::*, px,
+    AnyElement, Context, FontWeight, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled, Window, canvas, div,
+    prelude::*, px,
 };
 
 use super::kit::{self, search_field};
@@ -66,9 +67,9 @@ impl SettingsWindow {
                 cx.stop_propagation();
                 if self.drawer {
                     // The page's controls are behind the drawer and the drawer is
-                    // drawn after them: the first control painted without it gets focus.
+                    // drawn after them: focus waits on the page for its first control.
                     self.drawer = false;
-                    focus::autofocus_first_on_page();
+                    focus::hand_over(&self.focus, focus::Handover::FirstOnPage, window, cx);
                 } else {
                     window.focus_next(cx);
                 }
@@ -97,6 +98,8 @@ impl SettingsWindow {
 
     fn nav_item(&self, ui: Ui, page: Page, keyboard: bool, cx: &Context<'_, Self>) -> impl IntoElement {
         let on = page == self.page && self.search.read(cx).text().is_empty();
+        // While search results show no page is selected, but focus still has a place.
+        let ring = keyboard && page == self.page;
         let changed = self.page_changed(page);
         div()
             .id(page.title())
@@ -110,7 +113,7 @@ impl SettingsWindow {
             .px(px(12.))
             .rounded_full()
             .cursor_pointer()
-            .when(keyboard && on, |d| d.shadow(focus::shadow(ui, Ring::Inner)))
+            .when(ring, |d| d.shadow(focus::shadow(ui, Ring::Inner)))
             .text_size(px(text::BODY))
             .when(on, |d| d.bg(ui.accent_soft).text_color(ui.accent_text).font_weight(FontWeight::SEMIBOLD))
             .when(!on, |d| d.text_color(ui.text).hover(|s| s.bg(ui.field)))
@@ -144,7 +147,7 @@ impl SettingsWindow {
                 .role(gpui::Role::Link)
                 .aria_label(page.title())
                 .aria_selected(on)
-                .when(keyboard && on, |d| d.rounded(px(radius::CONTROL)).shadow(focus::shadow(ui, Ring::Inner)))
+                .when(keyboard && page == self.page, |d| d.rounded(px(radius::CONTROL)).shadow(focus::shadow(ui, Ring::Inner)))
                 .group(SharedString::from(format!("rail-{}", page.title())))
                 .child(
                     div()
@@ -649,6 +652,11 @@ impl Render for SettingsWindow {
             .on_action(cx.listener(Self::prev_page))
             .on_key_down(cx.listener(Self::on_key))
             .child(nav)
+            // After layout: a focused control that is gone gives its focus to the page.
+            .child({
+                let root = self.focus.clone();
+                canvas(|_, _, _| (), move |_, _, window, cx| focus::rescue(&root, window, cx)).absolute().size_0()
+            })
             .child(
                 div()
                     .relative()
