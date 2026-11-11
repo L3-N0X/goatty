@@ -22,6 +22,7 @@ use serde_json::Value;
 use super::kit::{self, card, opt, row, search_field, section};
 use super::{Outcome, Page, SettingsWindow};
 use crate::ui::controls::{ButtonKind, Tone, badge, banner, button, button_with, icon_button, segmented, stepper, toggle, tooltip};
+use crate::ui::focus::{self, Ring, Scroller};
 use crate::ui::icons::Icon;
 use crate::ui::style::{Ui, radius, text};
 use crate::ui::text_input::{TextInput, TextInputEvent};
@@ -223,7 +224,7 @@ impl SettingsWindow {
                     }
                     None => {
                         let placeholder = s.placeholder.clone().unwrap_or_default();
-                        let input = cx.new(|cx| TextInput::new(placeholder, text, cx));
+                        let input = cx.new(|cx| TextInput::new(placeholder, text, cx).label(s.label.clone()));
                         let (id, setting) = (inst.id.clone(), s.clone());
                         self.plugins._subs.push(cx.subscribe(&input, move |view, _, ev: &TextInputEvent, cx| {
                             let (TextInputEvent::Changed(text) | TextInputEvent::Submitted(text)) = ev;
@@ -416,8 +417,11 @@ impl SettingsWindow {
         let missing = inst.packages.iter().any(|p| matches!(p.state, PackageState::Missing));
         let fetch = inst.builtin && inst.packages.iter().any(|p| p.available && p.needs_install());
         let open_id = id.clone();
-        div()
-            .id(SharedString::from(format!("plugin-{id}")))
+        let row_id: gpui::ElementId = SharedString::from(format!("plugin-{id}")).into();
+        let row = div()
+            .id(row_id.clone())
+            .role(gpui::Role::Button)
+            .aria_label(SharedString::from(inst.manifest.name.clone()))
             .flex()
             .items_center()
             .gap(px(14.))
@@ -462,12 +466,15 @@ impl SettingsWindow {
             )
             .child({
                 let id = id.clone();
-                div().on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(toggle(
-                    SharedString::from(format!("enabled-{id}")),
-                    enabled,
-                    ui,
-                    self.act(cx, move |v, cx| v.edit_plugin(&id, cx, move |p| p.enabled = !enabled)),
-                ))
+                div().on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(
+                    toggle(
+                        SharedString::from(format!("enabled-{id}")),
+                        enabled,
+                        ui,
+                        self.act(cx, move |v, cx| v.edit_plugin(&id, cx, move |p| p.enabled = !enabled)),
+                    )
+                    .aria_label(SharedString::from(format!("{} plugin", inst.manifest.name))),
+                )
             })
             .child(Icon::ChevronRight.svg().size(px(16.)).text_color(ui.faint))
             .on_click(cx.listener(move |v, _, _, cx| {
@@ -476,8 +483,8 @@ impl SettingsWindow {
                 v.plugins.show_advanced = false;
                 v.scroll.set_offset(gpui::point(px(0.), px(0.)));
                 cx.notify();
-            }))
-            .into_any_element()
+            }));
+        focus::tab(row, &row_id, ui, Ring::Inner, Scroller::Page).into_any_element()
     }
 
     fn perm_icons(ui: Ui, perms: &[Permission]) -> impl IntoElement {
@@ -664,10 +671,13 @@ impl SettingsWindow {
                             .flex_col()
                             .items_end()
                             .gap(px(4.))
-                            .child(toggle(SharedString::from(format!("enabled-{id}")), enabled, ui, {
-                                let id = id.clone();
-                                self.act(cx, move |v, cx| v.edit_plugin(&id, cx, move |p| p.enabled = !enabled))
-                            }))
+                            .child(
+                                toggle(SharedString::from(format!("enabled-{id}")), enabled, ui, {
+                                    let id = id.clone();
+                                    self.act(cx, move |v, cx| v.edit_plugin(&id, cx, move |p| p.enabled = !enabled))
+                                })
+                                .aria_label(SharedString::from(format!("{} plugin", inst.manifest.name))),
+                            )
                             .child(div().text_size(px(text::CAPTION)).text_color(ui.muted).child(if enabled { "On" } else { "Off" })),
                     ),
             )
@@ -794,7 +804,7 @@ impl SettingsWindow {
         let r = match s.kind {
             SettingKind::Bool => {
                 let on = value.as_bool().unwrap_or(false);
-                r.control(toggle(elem_id(""), on, ui, set(Some(Value::Bool(!on)))))
+                r.control(toggle(elem_id(""), on, ui, set(Some(Value::Bool(!on)))).aria_label(s.label.clone()))
             }
             SettingKind::Choice => {
                 let selected = schema::plain_string(&value);
@@ -821,7 +831,7 @@ impl SettingsWindow {
                             }
                         })
                         .collect();
-                    r.control(self.select(&elem_id(""), options, &selected, ui, cx, pick))
+                    r.control(self.select(&elem_id(""), &s.label, options, &selected, cx, pick))
                 }
             }
             SettingKind::Integer => {

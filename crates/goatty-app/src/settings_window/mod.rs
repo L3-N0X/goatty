@@ -22,6 +22,7 @@ mod shell;
 mod shortcuts;
 mod terminal;
 
+use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use goatty_config::{Color, ColorSlot, HostSettings, Loaded, store};
@@ -40,14 +41,29 @@ use crate::ui::text_input::{TextInput, TextInputEvent};
 
 pub const CONTEXT: &str = "SettingsWindow";
 
+/// The key context while no shortcut is being recorded.
+const NAVIGATING: &str = "SettingsWindow && !recording";
+
+/// The most tab stops [`SettingsWindow::move_focus`] walks to get back into a
+/// dialog or menu.
+const TRAP_STEPS: usize = 2048;
+
 /// A color that was typed or dragged is saved this long after the last change
 /// (letting go of the mouse or pressing Enter saves right away).
 const COLOR_SAVE_DELAY: Duration = Duration::from_millis(600);
 
-actions!(settings_window, [CloseSettings]);
+actions!(settings_window, [CloseSettings, FocusNextControl, FocusPrevControl, NextPage, PrevPage]);
 
 pub fn bindings() -> Vec<KeyBinding> {
-    vec![KeyBinding::new("ctrl-w", CloseSettings, Some(CONTEXT)), KeyBinding::new("ctrl-,", CloseSettings, Some(CONTEXT))]
+    vec![
+        KeyBinding::new("ctrl-w", CloseSettings, Some(CONTEXT)),
+        KeyBinding::new("ctrl-,", CloseSettings, Some(CONTEXT)),
+        // Not while a shortcut is being recorded: then these are the keys to record.
+        KeyBinding::new("tab", FocusNextControl, Some(NAVIGATING)),
+        KeyBinding::new("shift-tab", FocusPrevControl, Some(NAVIGATING)),
+        KeyBinding::new("ctrl-pagedown", NextPage, Some(NAVIGATING)),
+        KeyBinding::new("ctrl-pageup", PrevPage, Some(NAVIGATING)),
+    ]
 }
 
 /// The open settings window, if any (there's at most one).
@@ -276,6 +292,20 @@ pub struct SettingsWindow {
     /// The menu a mouse-down outside it just closed: the same click on its
     /// trigger must not open it again.
     menu_dismissed: Option<(SharedString, Instant)>,
+    /// The open menu's frame (arrow keys work inside it) and its scroll position.
+    menu_focus: FocusHandle,
+    menu_scroll: ScrollHandle,
+    /// What had focus when a menu was opened from the keyboard, to give it
+    /// back when the menu closes.
+    menu_opener: Option<FocusHandle>,
+    /// The menu was just opened from the keyboard: focus its chosen item.
+    menu_autofocus: Cell<bool>,
+    /// The sidebar (or rail) as one tab stop: Up and Down change the page.
+    nav_focus: FocusHandle,
+    /// The same for the sidebar in the drawer.
+    drawer_focus: FocusHandle,
+    /// The open drawer's frame: Tab stays inside it.
+    drawer_trap: FocusHandle,
     /// "Search settings" in the sidebar.
     search: Entity<TextInput>,
     font_filter: Entity<TextInput>,
@@ -336,12 +366,12 @@ impl SettingsWindow {
         window.focus(&focus, cx);
         let font_filter = cx.new(|cx| TextInput::new("Search fonts", "", cx).bare());
         let search = cx.new(|cx| TextInput::new("Search settings", "", cx).bare());
-        let shell_path = cx.new(|cx| TextInput::new("/usr/bin/nu", "", cx));
+        let shell_path = cx.new(|cx| TextInput::new("/usr/bin/nu", "", cx).label("Shell program"));
         let picker = cx.new(|cx| ColorPicker::new(cx.global::<AppSettings>().colors.get(ColorSlot::Background), cx));
-        let theme_name = cx.new(|cx| TextInput::new("Name for a new theme", "", cx));
+        let theme_name = cx.new(|cx| TextInput::new("Name for a new theme", "", cx).label("Theme name"));
         let opener = cx.global::<AppSettings>().file.value.links.file_opener.clone().unwrap_or_default();
-        let file_opener = cx.new(|cx| TextInput::new("code --goto {path}:{line}:{column}", opener, cx));
-        let gen_name = cx.new(|cx| TextInput::new("before trying fish", "", cx));
+        let file_opener = cx.new(|cx| TextInput::new("code --goto {path}:{line}:{column}", opener, cx).label("Command to open files"));
+        let gen_name = cx.new(|cx| TextInput::new("before trying fish", "", cx).label("Name for this version"));
         let subs = vec![
             cx.subscribe(&gen_name, |this, _, ev: &TextInputEvent, cx| {
                 if let TextInputEvent::Submitted(_) = ev {
@@ -403,6 +433,13 @@ impl SettingsWindow {
             scroll: ScrollHandle::new(),
             menu: None,
             menu_dismissed: None,
+            menu_focus: cx.focus_handle(),
+            menu_scroll: ScrollHandle::new(),
+            menu_opener: None,
+            menu_autofocus: Cell::new(false),
+            nav_focus: cx.focus_handle(),
+            drawer_focus: cx.focus_handle(),
+            drawer_trap: cx.focus_handle(),
             search,
             font_filter,
             shell_path,
@@ -493,15 +530,49 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Open (or close) the dropdown `id`.
-    pub fn toggle_menu(&mut self, id: SharedString, cx: &mut Context<'_, Self>) {
+    /// Open (or close) the dropdown `id` with the mouse. `trigger` gets focus
+    /// back when Esc closes the menu, even if it was reached with Tab.
+    pub fn toggle_menu(&mut self, id: SharedString, trigger: gpui::FocusHandle, cx: &mut Context<'_, Self>) {
         let just_closed = self.menu_dismissed.take().is_some_and(|(d, at)| d == id && at.elapsed() < Duration::from_millis(300));
-        self.menu = if just_closed || self.menu.as_ref() == Some(&id) { None } else { Some(id) };
+        let open = !(just_closed || self.menu.as_ref() == Some(&id));
+        self.menu_opener = open.then_some(trigger);
+        self.menu = open.then_some(id);
+        cx.notify();
+    }
+
+    /// Open the dropdown `id` with the keyboard (Enter and Space close it
+    /// again, Down only opens), and move focus into it.
+    pub fn open_menu_from_key(&mut self, id: SharedString, toggle: bool, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if self.menu.as_ref() == Some(&id) {
+            if toggle {
+                self.close_menu(window, cx);
+            }
+            return;
+        }
+        self.menu_opener = window.focused(cx);
+        self.menu = Some(id.clone());
+        if id == "font" {
+            // The font list starts with its filter.
+            let filter = self.font_filter.focus_handle(cx);
+            window.focus(&filter, cx);
+        } else {
+            self.menu_autofocus.set(true);
+        }
+        cx.notify();
+    }
+
+    /// Close the open menu, giving focus back to what opened it.
+    pub fn close_menu(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.menu = None;
+        self.menu_autofocus.set(false);
+        let back = self.menu_opener.take().unwrap_or_else(|| self.focus.clone());
+        window.focus(&back, cx);
         cx.notify();
     }
 
     /// A mouse-down outside the open menu closes it.
     pub fn dismiss_menu(&mut self, cx: &mut Context<'_, Self>) {
+        self.menu_opener = None;
         if let Some(id) = self.menu.take() {
             self.menu_dismissed = Some((id, Instant::now()));
             cx.notify();
@@ -703,6 +774,70 @@ impl SettingsWindow {
 
     fn close(&mut self, _: &CloseSettings, window: &mut Window, _cx: &mut Context<'_, Self>) {
         window.remove_window();
+    }
+
+    fn focus_next_control(&mut self, _: &FocusNextControl, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.move_focus(true, window, cx);
+    }
+
+    fn focus_prev_control(&mut self, _: &FocusPrevControl, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.move_focus(false, window, cx);
+    }
+
+    /// Tab and Shift+Tab. A dialog, an open menu or the drawer keeps focus to itself.
+    fn move_focus(&mut self, forward: bool, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let trap = if self.aliases_modal_open() {
+            Some(self.aliases.modal_focus.clone())
+        } else if self.menu.is_some() {
+            Some(self.menu_focus.clone())
+        } else if self.drawer && f32::from(window.viewport_size().width) < chrome::RAIL_BELOW {
+            Some(self.drawer_trap.clone())
+        } else {
+            None
+        };
+        let before = window.focused(cx);
+        let step = |window: &mut Window, cx: &mut Context<'_, Self>| {
+            if forward {
+                window.focus_next(cx);
+            } else {
+                window.focus_prev(cx);
+            }
+        };
+        step(window, cx);
+        let Some(trap) = trap else { return };
+        // Past the end: GPUI's tab order wraps around the whole window, so keep
+        // going until it comes back in, at the other end of the trap.
+        for _ in 0..TRAP_STEPS {
+            if trap.contains_focused(window, cx) {
+                return;
+            }
+            step(window, cx);
+        }
+        // Nothing in the trap can take focus: stay where we were.
+        if let Some(before) = before {
+            window.focus(&before, cx);
+        }
+    }
+
+    /// Ctrl+PageDown / Ctrl+PageUp: the next or previous page.
+    fn step_page(&mut self, delta: isize, window: &mut Window, cx: &mut Context<'_, Self>) {
+        // The page behind a dialog isn't reachable.
+        if self.aliases_modal_open() {
+            return;
+        }
+        let at = Page::ALL.iter().position(|p| *p == self.page).unwrap_or(0);
+        let Some(next) = at.checked_add_signed(delta).and_then(|i| Page::ALL.get(i)).copied() else { return };
+        self.search.update(cx, |i, cx| i.set_text("", cx));
+        self.go(next, cx);
+        window.focus(&self.focus, cx);
+    }
+
+    fn next_page(&mut self, _: &NextPage, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.step_page(1, window, cx);
+    }
+
+    fn prev_page(&mut self, _: &PrevPage, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.step_page(-1, window, cx);
     }
 
     /// (Re)load the host settings and generations off the UI thread.

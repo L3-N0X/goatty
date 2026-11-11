@@ -7,8 +7,8 @@ use std::ops::Range;
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter,
     FocusHandle, Focusable, GlobalElementId, Hsla, KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PaintQuad, Pixels, Point, ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill, point,
-    prelude::*, px, relative, size,
+    PaintQuad, Pixels, Point, Role, ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill,
+    point, prelude::*, px, relative, size,
 };
 
 use super::style::Ui;
@@ -85,6 +85,8 @@ pub struct TextInput {
     /// Draw no border, background or padding: the caller wraps the field
     /// (search fields with an icon, inline editors).
     bare: bool,
+    /// What the field is for, for screen readers (default: the placeholder).
+    label: Option<SharedString>,
 }
 
 impl EventEmitter<TextInputEvent> for TextInput {}
@@ -94,7 +96,7 @@ impl TextInput {
         let content: SharedString = text.into();
         let end = content.len();
         Self {
-            focus_handle: cx.focus_handle(),
+            focus_handle: cx.focus_handle().tab_stop(true),
             content,
             placeholder: placeholder.into(),
             selected_range: end..end,
@@ -104,7 +106,20 @@ impl TextInput {
             last_bounds: None,
             is_selecting: false,
             bare: false,
+            label: None,
         }
+    }
+
+    /// What the field is for, for screen readers. A placeholder is only a
+    /// good name when it says that ("Search settings"), not for an example.
+    pub fn label(mut self, label: impl Into<SharedString>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    /// [`TextInput::label`] on a field that exists. Doesn't redraw.
+    pub fn set_label(&mut self, label: impl Into<SharedString>) {
+        self.label = Some(label.into());
     }
 
     /// No chrome of its own (see [`TextInput::bare`]'s field).
@@ -684,8 +699,14 @@ impl Render for TextInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let ui = Ui::get(cx);
         let focused = self.focus_handle.is_focused(window);
+        let label = self.label.clone().unwrap_or_else(|| self.placeholder.clone());
         div()
+            .id(ElementId::from(("text-input", cx.entity_id().as_u64() as usize)))
             .flex()
+            .role(Role::TextInput)
+            .aria_label(label)
+            .aria_value(self.content.clone())
+            .aria_placeholder(self.placeholder.clone())
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle(cx))
             .cursor(CursorStyle::IBeam)

@@ -20,12 +20,13 @@ use goatty_config::colorspace::{ColorFormat, Hsl, Hsv, Oklch, Rgbf, number, pars
 use goatty_config::{Color, ColorHistory};
 use gpui::{
     App, BorderStyle, Bounds, ClickEvent, ClipboardItem, Context, Corners, CursorStyle, DispatchPhase, Edges, Entity, EventEmitter,
-    FocusHandle, Focusable, Hsla, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Point,
+    FocusHandle, Focusable, Hsla, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Point, Role,
     SharedString, Window, actions, black, canvas, div, fill, linear_color_stop, linear_gradient, point, prelude::*, px, quad, rgb, size,
     transparent_black, white,
 };
 
 use super::controls::{ButtonKind, button, segmented};
+use super::focus::{self, Ring, Scroller};
 use super::style::Ui;
 use super::text_input::{TextInput, TextInputEvent};
 
@@ -386,8 +387,8 @@ impl ColorPicker {
 
     /// A picker that keeps its history in `history_path` (none: not saved).
     pub fn with_history(color: Color, history_path: Option<PathBuf>, cx: &mut Context<'_, Self>) -> Self {
-        let any = cx.new(|cx| TextInput::new("Paste a color: #1e1e2e, rgb(30 30 46), oklch(0.27 0.03 285)…", "", cx));
-        let nums = [0, 1, 2].map(|_| cx.new(|cx| TextInput::new("", "", cx)));
+        let any = cx.new(|cx| TextInput::new("Paste a color: #1e1e2e, rgb(30 30 46), oklch(0.27 0.03 285)…", "", cx).label("Color"));
+        let nums = [0, 1, 2].map(|_| cx.new(|cx| TextInput::new("", "", cx).label("Channel")));
         let mut subs = vec![cx.subscribe(&any, |this, _, ev: &TextInputEvent, cx| this.on_any(ev, cx))];
         for (i, n) in nums.iter().enumerate() {
             subs.push(cx.subscribe(n, move |this, _, ev: &TextInputEvent, cx| this.on_num(i, ev, cx)));
@@ -775,12 +776,17 @@ impl ColorPicker {
 }
 
 impl Render for ColorPicker {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
+        // This view renders while the window lays out: its controls need the focus pool opened again.
+        let scope = focus::enter(window);
         let ui = Ui::get(cx);
         let this = cx.entity();
         let model = self.model;
         let cur = self.pick.color();
         let chans = model.channels();
+        for (n, ch) in self.nums.iter().zip(chans.iter()) {
+            n.update(cx, |n, _| n.set_label(format!("{} channel", ch.label)));
+        }
 
         let sliders = (0..3).map(|i| {
             div()
@@ -813,11 +819,17 @@ impl Render for ColorPicker {
             .border_1()
             .border_color(ui.border)
             .overflow_hidden()
-            .child(
+            .child(focus::tab(
                 swatch("picker-previous", "Previous", self.original)
+                    .role(Role::Button)
+                    .aria_label(format!("Go back to the previous color, {}", self.original))
                     .cursor_pointer()
                     .on_click(cx.listener(|p, _: &ClickEvent, _, cx| p.pick_color(p.original, cx))),
-            )
+                &"picker-previous".into(),
+                ui,
+                Ring::Inner,
+                Scroller::Page,
+            ))
             .child(swatch("picker-new", "New", cur));
 
         let (line, line_color) = match (&self.status, self.hover) {
@@ -859,8 +871,11 @@ impl Render for ColorPicker {
                 .items_center()
                 .gap(px(5.0))
                 .children(self.history.colors().iter().enumerate().map(|(i, &c)| {
-                    div()
-                        .id(("picker-history", i))
+                    let id = gpui::ElementId::from(("picker-history", i));
+                    let swatch = div()
+                        .id(id.clone())
+                        .role(Role::Button)
+                        .aria_label(format!("Use {c}"))
                         .size(px(22.0))
                         .rounded_sm()
                         .border_1()
@@ -876,12 +891,13 @@ impl Render for ColorPicker {
                                 p.hover = None;
                             }
                             cx.notify();
-                        }))
+                        }));
+                    focus::tab(swatch, &id, ui, Ring::Outer, Scroller::Page)
                 }))
                 .into_any_element()
         };
 
-        div()
+        let picker = div()
             .key_context(CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::paste_action))
@@ -903,20 +919,28 @@ impl Render for ColorPicker {
                     .child(div().flex().items_center().justify_between().child(div().text_xs().text_color(ui.muted).child("RECENT")).when(
                         !self.history.is_empty(),
                         |d| {
-                            d.child(
+                            d.child(focus::tab(
                                 div()
                                     .id("picker-clear-history")
+                                    .role(Role::Button)
+                                    .aria_label("Clear the recent colors")
                                     .text_xs()
                                     .text_color(ui.muted)
                                     .cursor_pointer()
                                     .hover(|s| s.text_color(ui.danger))
                                     .child("Clear")
                                     .on_click(cx.listener(|p, _: &ClickEvent, _, cx| p.clear_history(cx))),
-                            )
+                                &"picker-clear-history".into(),
+                                ui,
+                                Ring::Outer,
+                                Scroller::Page,
+                            ))
                         },
                     ))
                     .child(history),
-            )
+            );
+        focus::leave(scope, window);
+        picker
     }
 }
 

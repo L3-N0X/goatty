@@ -81,7 +81,7 @@ impl SettingsWindow {
             let this = cx.entity().downgrade();
             let program_section = section(ui, "Program")
                 .child(row(ui, "Shell").control(self.select(
-                    "program",
+                    "program", "Shell",
                     vec![
                         opt("auto", "Automatic").desc("zsh if it's installed, else your login shell"),
                         opt("zsh", "zsh"),
@@ -90,7 +90,6 @@ impl SettingsWindow {
                         opt("custom", "Other…").desc("A program you name"),
                     ],
                     &choice,
-                    ui,
                     cx,
                     move |c: &str, _, cx| {
                         let _ = this.update(cx, |v, cx| {
@@ -290,9 +289,16 @@ impl SettingsWindow {
                     row(ui, "Show how long commands took")
                         .desc(needs(starship, "For commands that ran at least this long"))
                         .disabled(!starship)
-                        .control(self.select("duration", duration_opts, &p.duration_threshold_ms, ui, cx, move |ms, _, cx| {
-                            let _ = this.update(cx, |v, cx| v.edit_host(cx, |h| h.prompt.duration_threshold_ms = ms));
-                        })),
+                        .control(self.select(
+                            "duration",
+                            "Show how long commands took",
+                            duration_opts,
+                            &p.duration_threshold_ms,
+                            cx,
+                            move |ms, _, cx| {
+                                let _ = this.update(cx, |v, cx| v.edit_host(cx, |h| h.prompt.duration_threshold_ms = ms));
+                            },
+                        )),
                 );
             vec![self.prompt_preview(ui, h, cx).into_any_element(), look.into_any_element(), layout.into_any_element()]
         })
@@ -315,9 +321,9 @@ impl SettingsWindow {
                 section(ui, "Saving")
                     .child(row(ui, "Commands to keep").desc("In memory and in the history file").control(self.select(
                         "hist-size",
+                        "Commands to keep",
                         size_opts,
                         &hs.size,
-                        ui,
                         cx,
                         move |n, _, cx| {
                             let _ = this.update(cx, |v, cx| v.edit_host(cx, |h| h.history.size = n));

@@ -13,6 +13,7 @@ use crate::settings::AppSettings;
 use crate::ui::controls::{
     ButtonKind, Tone, badge, button, button_with, icon_button, icon_button_tinted, segmented, slider, stepper, toggle,
 };
+use crate::ui::focus::{self, Ring, Scroller};
 use crate::ui::icons::Icon;
 use crate::ui::style::{Ui, radius, text};
 
@@ -144,8 +145,12 @@ impl SettingsWindow {
         let col = t.colors;
         let id = t.id.clone();
         let mono = kit::mono(cx);
-        div()
-            .id(SharedString::from(format!("theme-{}", t.id)))
+        let eid: gpui::ElementId = SharedString::from(format!("theme-{}", t.id)).into();
+        let el = div()
+            .id(eid.clone())
+            .role(gpui::Role::RadioButton)
+            .aria_label(SharedString::from(t.name.clone()))
+            .aria_selected(selected)
             .flex()
             .flex_col()
             .rounded(px(12.))
@@ -210,7 +215,8 @@ impl SettingsWindow {
                     )
                     .children(tags.into_iter().map(|tag| badge(tag, Tone::Neutral, ui).h(px(18.)).px(px(6.)))),
             )
-            .on_click(cx.listener(move |v, _, _, cx| v.choose_theme(id.clone(), cx)))
+            .on_click(cx.listener(move |v, _, _, cx| v.choose_theme(id.clone(), cx)));
+        focus::tab(el, &eid, ui, Ring::Inner, Scroller::Page)
     }
 
     fn theme_section(&self, ui: Ui, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -330,8 +336,11 @@ impl SettingsWindow {
         let changed = ColorSlot::all().into_iter().filter(|&s| app.file.value.theme.overrides.get(s).is_some()).count();
         let active = app.themes.get(app.file.value.theme.active_id(app.system_dark)).map(|a| a.name).unwrap_or_default();
         let open = self.colors_open;
-        div()
+        let el = div()
             .id("colors-toggle")
+            .role(gpui::Role::Button)
+            .aria_label("Customize colors")
+            .aria_expanded(open)
             .flex()
             .items_center()
             .gap(px(16.))
@@ -360,7 +369,8 @@ impl SettingsWindow {
             .on_click(cx.listener(|v, _, _, cx| {
                 v.colors_open = !v.colors_open;
                 cx.notify();
-            }))
+            }));
+        focus::tab(el, &"colors-toggle".into(), ui, Ring::Inner, Scroller::Page)
     }
 
     /// Swatches, the picker and the theme actions.
@@ -375,8 +385,11 @@ impl SettingsWindow {
             let color = colors.get(slot);
             let changed = overrides.get(slot).is_some();
             let on = slot == edit;
-            div()
-                .id(SharedString::from(format!("swatch-{}", slot.label())))
+            let eid: gpui::ElementId = SharedString::from(format!("swatch-{}", slot.label())).into();
+            let el = div()
+                .id(eid.clone())
+                .role(gpui::Role::Button)
+                .aria_label(SharedString::from(format!("Edit the {} color", slot.label())))
                 .flex()
                 .flex_col()
                 .gap(px(4.))
@@ -414,7 +427,8 @@ impl SettingsWindow {
                     )
                 })
                 .tooltip(crate::ui::controls::tooltip(slot.label()))
-                .on_click(cx.listener(move |v, _, _, cx| v.select_slot(slot, cx)))
+                .on_click(cx.listener(move |v, _, _, cx| v.select_slot(slot, cx)));
+            focus::tab(el, &eid, ui, Ring::Outer, Scroller::Page)
         };
         let slots = ColorSlot::all();
         let caption = |t: &'static str| div().w(px(52.)).flex_shrink_0().text_size(px(text::CAPTION)).text_color(ui.muted).child(t);
@@ -519,9 +533,10 @@ impl SettingsWindow {
             )
             .when(current.is_none(), |d| d.child(badge("Auto", Tone::Neutral, ui).h(px(18.)).px(px(6.))));
         let filter = self.font_filter.clone();
-        let trigger = select_trigger(ui, id.clone(), label, open).on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            window.focus(&filter.focus_handle(cx), cx);
-        });
+        let trigger =
+            select_trigger(ui, id.clone(), "Font", resolved.clone(), label, open).on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                window.focus(&filter.focus_handle(cx), cx);
+            });
         let mut list =
             div().flex().flex_col().w(px(320.)).p(px(5.)).rounded(px(14.)).bg(ui.menu).border_1().border_color(ui.border).shadow_lg();
         if open {
@@ -536,11 +551,10 @@ impl SettingsWindow {
                 .cloned()
                 .collect();
             let pick = |value: Option<String>| {
-                cx.listener(move |v, _, _, cx| {
+                cx.listener(move |v, _, window, cx| {
                     let value = value.clone();
                     AppSettings::update(cx, |s| s.font.family = value);
-                    v.menu = None;
-                    cx.notify();
+                    v.close_menu(window, cx);
                 })
             };
             list = list

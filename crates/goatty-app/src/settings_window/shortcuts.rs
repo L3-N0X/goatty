@@ -14,6 +14,7 @@ use super::SettingsWindow;
 use super::kit::{self, card, chip, divider, search_field};
 use crate::settings::AppSettings;
 use crate::ui::controls::{ButtonKind, Tone, badge, banner, button_with, icon_button, icon_button_tinted, keycaps, pretty_keys, tooltip};
+use crate::ui::focus::{self, Ring, Scroller};
 use crate::ui::icons::Icon;
 use crate::ui::style::{Ui, text};
 use crate::ui::text_input::{TextInput, TextInputEvent};
@@ -39,7 +40,7 @@ pub struct ShortcutsPage {
     sort: Sort,
     collapsed: HashSet<&'static str>,
     /// The next keystroke becomes the search (instead of binding anything).
-    listening: bool,
+    pub(super) listening: bool,
     /// A pressed keystroke to search for (canonical).
     pressed: Option<String>,
     /// "Reset all" was clicked once; the second click resets.
@@ -201,34 +202,49 @@ impl SettingsWindow {
             warnings.insert(0, msg.clone());
         }
         let group_id = SharedString::from(format!("sc-{name}"));
+        // A button that removes itself hands focus back to the row it was in.
+        let row_elem: gpui::ElementId = group_id.clone().into();
+        let page_focus = self.focus.clone();
         let chips = div().flex().flex_wrap().items_center().gap(px(8.)).children(line.keys.iter().enumerate().map(|(ki, k)| {
             let key = k.clone();
+            let (row_elem, page_focus) = (row_elem.clone(), page_focus.clone());
             let gid = SharedString::from(format!("sc-key-{name}-{ki}"));
+            let rm_id: gpui::ElementId = SharedString::from(format!("sc-rm-{name}-{ki}")).into();
+            let rm_focus = rm_id.clone();
+            // Hidden until the key is hovered or focused, but a tab stop all along (an
+            // `invisible()` one isn't), so any binding can be removed from the keyboard.
+            let remove = div()
+                .id(rm_id.clone())
+                .role(gpui::Role::Button)
+                .aria_label(SharedString::from(format!("Remove {} from {}", pretty_keys(k), line.action.label)))
+                .size(px(18.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .opacity(0.)
+                .group_hover(gid.clone(), |s| s.opacity(1.))
+                .in_focus(|s| s.opacity(1.))
+                .cursor_pointer()
+                .hover(|s| s.bg(ui.danger.opacity(0.15)))
+                .child(Icon::Close.svg().size(px(12.)).text_color(ui.muted))
+                .tooltip(tooltip("Remove this shortcut"))
+                .on_click(move |_, window, cx| {
+                    if focus::is_focused(&rm_focus, window) {
+                        focus::hand_over(&page_focus, focus::Handover::Control(row_elem.clone()), window, cx);
+                    }
+                    AppSettings::update(cx, |s| keys::set_binding(&mut s.keybindings, &key, None));
+                });
             div()
                 .id(gid.clone())
-                .group(gid.clone())
+                .group(gid)
                 .relative()
                 .flex()
                 .items_center()
                 .gap(px(4.))
                 .when(problem[ki], |d| d.p(px(2.)).rounded(px(8.)).border_1().border_color(ui.warning))
                 .child(keycaps(k, ui))
-                .child(
-                    div()
-                        .id(SharedString::from(format!("sc-rm-{name}-{ki}")))
-                        .size(px(18.))
-                        .rounded_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .invisible()
-                        .group_hover(gid, |s| s.visible())
-                        .cursor_pointer()
-                        .hover(|s| s.bg(ui.danger.opacity(0.15)))
-                        .child(Icon::Close.svg().size(px(12.)).text_color(ui.muted))
-                        .tooltip(tooltip("Remove this shortcut"))
-                        .on_click(move |_, _, cx| AppSettings::update(cx, |s| keys::set_binding(&mut s.keybindings, &key, None))),
-                )
+                .child(focus::tab(remove, &rm_id, ui, Ring::Outer, Scroller::Page))
         }));
         let cell = if recording {
             div()
@@ -259,13 +275,16 @@ impl SettingsWindow {
             .justify_end()
             .gap(px(2.))
             .when(line.changed, |d| {
-                d.child(icon_button(
-                    SharedString::from(format!("sc-reset-{name}")),
-                    Icon::RotateCcw,
-                    "Reset to the default",
-                    ui,
-                    move |_, cx| AppSettings::update(cx, |s| keys::reset_action(&mut s.keybindings, name)),
-                ))
+                let (row_elem, page_focus) = (row_elem.clone(), page_focus.clone());
+                let reset_id = SharedString::from(format!("sc-reset-{name}"));
+                let reset_focus: gpui::ElementId = reset_id.clone().into();
+                d.child(icon_button(reset_id, Icon::RotateCcw, "Reset to the default", ui, move |window, cx| {
+                    // The button goes away once the row is back to its default.
+                    if focus::is_focused(&reset_focus, window) {
+                        focus::hand_over(&page_focus, focus::Handover::Control(row_elem.clone()), window, cx);
+                    }
+                    AppSettings::update(cx, |s| keys::reset_action(&mut s.keybindings, name));
+                }))
             })
             .child(
                 icon_button(SharedString::from(format!("sc-add-{name}")), Icon::Plus, "Add a shortcut", ui, move |window, cx| {
@@ -277,10 +296,47 @@ impl SettingsWindow {
                         cx.notify();
                     });
                 })
-                .when(!line.keys.is_empty() && !line.changed, |d| d.invisible().group_hover(group_id.clone(), |s| s.visible())),
+                .when(!line.keys.is_empty() && !line.changed, |d| {
+                    // Enter on the row does the same: hidden until hover or focus, still a tab stop.
+                    d.opacity(0.).group_hover(group_id.clone(), |s| s.opacity(1.)).in_focus(|s| s.opacity(1.))
+                }),
             );
-        div()
-            .id(group_id.clone())
+        // The row is a tab stop: Enter records a new shortcut, Delete removes the last one.
+        let row_id: gpui::ElementId = group_id.clone().into();
+        let last_key = line.keys.last().cloned();
+        let row = div()
+            .id(row_id.clone())
+            .role(gpui::Role::Row)
+            .aria_label(line.action.label)
+            .aria_description("Enter adds a shortcut, Delete removes the last one")
+            .on_key_down({
+                let (row_id, this) = (row_id.clone(), cx.entity().downgrade());
+                move |ev, window, cx| {
+                    // Only the row itself: a button inside it has its own Enter.
+                    if ev.keystroke.modifiers.modified() || !focus::is_focused(&row_id, window) {
+                        return;
+                    }
+                    match ev.keystroke.key.as_str() {
+                        "enter" => {
+                            cx.stop_propagation();
+                            let _ = this.update(cx, |v, cx| {
+                                v.recording = Some(name);
+                                v.shortcuts.listening = false;
+                                v.shortcut_note = None;
+                                window.focus(&v.focus, cx);
+                                cx.notify();
+                            });
+                        }
+                        "delete" | "backspace" => {
+                            if let Some(key) = &last_key {
+                                cx.stop_propagation();
+                                AppSettings::update(cx, |s| keys::set_binding(&mut s.keybindings, key, None));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            })
             .group(group_id.clone())
             .flex()
             .flex_col()
@@ -319,16 +375,19 @@ impl SettingsWindow {
                         .child(Icon::TriangleAlert.svg().size(px(13.)).text_color(ui.warning))
                         .child(SharedString::from(w))
                 }))
-            }))
-            .into_any_element()
+            }));
+        focus::tab(row, &row_id, ui, Ring::Inner, Scroller::Page).into_any_element()
     }
 
     fn column_header(&self, ui: Ui, cx: &Context<'_, Self>) -> impl IntoElement {
         let sort = self.shortcuts.sort;
         let head = |id: &'static str, label: &'static str, mine: Sort| {
             let on = sort == mine;
-            div()
-                .id(id)
+            let id: gpui::ElementId = id.into();
+            let el = div()
+                .id(id.clone())
+                .role(gpui::Role::Button)
+                .aria_label(label)
                 .flex()
                 .items_center()
                 .gap(px(4.))
@@ -341,7 +400,8 @@ impl SettingsWindow {
                 .on_click(cx.listener(move |v, _, _, cx| {
                     v.shortcuts.sort = if v.shortcuts.sort == mine { Sort::Group } else { mine };
                     cx.notify();
-                }))
+                }));
+            focus::tab(el, &id, ui, Ring::Outer, Scroller::Page)
         };
         div()
             .flex()
@@ -483,27 +543,30 @@ impl SettingsWindow {
                 if gi > 0 {
                     table = table.child(div().h(px(1.)).bg(ui.divider));
                 }
-                table = table.child(
-                    div()
-                        .id(SharedString::from(format!("sc-group-{g}")))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .h(px(38.))
-                        .px(px(14.))
-                        .bg(ui.field.opacity(0.5))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(ui.field))
-                        .child((if folded { Icon::ChevronRight } else { Icon::ChevronDown }).svg().size(px(14.)).text_color(ui.muted))
-                        .child(div().text_size(px(text::LABEL)).font_weight(FontWeight::SEMIBOLD).child(g))
-                        .child(div().text_size(px(text::CAPTION)).text_color(ui.faint).child(rows.len().to_string()))
-                        .on_click(cx.listener(move |v, _, _, cx| {
-                            if !v.shortcuts.collapsed.remove(g) {
-                                v.shortcuts.collapsed.insert(g);
-                            }
-                            cx.notify();
-                        })),
-                );
+                let head_id: gpui::ElementId = SharedString::from(format!("sc-group-{g}")).into();
+                let head = div()
+                    .id(head_id.clone())
+                    .role(gpui::Role::Button)
+                    .aria_label(SharedString::from(format!("{g} shortcuts")))
+                    .aria_expanded(!folded)
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .h(px(38.))
+                    .px(px(14.))
+                    .bg(ui.field.opacity(0.5))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(ui.field))
+                    .child((if folded { Icon::ChevronRight } else { Icon::ChevronDown }).svg().size(px(14.)).text_color(ui.muted))
+                    .child(div().text_size(px(text::LABEL)).font_weight(FontWeight::SEMIBOLD).child(g))
+                    .child(div().text_size(px(text::CAPTION)).text_color(ui.faint).child(rows.len().to_string()))
+                    .on_click(cx.listener(move |v, _, _, cx| {
+                        if !v.shortcuts.collapsed.remove(g) {
+                            v.shortcuts.collapsed.insert(g);
+                        }
+                        cx.notify();
+                    }));
+                table = table.child(focus::tab(head, &head_id, ui, Ring::Inner, Scroller::Page));
                 if !folded {
                     for (i, l) in rows.iter().enumerate() {
                         if i > 0 {
