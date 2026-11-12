@@ -295,6 +295,8 @@ pub struct SettingsWindow {
     /// The open menu's frame (arrow keys work inside it) and its scroll position.
     menu_focus: FocusHandle,
     menu_scroll: ScrollHandle,
+    /// The bar below the page (unapplied changes, results) when it outgrows its share of the window.
+    bar_scroll: ScrollHandle,
     /// What had focus when a menu was opened from the keyboard, to give it
     /// back when the menu closes.
     menu_opener: Option<FocusHandle>,
@@ -435,6 +437,7 @@ impl SettingsWindow {
             menu_dismissed: None,
             menu_focus: cx.focus_handle(),
             menu_scroll: ScrollHandle::new(),
+            bar_scroll: ScrollHandle::new(),
             menu_opener: None,
             menu_autofocus: Cell::new(false),
             nav_focus: cx.focus_handle(),

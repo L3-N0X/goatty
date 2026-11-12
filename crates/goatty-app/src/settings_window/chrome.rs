@@ -535,10 +535,13 @@ impl SettingsWindow {
                 .flex_none()
                 .max_h(relative(0.6))
                 .overflow_y_scroll()
+                .track_scroll(&self.bar_scroll)
                 .px(px(32.))
                 .pt(px(10.))
                 .pb(px(20.))
                 .flex()
+                // Not stretched: the stack keeps its content height, so the scroll range covers all of it.
+                .items_start()
                 .justify_center()
                 .child(stack)
                 .into_any_element(),
@@ -618,6 +621,7 @@ impl Render for SettingsWindow {
             }
         };
         let bar = self.bottom_bar(ui, cx);
+        focus::bar(bar.is_some().then_some(&self.bar_scroll));
         let modal = self.alias_modal(ui, window, cx);
         let compact = f32::from(window.viewport_size().width) < RAIL_BELOW;
         let gutter = if compact { 24. } else { 40. };
