@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, Context, FontWeight, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled, Window, canvas, div,
-    prelude::*, px,
+    prelude::*, px, relative,
 };
 
 use super::kit::{self, search_field};
@@ -427,7 +427,7 @@ impl SettingsWindow {
             }))
     }
 
-    /// The floating bar at the bottom: unapplied host changes, or the
+    /// The bar below the page: unapplied host changes, or the
     /// result of the last preview/apply/rollback.
     fn bottom_bar(&self, ui: Ui, cx: &Context<'_, Self>) -> Option<AnyElement> {
         if self.draft.is_none() && self.outcome.is_none() {
@@ -526,7 +526,23 @@ impl SettingsWindow {
                     .child(button_with("apply", Some(Icon::Check), "Apply", ButtonKind::Primary, ui, self.act(cx, |v, cx| v.apply(cx)))),
             );
         }
-        Some(div().absolute().bottom(px(20.)).left_0().right_0().px(px(32.)).flex().justify_center().child(stack).into_any_element())
+        // In the flow below the page, not floating over it: the page's scroll area ends
+        // above the bar, so the last row is always reachable however tall the bar is. It
+        // scrolls on its own if it would take more than most of the window.
+        Some(
+            div()
+                .id("bottom-bar")
+                .flex_none()
+                .max_h(relative(0.6))
+                .overflow_y_scroll()
+                .px(px(32.))
+                .pt(px(10.))
+                .pb(px(20.))
+                .flex()
+                .justify_center()
+                .child(stack)
+                .into_any_element(),
+        )
     }
 
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -602,7 +618,6 @@ impl Render for SettingsWindow {
             }
         };
         let bar = self.bottom_bar(ui, cx);
-        let pad_bottom = if bar.is_some() { 120. } else { 48. };
         let modal = self.alias_modal(ui, window, cx);
         let compact = f32::from(window.viewport_size().width) < RAIL_BELOW;
         let gutter = if compact { 24. } else { 40. };
@@ -675,7 +690,7 @@ impl Render for SettingsWindow {
                                     .flex_col()
                                     .gap(px(28.))
                                     .pt(px(30.))
-                                    .pb(px(pad_bottom))
+                                    .pb(px(48.))
                                     .child(self.header(ui, cx))
                                     .child(page),
                             ),
