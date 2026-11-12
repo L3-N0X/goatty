@@ -58,6 +58,10 @@ pub(super) fn snap_opacity(v: f32) -> f32 {
 /// A run of preview text in one color.
 type Span = (&'static str, Hsla);
 
+/// Theme card outer radius and border width; the preview and name strip round to the difference.
+const THEME_CARD_RADIUS: f32 = 12.;
+const THEME_CARD_BORDER: f32 = 2.;
+
 impl SettingsWindow {
     pub(super) fn appearance(&self, ui: Ui, window: &Window, cx: &Context<'_, Self>) -> AnyElement {
         div()
@@ -126,6 +130,8 @@ impl SettingsWindow {
             .bg(if opacity < 1.0 { ui.field_hover } else { bg })
             .child(
                 div()
+                    // Round the inner corners too: `overflow_hidden` doesn't clip to the border radius.
+                    .rounded(px(radius::CARD - 1.))
                     .bg(bg.opacity(opacity))
                     .pt(px(pad.top + 10.))
                     .pr(px(pad.right + 14.))
@@ -153,7 +159,7 @@ impl SettingsWindow {
             .aria_selected(selected)
             .flex()
             .flex_col()
-            .rounded(px(12.))
+            .rounded(px(THEME_CARD_RADIUS))
             .overflow_hidden()
             .border_2()
             .border_color(if selected { ui.accent } else { ui.divider })
@@ -163,6 +169,8 @@ impl SettingsWindow {
                 div()
                     .relative()
                     .h(px(52.))
+                    // `overflow_hidden` clips to a rectangle, so the children round their own outer corners.
+                    .rounded_t(px(THEME_CARD_RADIUS - THEME_CARD_BORDER))
                     .bg(c(col.background))
                     .px(px(10.))
                     .py(px(8.))
@@ -202,6 +210,7 @@ impl SettingsWindow {
                     .gap(px(6.))
                     .h(px(30.))
                     .px(px(10.))
+                    .rounded_b(px(THEME_CARD_RADIUS - THEME_CARD_BORDER))
                     .bg(ui.card)
                     .child(
                         div()
