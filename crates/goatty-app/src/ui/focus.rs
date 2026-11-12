@@ -57,6 +57,9 @@ struct Pool {
     used: HashMap<ElementId, FocusHandle>,
     page: Option<ScrollHandle>,
     menu: Option<ScrollHandle>,
+    /// The bar below the page, while there is one and it scrolls on its own: its
+    /// controls are revealed in it, not in the page.
+    bar: Option<ScrollHandle>,
     /// The control the view last scrolled to, so scrolling the page by hand
     /// afterwards isn't undone on the next repaint.
     revealed: Option<ElementId>,
@@ -106,6 +109,12 @@ pub fn begin(cx: &mut App, window: &Window, page: &ScrollHandle, menu: &ScrollHa
             p.pending = None;
         }
     });
+}
+
+/// The scroll area of the bar below the page (`None` when there is no bar). Controls
+/// that sit inside it scroll it into view, not the page.
+pub fn bar(bar: Option<&ScrollHandle>) {
+    POOL.with_borrow_mut(|p| p.bar = bar.cloned());
 }
 
 /// After building the page. Whether some control got no handle (the window
@@ -309,7 +318,10 @@ fn on_paint(
             return None;
         }
         match scroller {
-            Scroller::Page => p.page.clone().map(|s| (s, px(110.))),
+            Scroller::Page => match &p.bar {
+                Some(bar) if bar.bounds().contains(&bounds.center()) => Some((bar.clone(), px(8.))),
+                _ => p.page.clone().map(|s| (s, px(110.))),
+            },
             Scroller::Menu => p.menu.clone().map(|s| (s, px(8.))),
         }
     });
