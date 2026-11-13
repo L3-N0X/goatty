@@ -106,6 +106,7 @@ fn windows_terminal(v: &Value, fallback: &str) -> Result<Imported, String> {
             cursor: get("cursorColor").unwrap_or(foreground),
             selection_foreground: foreground,
             selection_background: get("selectionBackground").unwrap_or(ansi[8]),
+            accent: None,
         },
         format: Format::WindowsTerminal,
     })
@@ -141,6 +142,7 @@ fn base16(name: &str, get: impl Fn(&str) -> Option<Color>) -> Result<Imported, S
             cursor: b("base05")?,
             selection_foreground: b("base05")?,
             selection_background: b("base02")?,
+            accent: None,
         },
         format: Format::Base16,
     })
@@ -207,6 +209,7 @@ fn iterm(text: &str, fallback: &str) -> Result<Imported, String> {
             cursor: get("Cursor Color").unwrap_or(foreground),
             selection_foreground: get("Selected Text Color").unwrap_or(foreground),
             selection_background: get("Selection Color").unwrap_or(ansi[8]),
+            accent: None,
         },
         format: Format::ITerm,
     })
@@ -318,9 +321,14 @@ base0F: "a3685a"
 
     #[test]
     fn goatty_round_trip_and_garbage() {
-        let f = ThemeFile { name: "Mine".into(), colors: crate::find_theme("nord").unwrap().colors };
-        let t = &import(&serde_json::to_string(&f).unwrap(), "x").unwrap()[0];
+        let mut colors = crate::find_theme("nord").unwrap().colors;
+        colors.accent = Some(Color(0xa3be8c));
+        let f = ThemeFile { name: "Mine".into(), colors };
+        let json = serde_json::to_string(&f).unwrap();
+        let t = &import(&json, "x").unwrap()[0];
         assert_eq!((t.name.as_str(), t.format, t.colors), ("Mine", Format::Goatty, f.colors));
+        let t_primary = &import(&json.replace("\"accent\"", "\"primary\""), "x").unwrap()[0];
+        assert_eq!(t_primary.colors, f.colors);
         assert!(import("hello world", "x").is_err());
         assert!(import("{\"name\": \"x\"}", "x").is_err());
         assert!(import("<plist></plist>", "x").is_err());

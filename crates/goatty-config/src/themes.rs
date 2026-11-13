@@ -4,7 +4,7 @@
 //! ```json
 //! { "name": "My Night", "colors": { "foreground": "#c0caf5", "background": "#1a1b26",
 //!   "cursor": "#c0caf5", "selection_foreground": "#c0caf5", "selection_background": "#283457",
-//!   "ansi": ["#15161e", "...16 colors..."] } }
+//!   "accent": "#7aa2f7", "ansi": ["#15161e", "...16 colors..."] } }
 //! ```
 //!
 //! A user theme with a built-in's id replaces that built-in. The settings
@@ -234,6 +234,7 @@ mod tests {
 
         let mut colors = find_theme("nord").unwrap().colors;
         colors.background = Color(0x000000);
+        colors.accent = Some(Color(0xa3be8c));
         lib.save("my-nord", "My Nord", &colors).unwrap();
         lib.save("dracula", "Dracula (mine)", &colors).unwrap();
         std::fs::write(dir.join("broken.json"), "{\"name\": 1}").unwrap();
@@ -251,6 +252,8 @@ mod tests {
         let s = ThemeSettings { name: "my-nord".into(), ..Default::default() };
         let (c, issue) = lib.resolve(&s, true);
         assert_eq!(c.background, Color(0));
+        assert_eq!(c.accent, Some(Color(0xa3be8c)));
+        assert_eq!(c.accent(), Color(0xa3be8c));
         assert!(issue.is_none());
 
         let s = ThemeSettings { follow_system: true, light: "nope".into(), ..Default::default() };

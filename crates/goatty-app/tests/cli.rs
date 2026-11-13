@@ -42,10 +42,12 @@ fn settings_set_show_validate() {
     assert!(out(&ok(goatty(home, &["settings", "path"]))).contains(&file.display().to_string()));
 
     ok(goatty(home, &["settings", "set", "font.size", "16"]));
+    ok(goatty(home, &["settings", "set", "theme.overrides.accent", "#98c379"]));
     ok(goatty(home, &["settings", "set", "keybindings.ctrl-k", "paste"]));
     assert_eq!(out(&ok(goatty(home, &["settings", "show", "font.size"]))).trim(), "16.0");
+    assert_eq!(out(&ok(goatty(home, &["settings", "show", "theme.overrides.accent"]))).trim(), "\"#98c379\"");
     let stored = out(&ok(goatty(home, &["settings", "show"])));
-    assert!(stored.contains("\"size\": 16.0") && stored.contains("ctrl-k"), "{stored}");
+    assert!(stored.contains("\"size\": 16.0") && stored.contains("\"#98c379\"") && stored.contains("ctrl-k"), "{stored}");
     assert!(!goatty(home, &["settings", "set", "font.size", "huge"]).status.success());
     assert!(!goatty(home, &["settings", "set", "keybindings.ctrl-j", "explode"]).status.success());
     ok(goatty(home, &["settings", "validate"]));
@@ -85,10 +87,14 @@ fn themes_import_set_export_delete() {
 
     let exported = out(&ok(goatty(home, &["theme", "export", "ocean-test"])));
     assert!(exported.contains("\"name\": \"Ocean Test\""), "{exported}");
-    // Importing an export again gets a fresh id.
+    assert!(!exported.contains("\"accent\""), "absent accent omitted on export: {exported}");
+    // Importing an export with a custom primary/accent round-trips it.
+    let with_accent = exported.replacen("\"colors\": {", "\"colors\": {\n    \"accent\": \"#50fa7b\",", 1);
     let again = home.join("again.json");
-    std::fs::write(&again, exported).unwrap();
+    std::fs::write(&again, with_accent).unwrap();
     assert!(out(&ok(goatty(home, &["theme", "import", again.to_str().unwrap()]))).contains("ocean-test-2"));
+    let exported_accent = out(&ok(goatty(home, &["theme", "export", "ocean-test-2"])));
+    assert!(exported_accent.contains("\"accent\": \"#50fa7b\""), "{exported_accent}");
 
     ok(goatty(home, &["theme", "delete", "ocean-test-2"]));
     assert!(!goatty(home, &["theme", "delete", "nord"]).status.success(), "built-ins can't be deleted");

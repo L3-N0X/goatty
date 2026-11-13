@@ -96,7 +96,7 @@ impl Ui {
     pub fn from_theme(c: &ThemeColors) -> Self {
         let (bg, fg) = (c.background, c.foreground);
         let dark = c.is_dark();
-        let accent = c.ansi[4];
+        let accent = c.accent();
         let tone = |t: f32| h(mix(bg, fg, t));
         // Light themes: the page sits a step darker and cards are the
         // theme's background, like Material's light surfaces.
@@ -133,5 +133,26 @@ impl Ui {
     /// Colors for the current theme.
     pub fn get(cx: &App) -> Self {
         Self::from_theme(&cx.global::<AppSettings>().colors)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ui_accent_defaults_to_ansi_blue_and_honors_override() {
+        let mut colors = goatty_config::find_theme("goatty-night").unwrap().colors;
+        let default_ui = Ui::from_theme(&colors);
+        assert_eq!(default_ui.accent, h(colors.ansi[4]));
+
+        let green = colors.ansi[2];
+        colors.accent = Some(green);
+        let green_ui = Ui::from_theme(&colors);
+        assert_eq!(green_ui.accent, h(green));
+        assert_ne!(green_ui.accent, default_ui.accent);
+        assert_eq!(green_ui.accent_soft, h(mix(colors.background, green, 0.2)));
+        assert_eq!(green_ui.accent_text, h(mix(green, colors.foreground, 0.15)));
+        assert_eq!(green_ui.on_accent, h(Color(0x101010)), "bright green uses dark text on accent");
     }
 }

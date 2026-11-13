@@ -370,7 +370,7 @@ impl SettingsWindow {
                 div().flex().gap(px(2.)).children(
                     ColorSlot::all()
                         .into_iter()
-                        .take(5)
+                        .take(6)
                         .map(|s| div().size(px(14.)).rounded_full().border_1().border_color(ui.border).bg(c(app.colors.get(s)))),
                 ),
             )
@@ -445,14 +445,14 @@ impl SettingsWindow {
             .flex()
             .flex_col()
             .gap(px(10.))
-            .child(div().grid().grid_cols(5).gap(px(8.)).children(slots[..5].iter().map(|&s| swatch(s, true))))
+            .child(div().grid().grid_cols(6).gap(px(8.)).children(slots[..6].iter().map(|&s| swatch(s, true))))
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(8.))
                     .child(caption("Normal"))
-                    .child(div().flex_1().grid().grid_cols(8).gap(px(6.)).children(slots[5..13].iter().map(|&s| swatch(s, false)))),
+                    .child(div().flex_1().grid().grid_cols(8).gap(px(6.)).children(slots[6..14].iter().map(|&s| swatch(s, false)))),
             )
             .child(
                 div()
@@ -460,7 +460,7 @@ impl SettingsWindow {
                     .items_center()
                     .gap(px(8.))
                     .child(caption("Bright"))
-                    .child(div().flex_1().grid().grid_cols(8).gap(px(6.)).children(slots[13..].iter().map(|&s| swatch(s, false)))),
+                    .child(div().flex_1().grid().grid_cols(8).gap(px(6.)).children(slots[14..].iter().map(|&s| swatch(s, false)))),
             );
 
         let mut actions = div().flex().flex_wrap().items_center().gap(px(8.));
