@@ -53,7 +53,8 @@ pub const INDEX: &[Entry] = &[
         "theme.light",
         "theme.dark",
     ]),
-    e(Page::Appearance, "Theme", "Customize colors", "palette color editor ansi background foreground cursor").keys(&["theme.overrides"]),
+    e(Page::Appearance, "Theme", "Customize colors", "palette color editor ansi background foreground cursor accent primary")
+        .keys(&["theme.overrides"]),
     e(Page::Appearance, "Text", "Font", "family typeface monospace nerd").keys(&["font.family", "font.fallbacks"]),
     e(Page::Appearance, "Text", "Interface font", "ui gui window tabs settings dialog proportional sans")
         .keys(&["font.ui_family", "font.ui_fallbacks"]),
@@ -240,6 +241,7 @@ mod tests {
         };
         assert!(labels("opacity").contains(&"Background opacity"));
         assert!(labels("transparent").contains(&"Background opacity"));
+        assert!(labels("accent").contains(&"Customize colors"));
         assert!(labels("cursor blink").contains(&"Blinking"));
         assert!(labels("starship").contains(&"Use my own starship.toml"));
         assert!(labels("gui font").contains(&"Interface font"));
