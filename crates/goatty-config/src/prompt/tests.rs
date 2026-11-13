@@ -167,6 +167,9 @@ fn moved_modules_form_their_own_segments() {
 fn directory_preview_follows_the_settings() {
     let mut p = PromptSettings::default();
     assert_eq!(p.preview_directory().0, "…/goatty/src", "as Starship shows it inside a repository");
+    p.directory.substitutions.push(Substitution { from: "goatty".into(), to: "demo".into() });
+    assert_eq!(p.preview_directory().0, "…/demo/src");
+    p.directory.substitutions.clear();
     p.directory.truncation_length = 1;
     assert_eq!(p.preview_directory().0, "…/src");
     p.directory.abbreviate = 1;
@@ -185,14 +188,20 @@ fn validation_cleans_up() {
     p.directory.truncation_length = 99;
     p.directory.home_symbol = "a\nb".into();
     p.character.success_color = "nope".into();
+    p.character.error_color = "magenta".into();
     p.directory.substitutions.push(Substitution::default());
-    p.edit_module("rust", |c| c.symbol = Some("x".repeat(40)));
+    p.edit_module("rust", |c| {
+        c.symbol = Some("x".repeat(40));
+        c.color = Some("Bright-Blue".into());
+    });
     let mut issues = Vec::new();
     p.validate(&mut issues);
     assert_eq!(issues.len(), 5, "{issues:?}");
     assert_eq!(p.directory.truncation_length, DirectoryPrompt::MAX_LENGTH);
     assert_eq!(p.directory.home_symbol, "ab");
     assert_eq!(p.character.success_color, "green");
+    assert_eq!(p.character.error_color, "purple");
     assert!(p.directory.substitutions.is_empty());
     assert_eq!(p.modules["rust"].symbol.as_ref().unwrap().len(), MAX_TEXT);
+    assert_eq!(p.modules["rust"].color.as_deref(), Some("bright-blue"));
 }

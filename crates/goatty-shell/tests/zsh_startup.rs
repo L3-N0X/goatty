@@ -346,15 +346,17 @@ fn transient_prompt_shrinks_accepted_prompts() {
     let mut sh = PtyShell::start(&sb, &launch);
     // Accepting a line redraws its prompt as the bold prompt character
     // (marked as a prompt), colored by the status that prompt showed.
+    let after_false = sh.prompts() + 2;
     sh.pty.write(b"false\r").unwrap();
     sh.wait_for(b"\x1b]133;A\x07\x1b[1m\x1b[32m\xe2\x9d\xaf");
     sh.wait_for(b"\x1b]133;D;1\x07");
+    sh.wait_for_prompts(after_false);
+    let after_true = sh.prompts() + 2;
     sh.pty.write(b"true\r").unwrap();
     sh.wait_for("\x1b[31m✗".as_bytes());
     sh.wait_for(b"\x1b]133;D;0\x07");
     // The next prompt is the full one again (it shows the directory).
-    let n = sh.prompts() + 1;
-    sh.wait_for_prompts(n);
+    sh.wait_for_prompts(after_true);
     let out = sh.text();
     let last = &out[out.rfind("\x1b]133;D;0").unwrap()..];
     assert!(last.contains('~'), "the full prompt is back: {last:?}");

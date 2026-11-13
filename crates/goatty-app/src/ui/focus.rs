@@ -54,6 +54,8 @@ struct Pool {
     want: usize,
     /// A control found no spare handle this frame, so it has no tab stop yet.
     starved: bool,
+    /// The pool already doubled this frame. [`leave`] does not clear this flag.
+    grown: bool,
     used: HashMap<ElementId, FocusHandle>,
     page: Option<ScrollHandle>,
     menu: Option<ScrollHandle>,
@@ -101,6 +103,7 @@ pub fn begin(cx: &mut App, window: &Window, page: &ScrollHandle, menu: &ScrollHa
         p.active = true;
         p.owner = Some(window.window_handle().window_id());
         p.starved = false;
+        p.grown = false;
         p.built.clear();
         p.page = Some(page.clone());
         p.menu = Some(menu.clone());
@@ -172,10 +175,11 @@ fn take(id: &ElementId) -> Option<FocusHandle> {
         let Some(h) = p.spare.pop() else {
             // Once per frame: a page with hundreds of new controls would
             // otherwise double it for each of them.
-            if !p.starved {
+            if !p.grown {
                 p.want = p.want.max(SPARE).saturating_mul(2);
-                p.starved = true;
+                p.grown = true;
             }
+            p.starved = true;
             return None;
         };
         p.used.insert(id.clone(), h.clone());

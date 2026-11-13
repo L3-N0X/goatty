@@ -115,14 +115,14 @@ fn module_table(p: &PromptSettings, m: &Module) -> Table {
         t.insert("disabled".into(), false.into());
     }
     for (k, v) in m.preset(p.symbols) {
-        insert_path(&mut t, k, (*v).into());
+        insert_path(&mut t, k, v.into());
     }
     if p.symbols == Symbols::None && m.has_symbol() {
         t.insert("symbol".into(), "".into());
     }
     let cfg = p.modules.get(m.id);
     if let Some(sym) = cfg.and_then(|c| c.symbol.as_deref()) {
-        t.insert("symbol".into(), sym.into());
+        t.insert("symbol".into(), escape(sym).into());
     }
     let color = p.module_color(m);
     let look = (p.style != PromptStyle::Rich).then(|| p.look(m));
@@ -285,7 +285,8 @@ mod tests {
         let mut s = HostSettings::default();
         let p = &mut s.prompt;
         p.symbols = Symbols::None;
-        p.edit_module("rust", |c| c.symbol = Some("R ".into()));
+        p.edit_module("rust", |c| c.symbol = Some("[R] ".into()));
+        p.edit_module("os", |c| c.enabled = Some(true));
         p.edit_module("git_branch", |c| c.color = Some("#ff8800".into()));
         p.edit_module("python", |c| c.enabled = Some(false));
         p.directory.read_only = false;
@@ -293,8 +294,11 @@ mod tests {
         p.directory.substitutions.push(Substitution { from: "~/coding".into(), to: "C".into() });
         p.character.success = "[ok]".into();
         let t = parse(&s);
-        assert_eq!(str_at(&t, "rust.symbol"), "R ");
+        assert_eq!(str_at(&t, "rust.symbol"), r"\[R\] ");
         assert_eq!(str_at(&t, "golang.symbol"), "");
+        assert_eq!(str_at(&t, "os.symbols.Linux"), "");
+        assert_eq!(str_at(&t, "battery.discharging_symbol"), "");
+        assert_eq!(str_at(&t, "git_status.ahead"), ">");
         assert_eq!(str_at(&t, "git_branch.style"), "bold #ff8800");
         assert_eq!(get(&t, "python.disabled").as_bool(), Some(true));
         assert_eq!(str_at(&t, "directory.read_only"), "");

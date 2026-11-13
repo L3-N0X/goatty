@@ -328,13 +328,17 @@ impl Module {
     }
 
     /// The preset for `symbols`: (key, value) pairs to put in its table.
-    pub fn preset(&self, symbols: Symbols) -> &'static [(&'static str, &'static str)] {
+    pub fn preset(&self, symbols: Symbols) -> Vec<(&'static str, &'static str)> {
         match symbols {
-            Symbols::Nerd => self.nerd,
+            Symbols::Nerd => self.nerd.to_vec(),
+            Symbols::Text => self.text.to_vec(),
             // No symbols: the text preset's words for what isn't a symbol
-            // (git ahead/behind, read-only), `symbol` itself is emptied.
-            Symbols::Text | Symbols::None => self.text,
-            Symbols::Emoji => &[],
+            // (git ahead/behind, read-only), while symbols are emptied.
+            Symbols::None => {
+                let clear = matches!(self.id, "os" | "battery");
+                self.text.iter().map(|&(k, v)| (k, if clear || k == "symbol" { "" } else { v })).collect()
+            }
+            Symbols::Emoji => Vec::new(),
         }
     }
 
@@ -619,6 +623,11 @@ impl PromptSettings {
         let home = if d.home_symbol.is_empty() { "~" } else { d.home_symbol.as_str() };
         let mut parts: Vec<String> = [home, "code", "goatty", "src"].map(str::to_owned).into();
         let mut root = Some(2);
+        let contracted = d.truncate_to_repo && d.abbreviate == 0;
+        if contracted {
+            parts.drain(..2);
+            root = Some(0);
+        }
         // Substitutions work on the path as text.
         let joined = parts.join("/");
         let substituted = d.substitutions.iter().fold(joined.clone(), |p, s| if s.from.is_empty() { p } else { p.replace(&s.from, &s.to) });
@@ -637,7 +646,8 @@ impl PromptSettings {
             n = parts.len() - len;
         }
         let cut = match n {
-            0 => String::new(),
+            0 if !contracted => String::new(),
+            0 => d.truncation_symbol.clone(),
             _ if d.abbreviate > 0 => parts[..n]
                 .iter()
                 .map(|p| {
@@ -699,11 +709,15 @@ impl PromptSettings {
             self.modules.remove(&id);
         }
         for (id, m) in &mut self.modules {
-            if let Some(color) = &m.color
-                && PromptColor::parse(color).is_none()
-            {
-                issues.push(Issue::new(format!("prompt.modules.{id}.color"), format!("{color:?} isn't a color; using the default")));
-                m.color = None;
+            if let Some(color) = &m.color {
+                match PromptColor::parse(color) {
+                    Some(parsed) => m.color = Some(parsed.name()),
+                    None => {
+                        issues
+                            .push(Issue::new(format!("prompt.modules.{id}.color"), format!("{color:?} isn't a color; using the default")));
+                        m.color = None;
+                    }
+                }
             }
             if let Some(s) = &mut m.symbol {
                 clean_text(s, &format!("prompt.modules.{id}.symbol"), issues);
@@ -735,9 +749,12 @@ fn clean_text(s: &mut String, key: &str, issues: &mut Vec<Issue>) {
 }
 
 fn check_color(c: &mut String, default: &str, key: &str, issues: &mut Vec<Issue>) {
-    if PromptColor::parse(c).is_none() {
-        issues.push(Issue::new(key, format!("{c:?} isn't a color; using {default}")));
-        *c = default.to_owned();
+    match PromptColor::parse(c) {
+        Some(parsed) => *c = parsed.name(),
+        None => {
+            issues.push(Issue::new(key, format!("{c:?} isn't a color; using {default}")));
+            *c = default.to_owned();
+        }
     }
 }
 

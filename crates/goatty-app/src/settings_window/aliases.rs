@@ -276,7 +276,7 @@ impl SettingsWindow {
     }
 
     /// A callback with the window, for the ones that move focus.
-    fn act_window(
+    pub(super) fn act_window(
         &self,
         cx: &Context<'_, Self>,
         f: impl Fn(&mut Self, &mut Window, &mut Context<'_, Self>) + 'static,

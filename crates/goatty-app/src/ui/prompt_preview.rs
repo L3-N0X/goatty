@@ -170,7 +170,7 @@ impl Preview<'_> {
     fn sample(&self, m: &Module, moment: Moment) -> Option<String> {
         let after = moment == Moment::Failed;
         match m.id {
-            "cmd_duration" => after.then(|| "4s".into()),
+            "cmd_duration" => (after && self.p.duration_threshold_ms <= 4_000).then(|| "4s".into()),
             "status" => after.then(|| "101".into()),
             "git_status" if self.p.style == PromptStyle::Rich => Some("[!?]".into()),
             _ => m.sample.map(str::to_owned),

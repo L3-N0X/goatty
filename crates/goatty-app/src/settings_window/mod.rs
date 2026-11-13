@@ -1084,6 +1084,7 @@ impl SettingsWindow {
                         if let Some(h) = host {
                             lines.extend(h.issues.iter().map(|i| format!("⚠ host: {i}")));
                             view.edit_host(cx, |d| *d = h.value);
+                            view.sync_prompt_inputs(cx);
                             lines.push("Shell, prompt and history settings are staged: preview and apply them below.".into());
                         }
                         view.outcome = Some(Outcome { ok: true, lines, diff: Vec::new(), reload: false });

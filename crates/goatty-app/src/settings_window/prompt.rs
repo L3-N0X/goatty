@@ -221,6 +221,8 @@ impl SettingsWindow {
     pub(super) fn close_module_dialog(&mut self, cx: &mut Context<'_, Self>) {
         self.prompt.dialog = None;
         self.menu = None;
+        self.menu_opener = None;
+        self.menu_autofocus.set(false);
         self.prompt.restore = Some(self.prompt.opener.take().unwrap_or_else(|| self.focus.clone()));
         cx.notify();
     }
@@ -255,6 +257,8 @@ impl SettingsWindow {
         let Some(set) = self.prompt.color_target.borrow().clone() else { return };
         self.edit_host(cx, |h| set(h, Some(c.name())));
         self.menu = None;
+        self.menu_autofocus.set(false);
+        self.prompt.restore = Some(self.menu_opener.take().unwrap_or_else(|| self.focus.clone()));
         cx.notify();
     }
 
@@ -723,12 +727,18 @@ impl SettingsWindow {
         let directory = prompt::module("directory").expect("directory module");
         let current = p.modules.get("directory").and_then(|c| c.color.clone());
         let off = !starship;
+        let sub_len = d.substitutions.len();
         let subs = div()
             .flex()
             .flex_col()
             .gap(px(8.))
             .children(d.substitutions.iter().enumerate().map(|(i, s)| {
                 let from = s.from.clone();
+                let next_id: gpui::ElementId = if sub_len > 1 {
+                    SharedString::from(format!("prompt-sub-remove-{}", i.min(sub_len - 2))).into()
+                } else {
+                    "prompt-sub-add".into()
+                };
                 div()
                     .flex()
                     .items_center()
@@ -751,7 +761,11 @@ impl SettingsWindow {
                         Icon::Trash,
                         "Remove",
                         ui,
-                        self.host(cx, move |h| h.prompt.directory.substitutions.retain(|s| s.from != from)),
+                        self.act_window(cx, move |v, window, cx| {
+                            focus::hand_over(&v.focus, focus::Handover::Control(next_id.clone()), window, cx);
+                            let from = from.clone();
+                            v.edit_host(cx, move |h| h.prompt.directory.substitutions.retain(|s| s.from != from));
+                        }),
                     ))
             }))
             .child(
@@ -1155,7 +1169,8 @@ impl SettingsWindow {
                     "Default",
                     ButtonKind::Ghost,
                     ui,
-                    self.act(cx, move |v, cx| {
+                    self.act_window(cx, move |v, window, cx| {
+                        focus::hand_over(&v.prompt.modal_focus, focus::Handover::Control("prompt-module-color".into()), window, cx);
                         v.edit_host(cx, |h| h.prompt.edit_module(id, |c| c.symbol = None));
                         let shown = v
                             .host_value()
@@ -1220,7 +1235,11 @@ impl SettingsWindow {
                     }),
                 ),
             ))
-            .child(field(ui, "Symbol", symbol_row).child(kit::hint(ui, symbol_note)))
+            .child(if fixed {
+                field(ui, "Symbol", kit::hint(ui, "This module has no symbol")).opacity(0.55)
+            } else {
+                field(ui, "Symbol", symbol_row).child(kit::hint(ui, symbol_note))
+            })
             .child(
                 field(
                     ui,
