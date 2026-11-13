@@ -88,6 +88,44 @@ pub fn mix(a: Color, b: Color, t: f32) -> Color {
     Color((m(ar, br) << 16) | (m(ag, bg) << 8) | m(ab, bb))
 }
 
+fn relative_luminance(c: Color) -> f32 {
+    let linear = |channel: u8| {
+        let v = channel as f32 / 255.0;
+        if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    };
+    let (r, g, b) = c.rgb();
+    0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+}
+
+fn contrast_ratio(a: Color, b: Color) -> f32 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// Derive `accent_text` from `accent` so it keeps readable contrast against
+/// `page`, `card`, and `accent_soft` without changing `accent` itself.
+fn derive_accent_text(accent: Color, fg: Color, page: Color, card: Color, accent_soft: Color, dark: bool) -> Color {
+    const MIN_CONTRAST: f32 = 3.0;
+    let readable = |c: Color| {
+        contrast_ratio(c, page) >= MIN_CONTRAST && contrast_ratio(c, card) >= MIN_CONTRAST && contrast_ratio(c, accent_soft) >= MIN_CONTRAST
+    };
+    let base_t = if dark { 0.15 } else { 0.12 };
+    let target = if dark { if readable(fg) { fg } else { Color(0xffffff) } } else { Color(0) };
+    let base = mix(accent, target, base_t);
+    if readable(base) {
+        return base;
+    }
+    for step in 1..=32 {
+        let t = base_t + (1.0 - base_t) * (step as f32 / 32.0);
+        let cand = mix(accent, target, t);
+        if readable(cand) {
+            return cand;
+        }
+    }
+    target
+}
+
 pub fn h(c: Color) -> Hsla {
     rgb(c.0).into()
 }
@@ -102,7 +140,8 @@ impl Ui {
         // theme's background, like Material's light surfaces.
         let (page, card) = if dark { (bg, mix(bg, fg, 0.055)) } else { (mix(bg, fg, 0.045), bg) };
         let card_c = card;
-        let accent_text = if dark { mix(accent, fg, 0.15) } else { mix(accent, Color(0), 0.12) };
+        let accent_soft_c = mix(page, accent, if dark { 0.2 } else { 0.16 });
+        let accent_text = derive_accent_text(accent, fg, page, card_c, accent_soft_c, dark);
         Self {
             dark,
             bg: h(page),
@@ -121,7 +160,7 @@ impl Ui {
             faint: h(mix(bg, fg, 0.45)),
             accent: h(accent),
             on_accent: h(if accent.luma() > 0.55 { Color(0x101010) } else { Color(0xffffff) }),
-            accent_soft: h(mix(page, accent, if dark { 0.2 } else { 0.16 })),
+            accent_soft: h(accent_soft_c),
             accent_text: h(accent_text),
             success: h(c.ansi[2]),
             warning: h(c.ansi[3]),
@@ -154,5 +193,54 @@ mod tests {
         assert_eq!(green_ui.accent_soft, h(mix(colors.background, green, 0.2)));
         assert_eq!(green_ui.accent_text, h(mix(green, colors.foreground, 0.15)));
         assert_eq!(green_ui.on_accent, h(Color(0x101010)), "bright green uses dark text on accent");
+    }
+
+    #[test]
+    fn builtin_themes_keep_original_accent_text_and_readable_contrast() {
+        for theme in goatty_config::THEMES {
+            let c = &theme.colors;
+            let dark = c.is_dark();
+            let (page, card) = if dark {
+                (c.background, mix(c.background, c.foreground, 0.055))
+            } else {
+                (mix(c.background, c.foreground, 0.045), c.background)
+            };
+            let accent = c.accent();
+            let accent_soft = mix(page, accent, if dark { 0.2 } else { 0.16 });
+            let expected = if dark { mix(accent, c.foreground, 0.15) } else { mix(accent, Color(0), 0.12) };
+            let actual = derive_accent_text(accent, c.foreground, page, card, accent_soft, dark);
+            assert_eq!(actual, expected, "built-in theme {} should keep its existing accent_text", theme.id);
+        }
+    }
+
+    #[test]
+    fn low_contrast_accents_adjust_accent_text_for_both_dark_and_light_themes() {
+        let mut dark_theme = goatty_config::find_theme("goatty-night").unwrap().colors;
+        for bad in [Color(0x000000), dark_theme.background] {
+            dark_theme.accent = Some(bad);
+            let ui = Ui::from_theme(&dark_theme);
+            assert_eq!(ui.accent, h(bad), "configured accent is preserved");
+            let page = dark_theme.background;
+            let card = mix(dark_theme.background, dark_theme.foreground, 0.055);
+            let accent_soft = mix(page, bad, 0.2);
+            let at = derive_accent_text(bad, dark_theme.foreground, page, card, accent_soft, true);
+            assert!(contrast_ratio(at, page) >= 3.0);
+            assert!(contrast_ratio(at, card) >= 3.0);
+            assert!(contrast_ratio(at, accent_soft) >= 3.0);
+        }
+
+        let mut light_theme = goatty_config::find_theme("goatty-day").unwrap().colors;
+        for bad in [Color(0xffffff), light_theme.background, Color(0xffff00)] {
+            light_theme.accent = Some(bad);
+            let ui = Ui::from_theme(&light_theme);
+            assert_eq!(ui.accent, h(bad), "configured accent is preserved");
+            let page = mix(light_theme.background, light_theme.foreground, 0.045);
+            let card = light_theme.background;
+            let accent_soft = mix(page, bad, 0.16);
+            let at = derive_accent_text(bad, light_theme.foreground, page, card, accent_soft, false);
+            assert!(contrast_ratio(at, page) >= 3.0);
+            assert!(contrast_ratio(at, card) >= 3.0);
+            assert!(contrast_ratio(at, accent_soft) >= 3.0);
+        }
     }
 }
