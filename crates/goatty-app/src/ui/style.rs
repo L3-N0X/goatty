@@ -107,9 +107,8 @@ fn contrast_ratio(a: Color, b: Color) -> f32 {
 /// `page`, `card`, and `accent_soft` without changing `accent` itself.
 fn derive_accent_text(accent: Color, fg: Color, page: Color, card: Color, accent_soft: Color, dark: bool) -> Color {
     const MIN_CONTRAST: f32 = 3.0;
-    let readable = |c: Color| {
-        contrast_ratio(c, page) >= MIN_CONTRAST && contrast_ratio(c, card) >= MIN_CONTRAST && contrast_ratio(c, accent_soft) >= MIN_CONTRAST
-    };
+    let min_contrast = |c: Color| contrast_ratio(c, page).min(contrast_ratio(c, card)).min(contrast_ratio(c, accent_soft));
+    let readable = |c: Color| min_contrast(c) >= MIN_CONTRAST;
     let base_t = if dark { 0.15 } else { 0.12 };
     let target = if dark { if readable(fg) { fg } else { Color(0xffffff) } } else { Color(0) };
     let base = mix(accent, target, base_t);
@@ -123,7 +122,14 @@ fn derive_accent_text(accent: Color, fg: Color, page: Color, card: Color, accent
             return cand;
         }
     }
-    target
+    let opposite = if dark { Color(0) } else { Color(0xffffff) };
+    for step in 1..=32 {
+        let cand = mix(accent, opposite, step as f32 / 32.0);
+        if readable(cand) {
+            return cand;
+        }
+    }
+    if min_contrast(opposite) > min_contrast(target) { opposite } else { target }
 }
 
 pub fn h(c: Color) -> Hsla {
@@ -242,5 +248,32 @@ mod tests {
             assert!(contrast_ratio(at, card) >= 3.0);
             assert!(contrast_ratio(at, accent_soft) >= 3.0);
         }
+    }
+
+    #[test]
+    fn mid_gray_theme_falls_back_to_opposite_extreme_when_primary_target_lacks_contrast() {
+        let mut mid_gray_dark = goatty_config::find_theme("goatty-night").unwrap().colors;
+        mid_gray_dark.background = Color(0x7f7f7f);
+        mid_gray_dark.foreground = Color(0xffffff);
+        mid_gray_dark.accent = Some(Color(0xffffff));
+        let page = mid_gray_dark.background;
+        let card = mix(mid_gray_dark.background, mid_gray_dark.foreground, 0.055);
+        let accent_soft = mix(page, Color(0xffffff), 0.2);
+        let at = derive_accent_text(Color(0xffffff), mid_gray_dark.foreground, page, card, accent_soft, true);
+        assert!(contrast_ratio(at, page) >= 3.0);
+        assert!(contrast_ratio(at, card) >= 3.0);
+        assert!(contrast_ratio(at, accent_soft) >= 3.0);
+
+        let mut mid_gray_light = goatty_config::find_theme("goatty-day").unwrap().colors;
+        mid_gray_light.background = Color(0x808080);
+        mid_gray_light.foreground = Color(0x000000);
+        mid_gray_light.accent = Some(Color(0x000000));
+        let page = mix(mid_gray_light.background, mid_gray_light.foreground, 0.045);
+        let card = mid_gray_light.background;
+        let accent_soft = mix(page, Color(0x000000), 0.16);
+        let at = derive_accent_text(Color(0x000000), mid_gray_light.foreground, page, card, accent_soft, false);
+        assert!(contrast_ratio(at, page) >= 3.0);
+        assert!(contrast_ratio(at, card) >= 3.0);
+        assert!(contrast_ratio(at, accent_soft) >= 3.0);
     }
 }
