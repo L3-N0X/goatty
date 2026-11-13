@@ -12,16 +12,13 @@ use gpui::{App, ClipboardItem, Global, WindowAppearance};
 
 use crate::toast::{self, Toast};
 
-/// Preferred UI fonts, first installed wins.
-const UI_FONTS: &[&str] = &["Inter", "Cantarell", "Noto Sans", "Ubuntu", "Open Sans", "DejaVu Sans", "Liberation Sans"];
-
 /// How often the settings file is checked for outside edits.
 const POLL: Duration = Duration::from_millis(500);
 
 #[derive(Clone)]
 pub struct AppSettings {
     /// What views use: the file plus `GOATTY_*` overrides, with the font
-    /// family resolved against the installed fonts.
+    /// families resolved against the installed fonts.
     pub client: Arc<ClientSettings>,
     /// The file as loaded (what the settings window edits).
     pub file: Loaded<ClientSettings>,
@@ -82,8 +79,6 @@ impl AppSettings {
         fonts.sort_by_key(|f| f.to_lowercase());
         fonts.dedup();
         let stamp = path.as_deref().map(FileStamp::of).unwrap_or_default();
-        let ui_font =
-            UI_FONTS.iter().find(|f| fonts.iter().any(|i| i == *f)).map(|f| f.to_string()).unwrap_or_else(|| "sans-serif".into()).into();
         let themes = ThemeLibrary::load_default();
         for issue in &themes.issues {
             log::warn!("themes: {issue}");
@@ -103,7 +98,7 @@ impl AppSettings {
             stamp,
             fonts: Arc::new(fonts),
             system_fonts: Arc::new(system_fonts),
-            ui_font,
+            ui_font: "sans-serif".into(),
             key_errors: Vec::new(),
             save_error: None,
             save_toast: None,
@@ -112,9 +107,10 @@ impl AppSettings {
         };
         s.recompute();
         log::info!(
-            "font: {} {}px, theme {}{}",
+            "font: {} {}px, ui font: {}, theme {}{}",
             s.client.font.family.as_deref().unwrap_or("?"),
             s.client.font.size,
+            s.ui_font,
             s.client.theme.active_id(s.system_dark),
             if s.client.theme.follow_system { " (following the system)" } else { "" }
         );
@@ -139,6 +135,9 @@ impl AppSettings {
         v.apply_env(|k| std::env::var(k).ok());
         self.env_issues = v.check_environment(&self.fonts, has_program);
         v.font.family = Some(v.font.resolve_family(&self.system_fonts));
+        let ui = v.font.resolve_ui_family(&self.fonts);
+        v.font.ui_family = Some(ui.clone());
+        self.ui_font = ui.into();
         let (colors, _) = self.themes.resolve(&v.theme, self.system_dark);
         self.colors = colors;
         self.theme_issues = self.themes.check(&v.theme);

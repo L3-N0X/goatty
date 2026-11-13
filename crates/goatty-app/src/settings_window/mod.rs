@@ -311,9 +311,11 @@ pub struct SettingsWindow {
     /// "Search settings" in the sidebar.
     search: Entity<TextInput>,
     font_filter: Entity<TextInput>,
+    ui_font_filter: Entity<TextInput>,
     shell_path: Entity<TextInput>,
     file_opener: Entity<TextInput>,
     show_all_fonts: bool,
+    show_all_ui_fonts: bool,
     /// The color editor is open (Appearance).
     colors_open: bool,
     /// Padding: one value for all sides, or each side.
@@ -367,6 +369,7 @@ impl SettingsWindow {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let font_filter = cx.new(|cx| TextInput::new("Search fonts", "", cx).bare());
+        let ui_font_filter = cx.new(|cx| TextInput::new("Search fonts", "", cx).bare());
         let search = cx.new(|cx| TextInput::new("Search settings", "", cx).bare());
         let shell_path = cx.new(|cx| TextInput::new("/usr/bin/nu", "", cx).label("Shell program"));
         let picker = cx.new(|cx| ColorPicker::new(cx.global::<AppSettings>().colors.get(ColorSlot::Background), cx));
@@ -384,6 +387,7 @@ impl SettingsWindow {
             // desktop light/dark, outside edits): keep the picker current.
             cx.observe_global::<AppSettings>(|this, cx| this.sync_picker(cx)),
             cx.subscribe(&font_filter, |_, _, _: &TextInputEvent, cx| cx.notify()),
+            cx.subscribe(&ui_font_filter, |_, _, _: &TextInputEvent, cx| cx.notify()),
             cx.subscribe(&search, |this, _, ev: &TextInputEvent, cx| {
                 if let TextInputEvent::Submitted(_) = ev {
                     this.open_first_result(cx);
@@ -445,9 +449,11 @@ impl SettingsWindow {
             drawer_trap: cx.focus_handle(),
             search,
             font_filter,
+            ui_font_filter,
             shell_path,
             file_opener,
             show_all_fonts: false,
+            show_all_ui_fonts: false,
             colors_open: false,
             drawer: false,
             padding_linked: cx.global::<AppSettings>().file.value.terminal.padding.is_uniform(),
@@ -558,6 +564,9 @@ impl SettingsWindow {
             // The font list starts with its filter.
             let filter = self.font_filter.focus_handle(cx);
             window.focus(&filter, cx);
+        } else if id == "ui-font" {
+            let filter = self.ui_font_filter.focus_handle(cx);
+            window.focus(&filter, cx);
         } else {
             self.menu_autofocus.set(true);
         }
@@ -609,6 +618,7 @@ impl SettingsWindow {
     fn sync_picker(&mut self, cx: &mut Context<'_, Self>) {
         let color = cx.global::<AppSettings>().colors.get(self.edit_slot);
         self.picker.update(cx, |p, cx| p.sync(color, cx));
+        cx.notify();
     }
 
     /// The picker moved to `color`: show it live, and save it once the changes stop.
