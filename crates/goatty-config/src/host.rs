@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::prompt::PromptSettings;
 use crate::store::{Document, Issue, Migration};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -154,38 +155,6 @@ impl Default for ZshSettings {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum PromptStyle {
-    /// Starship's modules with Nerd Font icons (goatty draws them with its
-    /// bundled font whatever the terminal font is).
-    #[default]
-    Rich,
-    /// Directory, git and status only, plain characters: works with any font.
-    Minimal,
-}
-
-/// How the prompt looks. goatty turns these into the Starship plugin's
-/// config (and its small fallback prompt); whether Starship is used at all
-/// is `plugins.starship.enabled`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct PromptSettings {
-    pub style: PromptStyle,
-    /// Input on its own line below the prompt.
-    pub two_line: bool,
-    /// Empty line before each prompt.
-    pub newline_before: bool,
-    /// Show how long a command took when it ran at least this long; 0: never.
-    pub duration_threshold_ms: u32,
-}
-
-impl Default for PromptSettings {
-    fn default() -> Self {
-        Self { style: PromptStyle::Rich, two_line: true, newline_before: false, duration_threshold_ms: 2000 }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HistorySettings {
@@ -211,11 +180,11 @@ impl Default for HistorySettings {
 
 impl Document for HostSettings {
     const NAME: &'static str = "host";
-    const VERSION: u32 = 3;
-    const OPEN_MAPS: &'static [&'static str] = &["aliases", "plugins"];
+    const VERSION: u32 = 4;
+    const OPEN_MAPS: &'static [&'static str] = &["aliases", "plugins", "prompt.modules"];
 
     fn migrations() -> &'static [Migration] {
-        &[(1, builtin_tools_became_plugins), (2, atuin_left_the_builtins)]
+        &[(1, builtin_tools_became_plugins), (2, atuin_left_the_builtins), (3, minimal_prompt_became_lean)]
     }
 
     fn validate(&mut self) -> Vec<Issue> {
@@ -229,10 +198,7 @@ impl Document for HostSettings {
             ));
             h.size = size;
         }
-        if self.prompt.duration_threshold_ms > 3_600_000 {
-            issues.push(Issue::new("prompt.duration_threshold_ms", "more than an hour; using one hour"));
-            self.prompt.duration_threshold_ms = 3_600_000;
-        }
+        self.prompt.validate(&mut issues);
         let bad: Vec<String> = self.aliases.keys().filter(|n| !is_alias_name(n)).cloned().collect();
         for name in bad {
             let why = alias_name_problem(&name).unwrap_or_default();
@@ -307,6 +273,23 @@ fn builtin_tools_became_plugins(doc: &mut Value) {
 fn atuin_left_the_builtins(doc: &mut Value) {
     if let Some(plugins) = doc.get_mut("plugins").and_then(Value::as_object_mut) {
         plugins.remove("atuin");
+    }
+}
+
+/// Version 3 → 4: the prompt got p10k-style options. The `minimal` style
+/// was a plain look with few modules: it becomes Lean with text symbols,
+/// the essential modules and no branch symbol, which looks the same.
+fn minimal_prompt_became_lean(doc: &mut Value) {
+    let Some(prompt) = doc.get_mut("prompt").and_then(Value::as_object_mut) else { return };
+    if prompt.get("style").and_then(Value::as_str) != Some("minimal") {
+        return;
+    }
+    prompt.insert("style".into(), "lean".into());
+    prompt.entry("symbols").or_insert_with(|| "text".into());
+    prompt.entry("show").or_insert_with(|| "essential".into());
+    let modules = prompt.entry("modules").or_insert_with(|| Value::Object(Default::default()));
+    if let Some(m) = modules.as_object_mut() {
+        m.entry("git_branch").or_insert_with(|| serde_json::json!({ "symbol": "" }));
     }
 }
 
@@ -510,14 +493,48 @@ mod tests {
         assert!(!s.plugins.contains_key("atuin"), "Atuin's options moved, then went with it (version 3)");
         assert!(!s.plugin_enabled("eza"));
         assert!(s.shell.zsh.user_rc && !s.prompt.two_line && s.history.size == 500, "the rest is untouched");
-        // Written back as version 3, without the old keys.
+        // Written back as the current version, without the old keys.
         let json = crate::store::to_json(&loaded.value, &loaded.unknown);
-        assert!(json.contains("\"version\": 3"), "{json}");
+        assert!(json.contains(&format!("\"version\": {}", HostSettings::VERSION)), "{json}");
         assert!(!json.contains("syntax_highlighting") && !json.contains("atuin"), "{json}");
-        // A version 2 file is left alone; old keys in it are unknown.
+        // A version 2 file is left alone by v1 migration; old keys in it are unknown.
         let v2 = crate::store::parse::<HostSettings>(r#"{"version": 2, "prompt": {"starship": false}}"#);
         assert!(v2.value.plugin_enabled("starship"));
         assert_eq!(v2.unknown.len(), 1);
+    }
+
+    #[test]
+    fn minimal_prompt_becomes_lean_from_v2_and_v3() {
+        use crate::prompt::{ModuleSet, Symbols};
+        for ver in [2, 3] {
+            let loaded = crate::store::parse::<HostSettings>(&format!(
+                r#"{{"version": {ver}, "prompt": {{"style": "minimal", "two_line": false}}}}"#
+            ));
+            assert!(loaded.issues.is_empty(), "v{ver}: {:?}", loaded.issues);
+            let p = &loaded.value.prompt;
+            assert_eq!((p.style, p.symbols, p.show), (crate::PromptStyle::Lean, Symbols::Text, ModuleSet::Essential));
+            assert_eq!(p.modules["git_branch"].symbol.as_deref(), Some(""));
+            assert!(!p.two_line, "the rest stays");
+            let rich = crate::store::parse::<HostSettings>(&format!(r#"{{"version": {ver}, "prompt": {{"style": "rich"}}}}"#));
+            assert_eq!(rich.value.prompt, crate::PromptSettings::default());
+        }
+    }
+
+    #[test]
+    fn prompt_modules_are_an_open_map() {
+        let loaded = crate::store::parse::<HostSettings>(
+            r##"{"prompt": {"modules": {"rust": {"enabled": false, "color": "#ff8800"}, "nope": {"enabled": true},
+                "time": {"color": "rainbow"}}, "colors": {"segment": "grey"}}}"##,
+        );
+        assert!(loaded.unknown.is_empty(), "{:?}", loaded.unknown);
+        let p = &loaded.value.prompt;
+        assert_eq!(p.modules["rust"].color.as_deref(), Some("#ff8800"));
+        assert!(!p.modules.contains_key("nope") && !p.modules.contains_key("time"), "{:?}", p.modules);
+        assert_eq!(p.colors.segment, "236");
+        let issues: Vec<String> = loaded.issues.iter().map(ToString::to_string).collect();
+        assert_eq!(issues.len(), 3, "{issues:?}");
+        let json = crate::store::to_json(&loaded.value, &loaded.unknown);
+        assert!(json.contains("\"rust\"") && !json.contains("\"time\""), "{json}");
     }
 
     #[test]

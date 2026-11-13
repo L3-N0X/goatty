@@ -140,6 +140,35 @@ else
   _goatty_state[integration]=off
 fi
 
+# --- Transient prompt (prompt.transient) ------------------------------------
+# When a command is accepted, its prompt is redrawn as just the prompt
+# character (colored by the status that prompt showed), so scrollback keeps
+# the commands, not every full prompt. zle draws after the widget returns,
+# so the full prompt comes back in precmd (first, before anything that
+# looks at PS1). After integration, so the short prompt keeps the OSC 133
+# marks when the full one has them.
+if (( _goatty_prompt_transient && $+builtins[zle] )); then
+  builtin setopt transient_rprompt
+  typeset -gi _goatty_last_status=0
+  _goatty_transient_precmd() {
+    _goatty_last_status=$?
+    if (( ${+_goatty_full_ps1} )); then
+      PS1=$_goatty_full_ps1
+      builtin unset _goatty_full_ps1
+    fi
+  }
+  _goatty_transient() {
+    [[ $CONTEXT == start ]] || return 0
+    typeset -g _goatty_full_ps1=$PS1
+    if (( _goatty_last_status )); then PS1=$_goatty_transient_err; else PS1=$_goatty_transient_ok; fi
+    [[ $_goatty_full_ps1 == *$'\e]133;A'* ]] && PS1=$'%{\e]133;A\a%}'$PS1$'%{\e]133;B\a%}'
+    zle .reset-prompt
+  }
+  precmd_functions=(_goatty_transient_precmd $precmd_functions)
+  builtin autoload -Uz add-zle-hook-widget
+  add-zle-hook-widget line-finish _goatty_transient
+fi
+
 # Nothing below needs goatty's ZDOTDIR: hand it back to the user now, so
 # their additions (and everything started later) see their own.
 _goatty_zdotdir_user

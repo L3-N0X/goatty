@@ -38,6 +38,7 @@ pub mod packages;
 pub mod plugins;
 pub mod service;
 pub mod setup;
+pub mod starship;
 pub mod zsh;
 
 pub use dirs::Dirs;

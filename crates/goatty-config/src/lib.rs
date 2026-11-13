@@ -36,6 +36,7 @@ pub mod command_history;
 mod host;
 pub mod keys;
 pub mod profile;
+pub mod prompt;
 pub mod store;
 mod theme;
 pub mod theme_import;
@@ -51,10 +52,8 @@ pub use client::{
 pub use color_history::ColorHistory;
 pub use colorspace::ColorFormat;
 pub use command_history::CommandHistory;
-pub use host::{
-    HistorySettings, HostSettings, PluginConfig, PromptSettings, PromptStyle, ShellSettings, UserAlias, ZshSettings, alias_name_problem,
-    is_alias_name,
-};
+pub use host::{HistorySettings, HostSettings, PluginConfig, ShellSettings, UserAlias, ZshSettings, alias_name_problem, is_alias_name};
+pub use prompt::{PromptSettings, PromptStyle};
 pub use store::{Document, FileStamp, Issue, Loaded};
 pub use theme::{
     Color, ColorSlot, DEFAULT_LIGHT_THEME, DEFAULT_THEME, THEMES, Theme, ThemeColors, ThemeOverrides, ThemeSettings, find_theme,

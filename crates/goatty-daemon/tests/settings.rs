@@ -74,7 +74,7 @@ fn set(d: &Daemon, json: &str, apply: bool) -> (Vec<String>, usize, bool, Option
 fn host_settings_round_trip_and_rollback() {
     let d = start_daemon();
     let file = d.home.join(".config/goatty/host.json");
-    assert_eq!(host_json(&d), "{\n  \"version\": 3\n}\n");
+    assert_eq!(host_json(&d), format!("{{\n  \"version\": {}\n}}\n", <goatty_config::HostSettings as goatty_config::Document>::VERSION));
 
     // Preview: nothing built yet, so every generated file is new; nothing saved.
     let (issues, diffs, applied, generation) = set(&d, r#"{"history": {"size": 4242}}"#, false);

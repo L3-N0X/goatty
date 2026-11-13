@@ -546,6 +546,7 @@ pub fn modal(ui: Ui, id: &str, title: impl Into<SharedString>, body: impl IntoEl
             .border_color(ui.divider)
             .shadow_2xl()
             .occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
                     .px(px(24.))

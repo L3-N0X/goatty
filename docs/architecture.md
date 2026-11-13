@@ -5,7 +5,7 @@ How the code is laid out, and where each upcoming stage's work goes. For the pro
 ## Crate graph
 
 ```
-                 goatty-config      (profile model: client/host JSON documents, store, themes, keys, profiles)
+                 goatty-config      (profile model: client/host JSON documents, store, themes, keys, profiles, the prompt model)
                    ▲        ▲   ▲
                    │        │   │   goatty-plugin  (plugin format, permissions, signed registry index; bin goatty-plugin)
                    │        │   │      ▲
@@ -51,6 +51,7 @@ Threads per session: `s{id}-reader` (PTY → terminal → subscribers) and `s{id
 |-----------|-------------------------------------------------------------------------|
 | `launch`  | `Launcher`: resolve the shell program, write the managed ZDOTDIR, build the `Launch` (program, args, env) |
 | `zsh`     | render `settings.zsh`, the plugin slot files (`plugins-*.zsh`) + the static startup files in `zsh/`, write them atomically |
+| `starship`| `starship.toml` from the prompt settings: the layout as format strings, each module's preset, symbol, color and format; the transient prompt's zsh string |
 | `builtins`| the plugins that come with goatty (`plugins/<id>/`, compiled in): fzf, fzf-tab, autosuggestions, syntax highlighting, Starship |
 | `packages`| where a plugin's package is: system copy, goatty's managed copy, or missing |
 | `install` | download (curl/wget), verify, unpack, activate `bin/` and `plugins/` symlinks, uninstall packages |
@@ -87,7 +88,8 @@ settings_window/
   search.rs    "Search settings": the index of every setting (row label, section, keywords) + pages + shortcut actions
   appearance.rs  live preview, theme gallery + color editor, font picker, cursor, padding per side, opacity
   terminal.rs  the Terminal page (links, selection, pasting) and the Workspace page (startup, tabs, panes)
-  shell.rs     Shell, Prompt (live prompt preview), History
+  shell.rs     Shell, History
+  prompt.rs    Prompt: live preview, style cards (Starship/Lean/Classic/Rainbow), symbols, segment ends, layout (frame, connection, transient), directory, prompt character, colors (`color_select`: theme colors, grays, custom); the module list as a sub-page (search, filters, categories) and a module's dialog (side, symbol, color)
   shortcuts.rs the Shortcuts table: groups or sorting, search by name or pressed keys, changed/unbound filters
   aliases.rs   the Aliases page: mine first, plugin groups folded, filters, the add/edit dialog
   plugins.rs   the Plugins page: installed list, each plugin's own page (schema-driven settings by group), browse, install review
@@ -104,6 +106,7 @@ ui/
   icons.rs     Icon enum + Assets (SVGs from assets/icons/, embedded, served to svg())
   controls.rs  toggle, segmented, stepper, button, rows
   text_input.rs single-line text field (IME-aware; adapted from GPUI's example)
+  prompt_preview.rs draws a prompt from `PromptSettings::layout` with sample values (Prompt page, style cards, welcome window)
   color_picker.rs color picker widget: `Entity<ColorPicker>` emitting `Changed`/`Committed`; `Pick` (float state), `Wheel` geometry, painting, drag handling
 workspace/
   mod.rs       root view per window: tabs of split panes, each tab on its own host (`Spawner`), connecting tabs (connect screen until the session is there), a saved layout per goattyd, spawning/closing panes, window title, closes with the last pane; command palette, paste confirmations, toast layer
@@ -159,6 +162,7 @@ Input: GPUI dispatches a bound action before the view's raw `on_key_down`. Short
 | First-run setup, shell diagnostics     | host side: `goatty-shell/src/setup.rs` (new operations go in its `Request`/`Reply`, no protocol bump); GUI: `welcome.rs`, `shell_setup.rs`, `settings_window/diagnostics.rs` |
 | Bash/Fish adapters (Stage 6)           | `goatty-shell`: a sibling of `zsh.rs` + its startup files; `Launcher::launch` picks by program |
 | New client setting                     | field in `goatty-config/src/client.rs` (+ `validate`), a `kit::row` on its page in `settings_window/` (+ an entry in `search.rs`), apply in `TerminalView::apply_settings` |
+| Prompt option / a new Starship module  | model, layout and module catalog in `goatty-config/src/prompt/` (`modules.rs` from Starship's defaults and presets), `goatty-shell/src/starship.rs`, a row in `settings_window/prompt.rs` (+ `search.rs`); the preview follows the layout by itself |
 | New host setting                       | field in `goatty-config/src/host.rs`, render it in `goatty-shell/src/zsh.rs` (`settings.zsh`/`starship.toml`), a row in `settings_window/shell.rs` (+ `search.rs`) |
 | A color setting / editing a color      | embed `Entity<ColorPicker>` (`ui/color_picker.rs`): `open(color)` to start, `sync(color)` to follow outside changes, react to `ColorPickerEvent::Changed` (live; `AppSettings::preview`) and `Committed` (save). Parsing and formats: `goatty-config/src/colorspace.rs` |
 | New theme import format                | `goatty-config/src/theme_import.rs` (detect + parse to `ThemeColors`) |

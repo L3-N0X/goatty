@@ -17,6 +17,7 @@ pub(crate) mod kit;
 mod plugins;
 mod problems;
 mod profile;
+mod prompt;
 mod search;
 mod shell;
 mod shortcuts;
@@ -339,6 +340,7 @@ pub struct SettingsWindow {
     plugins: plugins::PluginsPage,
     diag: diagnostics::DiagPage,
     aliases: aliases::AliasesPage,
+    prompt: prompt::PromptPage,
     hosts: hosts::HostsPage,
     shortcuts: shortcuts::ShortcutsPage,
     /// Rows that just got focus from a search result, briefly highlighted.
@@ -474,6 +476,7 @@ impl SettingsWindow {
             plugins: plugins::PluginsPage::default(),
             diag: diagnostics::DiagPage::default(),
             aliases: aliases::AliasesPage::new(cx),
+            prompt: prompt::PromptPage::new(cx),
             hosts: hosts::HostsPage::new(cx),
             shortcuts: shortcuts::ShortcutsPage::new(cx),
             highlight: None,
@@ -529,6 +532,8 @@ impl SettingsWindow {
             self.scroll.set_offset(gpui::point(px(0.), px(0.)));
             self.plugins.detail = None;
             self.plugins.clear_review();
+            self.prompt.modules_open = false;
+            self.prompt.dialog = None;
         }
         self.page = page;
         self.menu = None;
@@ -805,6 +810,8 @@ impl SettingsWindow {
     fn move_focus(&mut self, forward: bool, window: &mut Window, cx: &mut Context<'_, Self>) {
         let trap = if self.aliases_modal_open() {
             Some(self.aliases.modal_focus.clone())
+        } else if self.prompt_modal_open() {
+            Some(self.prompt.modal_focus.clone())
         } else if self.menu.is_some() {
             Some(self.menu_focus.clone())
         } else if self.drawer && f32::from(window.viewport_size().width) < chrome::RAIL_BELOW {
@@ -839,7 +846,7 @@ impl SettingsWindow {
     /// Ctrl+PageDown / Ctrl+PageUp: the next or previous page.
     fn step_page(&mut self, delta: isize, window: &mut Window, cx: &mut Context<'_, Self>) {
         // The page behind a dialog isn't reachable.
-        if self.aliases_modal_open() {
+        if self.aliases_modal_open() || self.prompt_modal_open() {
             return;
         }
         let at = Page::ALL.iter().position(|p| *p == self.page).unwrap_or(0);
@@ -892,6 +899,7 @@ impl SettingsWindow {
                         }
                         view.generations = gens;
                         view.host_error = None;
+                        view.sync_prompt_inputs(cx);
                     }
                     Err(e) => view.host_error = Some(format!("{e:#}")),
                 }
@@ -980,6 +988,7 @@ impl SettingsWindow {
             let program = h.loaded.value.shell.program.clone().unwrap_or_default();
             self.shell_path.update(cx, |input, cx| input.set_text(program, cx));
         }
+        self.sync_prompt_inputs(cx);
         cx.notify();
     }
 
@@ -1098,6 +1107,7 @@ impl SettingsWindow {
                                 Vec::new()
                             };
                             view.edit_host(cx, |d| *d = h.value);
+                            view.sync_prompt_inputs(cx);
                             lines.push("Shell, prompt and history settings are staged: preview and apply them below.".into());
                             view.imported_plugins = imported_plugins;
                             if !view.imported_plugins.is_empty() {
