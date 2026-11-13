@@ -144,7 +144,7 @@ Where a plugin's aliases, init code and package scripts go in the managed `.zshr
 
 | `zsh.load` | File | Position | For |
 |---|---|---|---|
-| `line-editor` | `plugins-line-editor.zsh` | after `compinit`, before the prompt | tools that add widgets and key bindings: fzf, Atuin, autosuggestions |
+| `line-editor` | `plugins-line-editor.zsh` | after `compinit`, before the prompt | tools that add widgets and key bindings: fzf, fzf-tab, autosuggestions |
 | `prompt` | `plugins-prompt.zsh` | the prompt; goatty sets a small one when no prompt plugin loaded | Starship |
 | `normal` (default) | `plugins.zsh` | after the prompt, before the user's aliases, integration and additions | most plugins |
 | `last` | `plugins-last.zsh` | after `~/.config/goatty/zshrc` | what must wrap every widget defined before it: syntax highlighting |
@@ -201,14 +201,14 @@ Load order in the managed `.zshrc`: options, history, PATH, **plugins-early.zsh*
 
 Install (`HostService::install_plugin`): lock `installed/.lock` → recompute the plan and compare the digest → download each package not already on PATH, verify, unpack to a staging dir, link → copy the plugin's files (verified) → update the lock → enable it in `host.json` and build a validated generation (`zsh -n` on every `.zsh`, including the plugin's) → offer to reload running shells. A failure undoes the packages this attempt added. Updating is the same with a newer version: packages the new version dropped are removed. Uninstall removes packages (unless another plugin needs the plugin), files, the lock entry and the `host.json` entry, then rebuilds.
 
-Conflicts are refused at plan time: a plugin id, package id or executable of a built-in plugin (`starship`, `atuin`, `fzf`, …), another plugin's executable, or a file in `bin/` goatty didn't create. Alias names shared with another plugin or an existing command are warnings in the plan.
+Conflicts are refused at plan time: a plugin id, package id or executable of a built-in plugin (`starship`, `fzf`, `fzf-tab`, …), another plugin's executable, or a file in `bin/` goatty didn't create. Alias names shared with another plugin or an existing command are warnings in the plan.
 
 ## Built-in plugins
 
-autosuggestions, syntax-highlighting, starship, atuin and fzf come with goatty (`crates/goatty-shell/plugins/<id>/`, compiled in by `goatty_shell::builtins`; table with pins and slots in [`managed-zsh.md`](managed-zsh.md#installing-tools)). They're ordinary manifests (validated by the same parser, `builtins::tests`), so they get install plans, settings on the Plugins page and load-order slots. The differences:
+fzf, fzf-tab, autosuggestions, syntax-highlighting and starship come with goatty (`crates/goatty-shell/plugins/<id>/`, compiled in by `goatty_shell::builtins`; table with pins and slots in [`managed-zsh.md`](managed-zsh.md#installing-tools)). They're ordinary manifests (validated by the same parser, `builtins::tests`), so they get install plans, settings on the Plugins page and load-order slots. The differences:
 
-- **Always there.** No lock entry and no copy in `installed/`: their files are part of goatty, read from the binary when a generation is built. They're on unless `plugins.<id>.enabled` is `false`; `goattyd plugin disable atuin` (or the switch on the Shell/Prompt/History page) turns one off, and `goatty-status` says `off`. Uninstalling is refused; `goattyd shell uninstall <id>` removes goatty's download of the tool.
-- **Planning one = its packages.** `find("atuin")` always resolves to the built-in plugin (a registry can't shadow it). Its plan lists each package as already on the system, already installed by goatty at the pinned version (`current`), or to download; installing downloads only the latter. `goattyd shell install` and `goatty-setup` use exactly this.
+- **Always there.** No lock entry and no copy in `installed/`: their files are part of goatty, read from the binary when a generation is built. They're on unless `plugins.<id>.enabled` is `false`; `goattyd plugin disable fzf-tab` (or the switch on the Shell/Prompt/History page) turns one off, and `goatty-status` says `off`. Uninstalling is refused; `goattyd shell uninstall <id>` removes goatty's download of the tool.
+- **Planning one = its packages.** `find("fzf")` always resolves to the built-in plugin (a registry can't shadow it). Its plan lists each package as already on the system, already installed by goatty at the pinned version (`current`), or to download; installing downloads only the latter. `goattyd shell install` and `goatty-setup` use exactly this.
 - **Works with system copies anywhere.** Only a download needs a build for the host, so on macOS a Homebrew Starship is used even though goatty has no managed build there (#97).
 - **Updates come with goatty releases**, like the pins did. After a pin bump, `goattyd plugin list` and the Plugins page show the older managed copy with an Update button (#45).
 - Their packages keep the ids of the old tool table, so installs made before #98 are found where they are. Their init code may use goatty's own variables (`$_goatty_dir` for the generated `starship.toml`); registry plugins shouldn't.
@@ -247,7 +247,7 @@ registry list|refresh|add NAME URL --key HEX|remove NAME
 | bat | bat 0.26.1 (musl) | theme (default: goatty's own colors via `ansi`), decorations, italics, pager, wrapping, tab width, use for cat, man pages | config file + `BAT_CONFIG_PATH`, alias, `MANPAGER` |
 | docker | – (requires `docker`) | completion, short aliases | cached `docker completion zsh`, aliases |
 
-Every asset's sha256 was computed from the download and matched GitHub's per-asset digest. The plan's list (Git, fzf, Atuin, Python, Node.js) is partly covered by the built-in plugins; the rest are issues.
+Every asset's sha256 was computed from the download and matched GitHub's per-asset digest. The plan's list (Git, fzf, Atuin, Python, Node.js) is partly covered by the built-in plugins (fzf); Atuin is a registry plugin since #165; the rest are issues.
 
 ## Verified
 

@@ -379,7 +379,7 @@ impl SettingsWindow {
         if scope != Scope::Mine {
             let mut s =
                 section(ui, "From plugins").desc("Switch off the ones you don't want; one of yours with the same name replaces it").plain();
-            if self.plugins.loading && self.plugins.catalog.is_none() {
+            if self.plugins.is_loading() && self.plugins.catalog.is_none() {
                 s = s.child(kit::hint(ui, "Loading the plugins' aliases…").px(px(4.)));
             }
             let mut any = false;

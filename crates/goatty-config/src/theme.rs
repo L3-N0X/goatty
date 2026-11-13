@@ -62,6 +62,9 @@ pub struct ThemeColors {
     pub cursor: Color,
     pub selection_foreground: Color,
     pub selection_background: Color,
+    /// Settings UI accent; `None` uses `ansi[4]` (blue).
+    #[serde(default, alias = "primary", skip_serializing_if = "Option::is_none")]
+    pub accent: Option<Color>,
 }
 
 /// One editable color of a theme.
@@ -72,14 +75,16 @@ pub enum ColorSlot {
     Cursor,
     SelectionForeground,
     SelectionBackground,
+    Accent,
     /// ANSI color 0–15.
     Ansi(u8),
 }
 
 impl ColorSlot {
-    /// All 21 slots, in editor order.
+    /// All 22 slots, in editor order.
     pub fn all() -> Vec<ColorSlot> {
-        let mut v = vec![Self::Background, Self::Foreground, Self::Cursor, Self::SelectionBackground, Self::SelectionForeground];
+        let mut v =
+            vec![Self::Background, Self::Foreground, Self::Cursor, Self::SelectionBackground, Self::SelectionForeground, Self::Accent];
         v.extend((0..16).map(Self::Ansi));
         v
     }
@@ -92,6 +97,7 @@ impl ColorSlot {
             Self::Cursor => "Cursor".into(),
             Self::SelectionForeground => "Selected text".into(),
             Self::SelectionBackground => "Selection".into(),
+            Self::Accent => "Accent".into(),
             Self::Ansi(i) if i < 8 => ANSI[i as usize].into(),
             Self::Ansi(i) => format!("bright {}", ANSI[(i as usize - 8) % 8]),
         }
@@ -99,6 +105,11 @@ impl ColorSlot {
 }
 
 impl ThemeColors {
+    /// The UI accent color: `accent` when set, else `ansi[4]` (blue).
+    pub fn accent(&self) -> Color {
+        self.accent.unwrap_or(self.ansi[4])
+    }
+
     pub fn get(&self, slot: ColorSlot) -> Color {
         match slot {
             ColorSlot::Foreground => self.foreground,
@@ -106,6 +117,7 @@ impl ThemeColors {
             ColorSlot::Cursor => self.cursor,
             ColorSlot::SelectionForeground => self.selection_foreground,
             ColorSlot::SelectionBackground => self.selection_background,
+            ColorSlot::Accent => self.accent(),
             ColorSlot::Ansi(i) => self.ansi[(i as usize).min(15)],
         }
     }
@@ -117,6 +129,7 @@ impl ThemeColors {
             ColorSlot::Cursor => self.cursor = c,
             ColorSlot::SelectionForeground => self.selection_foreground = c,
             ColorSlot::SelectionBackground => self.selection_background = c,
+            ColorSlot::Accent => self.accent = Some(c),
             ColorSlot::Ansi(i) => self.ansi[(i as usize).min(15)] = c,
         }
     }
@@ -141,7 +154,15 @@ impl ThemeColors {
             *a = Color(c & 0xff_ffff);
         }
         let c = |i: usize| Color(v[i] & 0xff_ffff);
-        Some(Self { ansi, foreground: c(16), background: c(17), cursor: c(18), selection_foreground: c(19), selection_background: c(20) })
+        Some(Self {
+            ansi,
+            foreground: c(16),
+            background: c(17),
+            cursor: c(18),
+            selection_foreground: c(19),
+            selection_background: c(20),
+            accent: None,
+        })
     }
 }
 
@@ -176,6 +197,7 @@ const fn theme(id: &'static str, name: &'static str, ansi: [u32; 16], fg: u32, b
             cursor: c(cursor),
             selection_foreground: c(sel_fg),
             selection_background: c(sel_bg),
+            accent: None,
         },
     }
 }
@@ -362,6 +384,7 @@ pub struct ThemeOverrides {
     pub cursor: Option<Color>,
     pub selection_foreground: Option<Color>,
     pub selection_background: Option<Color>,
+    pub accent: Option<Color>,
     /// Index `i` replaces ANSI color `i` (0–15); `null` keeps the theme's.
     pub ansi: Vec<Option<Color>>,
 }
@@ -378,6 +401,7 @@ impl ThemeOverrides {
             ColorSlot::Cursor => self.cursor,
             ColorSlot::SelectionForeground => self.selection_foreground,
             ColorSlot::SelectionBackground => self.selection_background,
+            ColorSlot::Accent => self.accent,
             ColorSlot::Ansi(i) => self.ansi.get(i as usize).copied().flatten(),
         }
     }
@@ -390,6 +414,7 @@ impl ThemeOverrides {
             ColorSlot::Cursor => self.cursor = c,
             ColorSlot::SelectionForeground => self.selection_foreground = c,
             ColorSlot::SelectionBackground => self.selection_background = c,
+            ColorSlot::Accent => self.accent = c,
             ColorSlot::Ansi(i) => {
                 let i = (i as usize).min(15);
                 if self.ansi.len() <= i {
@@ -450,6 +475,8 @@ mod tests {
         for (i, t) in THEMES.iter().enumerate() {
             assert!(THEMES[..i].iter().all(|o| o.id != t.id), "duplicate {}", t.id);
             assert_ne!(t.colors.foreground, t.colors.background, "{}", t.id);
+            assert_eq!(t.colors.accent, None);
+            assert_eq!(t.colors.accent(), t.colors.ansi[4]);
         }
         assert!(find_theme(DEFAULT_THEME).unwrap().colors.is_dark());
         assert!(!find_theme("goatty-day").unwrap().colors.is_dark());
@@ -464,14 +491,24 @@ mod tests {
         assert_eq!(c.background, Color(0));
         assert_eq!(c.ansi[1], Color(0xff0000));
         assert_eq!(c.ansi[0], find_theme(DEFAULT_THEME).unwrap().colors.ansi[0]);
+        assert_eq!(c.accent, None);
+        assert_eq!(c.accent(), c.ansi[4]);
         let round = ThemeColors::from_slice(&c.to_vec()).unwrap();
         assert_eq!(round, c);
         assert_eq!(ThemeSettings { name: "nope".into(), ..Default::default() }.colors(), ThemeSettings::default().colors());
+
+        s.overrides.set(ColorSlot::Accent, Some(Color(0x98c379)));
+        let c = s.colors();
+        assert_eq!(c.accent, Some(Color(0x98c379)));
+        assert_eq!(c.accent(), Color(0x98c379));
+        assert_eq!(c.get(ColorSlot::Accent), Color(0x98c379));
+        assert_eq!(c.ansi[4], find_theme(DEFAULT_THEME).unwrap().colors.ansi[4]);
     }
 
     #[test]
     fn slots_and_override_editing() {
-        assert_eq!(ColorSlot::all().len(), 21);
+        assert_eq!(ColorSlot::all().len(), 22);
+        assert_eq!(ColorSlot::Accent.label(), "Accent");
         assert_eq!(ColorSlot::Ansi(9).label(), "bright red");
         let mut o = ThemeOverrides::default();
         o.set(ColorSlot::Ansi(5), Some(Color(1)));
@@ -480,6 +517,11 @@ mod tests {
         assert!(!o.is_empty());
         o.set(ColorSlot::Ansi(5), None);
         assert!(o.ansi.is_empty(), "trailing Nones are dropped");
+        assert!(o.is_empty());
+        o.set(ColorSlot::Accent, Some(Color(0x00ff00)));
+        assert_eq!(o.get(ColorSlot::Accent), Some(Color(0x00ff00)));
+        assert!(!o.is_empty());
+        o.set(ColorSlot::Accent, None);
         assert!(o.is_empty());
         let s = ThemeSettings { follow_system: true, ..Default::default() };
         assert_eq!(s.active_id(true), DEFAULT_THEME);
@@ -490,7 +532,20 @@ mod tests {
     #[test]
     fn colors_round_trip_json() {
         let c = find_theme("nord").unwrap().colors;
-        let back: ThemeColors = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(!json.contains("accent"), "absent accent stays omitted: {json}");
+        let back: ThemeColors = serde_json::from_str(&json).unwrap();
         assert_eq!(back, c);
+
+        let mut custom = c;
+        custom.accent = Some(Color(0xa3be8c));
+        let json = serde_json::to_string(&custom).unwrap();
+        assert!(json.contains("\"accent\":\"#a3be8c\""), "{json}");
+        let back: ThemeColors = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, custom);
+        assert_eq!(back.accent(), Color(0xa3be8c));
+
+        let from_primary: ThemeColors = serde_json::from_str(&json.replace("\"accent\"", "\"primary\"")).unwrap();
+        assert_eq!(from_primary, custom);
     }
 }

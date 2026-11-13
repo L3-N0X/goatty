@@ -38,7 +38,7 @@ fn start_daemon_with(shell: &str) -> Daemon {
     let child = Command::new(env!("CARGO_BIN_EXE_goattyd"))
         .env("GOATTY_SOCKET", &sock)
         .env("GOATTY_SHELL", shell)
-        .env("RUST_LOG", "warn")
+        .env("RUST_LOG", "warn,rio_vt=error")
         .env("HOME", &home)
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_DATA_HOME")

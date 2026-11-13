@@ -31,10 +31,15 @@ use crate::ui::text_input::{TextInput, TextInputEvent};
 #[derive(Default)]
 pub struct PluginsPage {
     pub catalog: Option<Catalog>,
-    pub loading: bool,
+    in_flight: usize,
     pub error: Option<String>,
     /// The install/update being reviewed.
     pub plan: Option<Box<Plan>>,
+    /// Return to this page when the review identified by `.0` closes.
+    plan_return: Option<(u64, Page)>,
+    review_seq: u64,
+    active_review: Option<u64>,
+    plan_review: Option<u64>,
     pub show_code: bool,
     pub show_advanced: bool,
     /// The installed plugin whose page is open.
@@ -46,6 +51,60 @@ pub struct PluginsPage {
     inputs: HashMap<String, Entity<TextInput>>,
     filter: Option<Entity<TextInput>>,
     _subs: Vec<Subscription>,
+}
+
+impl PluginsPage {
+    pub fn is_loading(&self) -> bool {
+        self.in_flight > 0
+    }
+
+    pub(super) fn begin_review(&mut self, from: Option<Page>) -> u64 {
+        self.review_seq += 1;
+        let id = self.review_seq;
+        self.active_review = Some(id);
+        self.plan = None;
+        self.plan_review = None;
+        self.plan_return = from.map(|page| (id, page));
+        self.show_code = false;
+        id
+    }
+
+    pub(super) fn accept_review_plan(&mut self, id: u64, plan: Box<Plan>) -> bool {
+        if self.active_review != Some(id) {
+            return false;
+        }
+        self.active_review = None;
+        self.plan = Some(plan);
+        self.plan_review = Some(id);
+        true
+    }
+
+    /// Complete a failed review if `id` is still active; `None` means stale.
+    pub(super) fn fail_review(&mut self, id: u64) -> Option<Option<Page>> {
+        if self.active_review != Some(id) {
+            return None;
+        }
+        self.active_review = None;
+        Some(self.take_plan_return(id))
+    }
+
+    pub(super) fn take_plan_return(&mut self, id: u64) -> Option<Page> {
+        if self.plan_return.as_ref().is_some_and(|(rid, _)| *rid == id) { self.plan_return.take().map(|(_, page)| page) } else { None }
+    }
+
+    pub(super) fn dismiss_plan(&mut self) -> Option<Option<Page>> {
+        self.plan.take()?;
+        let back = self.plan_review.take().and_then(|rid| self.take_plan_return(rid));
+        self.plan_return = None;
+        Some(back)
+    }
+
+    pub(super) fn clear_review(&mut self) {
+        self.plan = None;
+        self.plan_return = None;
+        self.plan_review = None;
+        self.active_review = None;
+    }
 }
 
 /// Which list the page shows.
@@ -78,7 +137,7 @@ impl SettingsWindow {
             cx.notify();
             return;
         };
-        self.plugins.loading = true;
+        self.plugins.in_flight += 1;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -89,7 +148,7 @@ impl SettingsWindow {
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                view.plugins.loading = false;
+                view.plugins.in_flight = view.plugins.in_flight.saturating_sub(1);
                 done(view, result, cx);
                 cx.notify();
             });
@@ -117,48 +176,82 @@ impl SettingsWindow {
         );
     }
 
+    /// Open the install review for `id` and return to `from` once closed.
+    pub fn review_plugin_from(&mut self, id: String, from: Page, cx: &mut Context<'_, Self>) {
+        self.go(Page::Plugins, cx);
+        self.start_review(id, None, Some(from), cx);
+    }
+
     /// Ask the host what installing (or updating to) `id` would do.
     pub fn review_plugin(&mut self, id: String, version: Option<String>, cx: &mut Context<'_, Self>) {
-        self.plugins.show_code = false;
+        self.start_review(id, version, None, cx);
+    }
+
+    fn start_review(&mut self, id: String, version: Option<String>, from: Option<Page>, cx: &mut Context<'_, Self>) {
+        let req_id = self.plugins.begin_review(from);
         self.plugin_call(
             api::Request::Plan { id, version },
             |r| match r {
                 api::Reply::Plan(p) => Some(p),
                 _ => None,
             },
-            Box::new(|view, result, _cx| match result {
+            Box::new(move |view, result, cx| match result {
                 Ok(p) => {
-                    view.plugins.plan = Some(p);
-                    view.scroll.set_offset(gpui::point(px(0.), px(0.)));
+                    if view.plugins.accept_review_plan(req_id, p) {
+                        view.scroll.set_offset(gpui::point(px(0.), px(0.)));
+                    }
                 }
-                Err(e) => view.outcome = Some(Outcome { ok: false, lines: vec![format!("{e:#}")], diff: Vec::new(), reload: false }),
+                Err(e) => {
+                    let Some(back) = view.plugins.fail_review(req_id) else { return };
+                    view.outcome = Some(Outcome { ok: false, lines: vec![format!("{e:#}")], diff: Vec::new(), reload: false });
+                    if let Some(page) = back {
+                        view.go(page, cx);
+                    }
+                }
             }),
             cx,
         );
+        if self.link.is_none() {
+            self.plugins.fail_review(req_id);
+        }
     }
 
     /// Install the reviewed plan (the host refuses if it changed since).
     pub fn install_reviewed(&mut self, cx: &mut Context<'_, Self>) {
         let Some(plan) = self.plugins.plan.take() else { return };
+        let return_id = self.plugins.plan_review.take();
         let id = plan.id.clone();
         let req = api::Request::Install { id: plan.id.clone(), version: Some(plan.version.clone()), approved: plan.digest.clone() };
-        self.plugin_call(req, changed, Box::new(move |view, result, cx| view.after_change(result, Some(id), true, cx)), cx);
+        self.plugin_call(req, changed, Box::new(move |view, result, cx| view.after_change(result, Some(id), true, return_id, cx)), cx);
     }
 
     pub fn uninstall_plugin(&mut self, id: String, cx: &mut Context<'_, Self>) {
         self.plugins.confirm_uninstall = None;
         let req = api::Request::Uninstall { id: id.clone() };
-        self.plugin_call(req, changed, Box::new(move |view, result, cx| view.after_change(result, Some(id), false, cx)), cx);
+        self.plugin_call(req, changed, Box::new(move |view, result, cx| view.after_change(result, Some(id), false, None, cx)), cx);
     }
 
     /// An install or uninstall finished: report it, keep an unapplied
     /// draft in step with the host (which changed `plugins.<id>`), reload.
-    fn after_change(&mut self, result: anyhow::Result<api::Changed>, id: Option<String>, installed: bool, cx: &mut Context<'_, Self>) {
+    fn after_change(
+        &mut self,
+        result: anyhow::Result<api::Changed>,
+        id: Option<String>,
+        installed: bool,
+        return_id: Option<u64>,
+        cx: &mut Context<'_, Self>,
+    ) {
         match result {
             Ok(c) => {
                 if let (Some(draft), Some(id)) = (self.draft.as_mut(), id) {
                     if installed {
-                        draft.edit_plugin(&id, |p| p.enabled = true);
+                        if goatty_shell::builtins::get(&id).is_some() {
+                            draft.edit_plugin(&id, |p| p.enabled = true);
+                        } else {
+                            // Keep non-builtin plugin entries even with default
+                            // config so applying the draft doesn't remove them.
+                            draft.plugins.entry(id).or_default().enabled = true;
+                        }
                     } else {
                         draft.plugins.remove(&id);
                     }
@@ -169,6 +262,11 @@ impl SettingsWindow {
         }
         self.load_host(cx);
         self.load_plugins(false, cx);
+        if let Some(rid) = return_id
+            && let Some(back) = self.plugins.take_plan_return(rid)
+        {
+            self.go(back, cx);
+        }
     }
 
     // ---- Settings -----------------------------------------------------------
@@ -265,7 +363,7 @@ impl SettingsWindow {
                 .child(card(ui).child(kit::empty(
                     ui,
                     Icon::Loader,
-                    if self.plugins.loading { "Loading plugins…" } else { "No plugins to show" },
+                    if self.plugins.is_loading() { "Loading plugins…" } else { "No plugins to show" },
                     format!("From {}", self.host_label()),
                 )))
                 .into_any_element();
@@ -318,7 +416,7 @@ impl SettingsWindow {
                 .child(
                     icon_button(
                         "plugins-refresh",
-                        if self.plugins.loading { Icon::Loader } else { Icon::Refresh },
+                        if self.plugins.is_loading() { Icon::Loader } else { Icon::Refresh },
                         "Check the registries for new plugins and updates",
                         ui,
                         self.act(cx, |v, cx| v.load_plugins(true, cx)),
@@ -1015,17 +1113,8 @@ impl SettingsWindow {
                 .items_center()
                 .justify_end()
                 .gap(px(8.))
-                .when(self.plugins.loading, |d| d.child(kit::hint(ui, "Installing…")))
-                .child(button(
-                    "plan-cancel",
-                    "Cancel",
-                    ButtonKind::Ghost,
-                    ui,
-                    self.act(cx, |v, cx| {
-                        v.plugins.plan = None;
-                        cx.notify();
-                    }),
-                ))
+                .when(self.plugins.is_loading(), |d| d.child(kit::hint(ui, "Installing…")))
+                .child(button("plan-cancel", "Cancel", ButtonKind::Ghost, ui, self.act(cx, |v, cx| v.back(cx))))
                 .child(button_with(
                     "plan-install",
                     Some(Icon::Download),
@@ -1060,5 +1149,65 @@ fn changed(r: api::Reply) -> Option<api::Changed> {
     match r {
         api::Reply::Changed(c) => Some(c),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_plan(id: &str) -> Box<Plan> {
+        Box::new(Plan {
+            id: id.into(),
+            name: id.into(),
+            version: "1.0.0".into(),
+            summary: String::new(),
+            description: String::new(),
+            publisher: "test".into(),
+            homepage: None,
+            license: None,
+            source: "test".into(),
+            verified: true,
+            builtin: false,
+            replaces: None,
+            downloads: Vec::new(),
+            permissions: Vec::new(),
+            aliases: Vec::new(),
+            env: Vec::new(),
+            files: Vec::new(),
+            shell_code: None,
+            requires: Vec::new(),
+            warnings: Vec::new(),
+            digest: "sha256:test".into(),
+        })
+    }
+
+    #[test]
+    fn stale_review_completion_does_not_overwrite_newer_review_or_navigation() {
+        let mut page = PluginsPage::default();
+        let req_a = page.begin_review(Some(Page::Profile));
+        page.clear_review();
+        let req_b = page.begin_review(Some(Page::Profile));
+
+        // Stale failure or completion for A must be ignored and keep B's plan_return.
+        assert_eq!(page.fail_review(req_a), None);
+        assert!(!page.accept_review_plan(req_a, test_plan("a")));
+        assert!(page.plan.is_none());
+
+        // Active review B succeeds and keeps its return page until consumed.
+        assert!(page.accept_review_plan(req_b, test_plan("b")));
+        assert_eq!(page.plan.as_ref().map(|p| p.id.as_str()), Some("b"));
+        assert_eq!(page.take_plan_return(req_a), None);
+        assert_eq!(page.take_plan_return(req_b), Some(Page::Profile));
+    }
+
+    #[test]
+    fn dismiss_plan_clears_plan_and_returns_origin_page() {
+        let mut page = PluginsPage::default();
+        let req = page.begin_review(Some(Page::Profile));
+        assert!(page.accept_review_plan(req, test_plan("greet")));
+        assert_eq!(page.dismiss_plan(), Some(Some(Page::Profile)));
+        assert!(page.plan.is_none());
+        assert_eq!(page.take_plan_return(req), None);
     }
 }

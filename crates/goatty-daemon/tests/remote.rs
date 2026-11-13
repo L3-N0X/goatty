@@ -40,22 +40,25 @@ impl Host {
         }
         let ssh = dir.path().join("bin/ssh");
         let p = dir.path().display();
-        std::fs::write(
-            &ssh,
-            format!(
-                r#"#!/bin/sh
+        let script = format!(
+            r#"#!/bin/sh
 while [ $# -gt 0 ]; do
   case "$1" in --) shift; break;; -e|-o) shift 2;; -*) shift;; *) break;; esac
 done
 shift
-export HOME="{p}/home" XDG_RUNTIME_DIR="{p}/run" GOATTY_SOCKET="{p}/run/d.sock" GOATTY_SHELL=/bin/sh PATH=/usr/bin:/bin RUST_LOG=warn
+export HOME="{p}/home" XDG_RUNTIME_DIR="{p}/run" GOATTY_SOCKET="{p}/run/d.sock" GOATTY_SHELL=/bin/sh PATH=/usr/bin:/bin RUST_LOG=warn,rio_vt=error
 unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME
 exec sh -c "$*"
 "#
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
+        // Write and chmod in a short-lived child process so the test binary
+        // never holds a write fd to `bin/ssh`; otherwise a concurrent test
+        // thread calling `fork()` can inherit that fd and trigger ETXTBSY.
+        let mut child =
+            Command::new("sh").args(["-c", "cat > \"$1\" && chmod 0755 \"$1\"", "sh"]).arg(&ssh).stdin(Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
+        let status = child.wait().unwrap();
+        assert!(status.success(), "writing fake ssh failed: {status}");
         Self { dir }
     }
 
@@ -194,7 +197,7 @@ fn start_daemon(dir: &Path) -> (Child, PathBuf) {
     let child = Command::new(env!("CARGO_BIN_EXE_goattyd"))
         .env("GOATTY_SOCKET", &sock)
         .env("GOATTY_SHELL", "/bin/sh")
-        .env("RUST_LOG", "warn")
+        .env("RUST_LOG", "warn,rio_vt=error")
         .env("HOME", dir)
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_DATA_HOME")
@@ -278,7 +281,7 @@ fn daemon_takes_its_socket_from_systemd() {
         // The daemon's own path for its watchdog; the listener comes from fd 3.
         .env("GOATTY_SOCKET", &sock)
         .env("GOATTY_SHELL", "/bin/sh")
-        .env("RUST_LOG", "warn")
+        .env("RUST_LOG", "warn,rio_vt=error")
         .env("HOME", dir.path())
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_DATA_HOME")

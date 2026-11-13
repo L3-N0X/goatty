@@ -4,10 +4,9 @@
 //!
 //! Skipped (with a note) when zsh isn't installed; CI installs it.
 
-use std::io::Read;
-use std::os::unix::fs::PermissionsExt;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use goatty_config::{Effective, HostSettings, ZshSettings};
@@ -68,7 +67,7 @@ impl Sandbox {
         let home = tmp.path().join("home");
         std::fs::create_dir_all(home.join("userbin")).unwrap();
         // PATH holds zsh and basic utilities (compinit needs mv, grep, ...)
-        // but not the host's starship/atuin/fzf, which would change the
+        // but not the host's starship/fzf/fd, which would change the
         // results. Some distros' /etc/profile still appends /usr/bin.
         let sysbin = home.join("sysbin");
         std::fs::create_dir_all(&sysbin).unwrap();
@@ -146,9 +145,25 @@ fn no_highlighting() -> HostSettings {
     s
 }
 
+/// Whether the host has a distro copy at any of `builtin_id`'s `system_paths`.
+fn has_system_copy(builtin_id: &str) -> bool {
+    goatty_shell::builtins::get(builtin_id)
+        .unwrap()
+        .manifest()
+        .packages
+        .iter()
+        .flat_map(|p| &p.system_paths)
+        .any(|p| Path::new(p).is_file())
+}
+
 fn exe(p: &Path, body: &str) {
-    std::fs::write(p, body).unwrap();
-    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // Write and chmod in a short-lived child process so the test binary never
+    // holds a write fd to the script while other test threads fork (ETXTBSY).
+    let mut child =
+        Command::new("sh").args(["-c", "cat > \"$1\" && chmod 0755 \"$1\"", "sh"]).arg(p).stdin(Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(body.as_bytes()).unwrap();
+    let status = child.wait().unwrap();
+    assert!(status.success(), "writing fake binary {} failed: {status}", p.display());
 }
 
 fn stdout(o: &Output) -> String {
@@ -219,18 +234,21 @@ fn default_startup_sources_user_env_not_rc() {
     use goatty_shell::doctor::State;
     // Found through the PATH entry the user's .zprofile added.
     assert_eq!(state("starship"), Some(State::Ok(sb.home.join("userbin/starship").to_string_lossy().into_owned())));
-    assert_eq!(state("atuin"), Some(State::Missing));
+    if matches!(state("fzf"), Some(State::Ok(_))) && has_system_copy("fzf-tab") {
+        assert!(matches!(state("fzf-tab"), Some(State::Ok(_))));
+    } else {
+        assert_eq!(state("fzf-tab"), Some(State::Missing));
+    }
     assert_eq!(state("syntax-highlighting"), Some(State::Off));
     assert!(matches!(state("integration"), Some(State::Ok(_))));
 
-    // goatty-setup asks for exactly the missing default tools (not fzf).
+    // goatty-setup asks for exactly the missing default tools, never the
+    // optional helpers (fd, bat, eza).
     let setup = trace.iter().find(|l| l.starts_with("goattyd ")).expect("goatty-setup ran goattyd");
     // Alphabetical, like `goatty-status`. autosuggestions is missing on
-    // hosts without the distro plugin (CI).
-    let mut want = vec!["atuin"];
-    if state("autosuggestions") == Some(State::Missing) {
-        want.push("autosuggestions");
-    }
+    // hosts without the distro plugin (CI), fzf where /usr/bin isn't
+    // appended to PATH or has no fzf.
+    let want: Vec<&str> = ["autosuggestions", "fzf", "fzf-tab"].into_iter().filter(|t| state(t) == Some(State::Missing)).collect();
     assert_eq!(setup, &format!("goattyd shell install -- {}", want.join(" ")));
 }
 
@@ -331,7 +349,7 @@ fn integration_marks_prompts_and_reports_cwd() {
     assert!(out.contains("\x1b]133;D;1\x07"), "false failed");
     let cwd = format!("{}/a%20b\x1b\\", sb.home.display());
     assert!(out.contains("\x1b]7;file://") && out.contains(&cwd), "OSC 7 with a percent-encoded path; got:\n{out:?}");
-    // atuin is missing and the hint isn't dismissed.
+    // fzf-tab is missing and the hint isn't dismissed.
     assert!(out.contains("goatty-setup"), "missing-tools hint");
 }
 
@@ -422,6 +440,7 @@ impl PtyShell {
         });
         let mut sh = Self { pty, rx, out: Vec::new() };
         sh.wait_for_prompts(1);
+        sh.wait_for_idle();
         sh
     }
 
@@ -440,9 +459,38 @@ impl PtyShell {
         }
     }
 
+    /// Wait until zsh has entered zle and is blocked reading input for the
+    /// latest prompt, avoiding the brief window right after `133;B` where
+    /// `zlecore` resets `errflag` before reading.
+    fn wait_for_idle(&mut self) {
+        let start = self.out.windows(7).rposition(|w| w == b"\x1b]133;B").unwrap_or(0);
+        self.wait_for_from(start, b"\x1b[?2004h");
+        if let Some(pid) = self.pty.pid() {
+            let wchan = format!("/proc/{pid}/wchan");
+            if std::path::Path::new(&wchan).exists() {
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while Instant::now() < deadline {
+                    if let Ok(w) = std::fs::read_to_string(&wchan) {
+                        let w = w.trim();
+                        if !w.is_empty() && w != "0" {
+                            return;
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                return;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
     fn wait_for(&mut self, needle: &[u8]) {
+        self.wait_for_from(0, needle);
+    }
+
+    fn wait_for_from(&mut self, start: usize, needle: &[u8]) {
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !self.out.windows(needle.len()).any(|w| w == needle) {
+        while !self.out[start..].windows(needle.len()).any(|w| w == needle) {
             match self.rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
                 Ok(chunk) => self.out.extend(chunk),
                 Err(_) => panic!("waiting for {:?}:\n{}", String::from_utf8_lossy(needle), String::from_utf8_lossy(&self.out)),
@@ -450,11 +498,12 @@ impl PtyShell {
         }
     }
 
-    /// Type `line` + Enter and wait for the next prompt.
+    /// Type `line` + Enter and wait for the next idle prompt.
     fn run(&mut self, line: &str) {
         let n = self.prompts() + 1;
         self.pty.write(format!("{line}\r").as_bytes()).unwrap();
         self.wait_for_prompts(n);
+        self.wait_for_idle();
     }
 
     fn text(&self) -> String {
@@ -483,8 +532,10 @@ fn reloads_on_request() {
     // Busy: reloads once the command is done.
     sh.run("y=1");
     let n = sh.prompts();
+    let offset = sh.out.len();
     sh.pty.write(b"/bin/sleep 0.5\r").unwrap();
-    std::thread::sleep(Duration::from_millis(200));
+    sh.wait_for_from(offset, b"\x1b]133;C");
+    std::thread::sleep(Duration::from_millis(100));
     svc.reload_shells();
     sh.wait_for_prompts(n + 1);
     sh.run("print -r -- Y=${y:-unset}");
@@ -500,7 +551,9 @@ fn reloads_on_request() {
     svc.reload_shells();
     let deadline = Instant::now() + Duration::from_secs(3);
     while sh.prompts() == n && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
+        if let Ok(chunk) = sh.rx.recv_timeout(Duration::from_millis(50)) {
+            sh.out.extend(chunk);
+        }
     }
     assert_eq!(sh.prompts(), n, "no reload while typing");
     sh.run("");
@@ -615,10 +668,11 @@ shell-code = "defines the greet function the plugin is about"
     assert_eq!(state("plugin:ghost"), Some(State::Missing));
 }
 
-/// The built-in plugins in a real shell (#98): fzf, then Atuin (so Ctrl+R
-/// stays Atuin's), Atuin's setting reaching its init, a zsh plugin found
-/// through a managed install from before plugins existed, and the fallback
-/// prompt with Starship turned off (reported as off).
+/// The built-in plugins in a real shell (#98, #165): fzf, then fzf-tab
+/// (so Tab is fzf-tab's), then autosuggestions; fzf's options file, fd as
+/// its file list and the previews; fzf-tab found through a managed copy;
+/// a setting reaching its plugin's init; the fallback prompt with Starship
+/// turned off (reported as off).
 #[test]
 fn builtin_plugins_load_in_their_slots() {
     let Some(zsh) = zsh() else { return };
@@ -627,19 +681,26 @@ fn builtin_plugins_load_in_their_slots() {
     exe(
         &sysbin.join("fzf"),
         "#!/bin/sh
-[ \"$1\" = --zsh ] && echo 'fzf_w() { :; }; zle -N fzf_w; bindkey \"^R\" fzf_w; bindkey \"^T\" fzf_w'\n",
+[ \"$1\" = --zsh ] && echo 'fzf_w() { :; }; zle -N fzf_w; bindkey \"^R\" fzf_w; bindkey \"^T\" fzf_w; bindkey \"^I\" fzf_w'\n",
     );
-    exe(
-        &sysbin.join("atuin"),
-        "#!/bin/sh
-echo \"print -r -- atuin-args:$*\"; echo 'atuin_w() { :; }; zle -N atuin_w; bindkey \"^R\" atuin_w'\n",
+    exe(&sysbin.join("fd"), "#!/bin/sh\n");
+    exe(&sysbin.join("bat"), "#!/bin/sh\n");
+    // goatty's own copies: autosuggestions laid out like the old tool
+    // installer did, fzf-tab like a plugin install does.
+    let managed = |pkg: &str, root: &str, file: &str, code: &str| {
+        let root = sb.dirs.tools_dir().join(pkg).join(root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(file), code).unwrap();
+        std::fs::create_dir_all(sb.dirs.plugins_dir()).unwrap();
+        std::os::unix::fs::symlink(&root, sb.dirs.plugins_dir().join(pkg)).unwrap();
+    };
+    managed(
+        "autosuggestions",
+        "0.7.1/zsh-autosuggestions-0.7.1",
+        "zsh-autosuggestions.zsh",
+        "typeset -g fake_suggest=\"${(j:,:)ZSH_AUTOSUGGEST_STRATEGY}\"\n",
     );
-    // goatty's own copy of autosuggestions, laid out like the old tool installer did.
-    let root = sb.dirs.tools_dir().join("autosuggestions/0.7.1/zsh-autosuggestions-0.7.1");
-    std::fs::create_dir_all(&root).unwrap();
-    std::fs::write(root.join("zsh-autosuggestions.zsh"), "typeset -g fake_suggest=\"${(j:,:)ZSH_AUTOSUGGEST_STRATEGY}\"\n").unwrap();
-    std::fs::create_dir_all(sb.dirs.plugins_dir()).unwrap();
-    std::os::unix::fs::symlink(&root, sb.dirs.plugins_dir().join("autosuggestions")).unwrap();
+    managed("fzf-tab", "1.3.0/fzf-tab-1.3.0", "fzf-tab.plugin.zsh", "ftb_w() { :; }; zle -N ftb_w; bindkey '^I' ftb_w\n");
 
     let mut settings = no_highlighting();
     settings.edit_plugin("autosuggestions", |p| {
@@ -651,23 +712,78 @@ echo \"print -r -- atuin-args:$*\"; echo 'atuin_w() { :; }; zle -N atuin_w; bind
         &sb,
         &launch,
         &[
-            "bindkey '^R'; bindkey '^T'",
+            "bindkey '^R'; bindkey '^T'; bindkey '^I'",
             "[[ $PROMPT == *'%F{blue}%~%f'* ]] && p=fallback; print -r -- strat=${(j:,:)ZSH_AUTOSUGGEST_STRATEGY} suggest=$fake_suggest prompt=$p",
             "goatty-status",
         ],
     );
-    assert!(out.contains("atuin-args:init zsh --disable-up-arrow"), "{out}");
-    assert!(out.contains("\"^R\" atuin_w") && out.contains("\"^T\" fzf_w"), "Atuin loads after fzf: {out}");
-    let host_copy = Path::new("/usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh").exists()
-        || Path::new("/usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh").exists();
+    // The variables in a clean environment (the PTY inherits the test's).
+    let vars = stdout(&sb.run(
+        &launch,
+        "print -r -- \"cmd=[$FZF_DEFAULT_COMMAND] alt=[$FZF_ALT_C_COMMAND] topts=[$FZF_CTRL_T_OPTS]\"; [[ -r $FZF_DEFAULT_OPTS_FILE ]] && print -r -- rc=${FZF_DEFAULT_OPTS_FILE:t}; \
+         zstyle -L ':completion:*' menu; zstyle -L ':fzf-tab:complete:*:*' fzf-preview",
+    ));
+    let host_tab = has_system_copy("fzf-tab");
+    assert!(out.contains("\"^R\" fzf_w") && out.contains("\"^T\" fzf_w"), "{out}");
+    if !host_tab {
+        assert!(out.contains("\"^I\" ftb_w"), "fzf-tab loads after fzf and takes Tab: {out}");
+    }
+    let host_copy = has_system_copy("autosuggestions");
     assert!(out.contains("strat=history "), "the plugin's setting reached it: {out}");
     if !host_copy {
         assert!(out.contains("suggest=history "), "the managed copy loaded after its options were set: {out}");
     }
     assert!(out.contains("prompt=fallback"), "goatty's fallback prompt: {out}");
+    let fd = "fd --strip-cwd-prefix --hidden --follow --exclude .git";
+    assert!(vars.contains(&format!("cmd=[{fd} --type f] alt=[{fd} --type d]")), "fd lists the files: {vars}");
+    assert!(vars.contains("topts=['--preview=bat --color=always"), "Ctrl+T previews files with bat: {vars}");
+    assert!(vars.contains("rc=fzfrc"), "goatty's fzf options: {vars}");
+    assert!(vars.contains("zstyle ':completion:*' menu no"), "fzf-tab replaces the menu: {vars}");
+    assert!(vars.contains("elif [[ -f $realpath ]]; then bat --color=always"), "file previews with bat: {vars}");
     assert!(out.contains("starship\toff"), "{out}");
     assert!(out.contains("syntax-highlighting\toff"), "{out}");
-    assert!(out.contains("fzf\tok\t") && out.contains("atuin\tok\t"), "{out}");
+    assert!(out.contains("fzf\tok\t") && out.contains("fzf-tab\tok\t"), "{out}");
+    assert!(out.contains(&format!("helper:fd\tok\t{}", sysbin.join("fd").display())), "{out}");
+    assert!(out.contains("helper:bat\tok\t"), "{out}");
+    assert!(!out.contains("atuin"), "{out}");
+}
+
+/// fzf's variables: yours win, set before goatty's plugins load (here in
+/// the environment, like a .zshenv export); goatty's own from the shell a
+/// goatty-reload replaced are replaced again; fd missing and previews off
+/// fall back to fzf's own directory walker.
+#[test]
+fn fzf_keeps_your_variables_and_replaces_its_own() {
+    let Some(zsh) = zsh() else { return };
+    let sb = Sandbox::new(zsh);
+    exe(&sb.home.join("sysbin/fzf"), "#!/bin/sh\n");
+    let mut settings = no_highlighting();
+    settings.edit_plugin("fzf", |p| {
+        p.settings.insert("previews".into(), false.into());
+        p.settings.insert("hidden_files".into(), false.into());
+    });
+    settings.edit_plugin("fzf-tab", |p| p.enabled = false);
+    let mut launch = sb.launch_with(settings, None);
+    launch.env.extend([
+        ("FZF_DEFAULT_COMMAND".to_string(), "goatty-old".to_string()),
+        ("_goatty_fzf_FZF_DEFAULT_COMMAND".into(), "goatty-old".into()),
+        ("FZF_DEFAULT_OPTS_FILE".into(), String::new()),
+    ]);
+    let out = sb.run(
+        &launch,
+        "print -r -- \"cmd=[$FZF_DEFAULT_COMMAND] file=[${FZF_DEFAULT_OPTS_FILE-unset}] t=[$FZF_CTRL_T_OPTS] c=[$FZF_ALT_C_OPTS]\"; goatty-status",
+    );
+    let text = stdout(&out);
+    assert!(String::from_utf8_lossy(&out.stderr).trim().is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+    // On hosts whose /etc/profile appends /usr/bin, the host's fd shows up.
+    if text.contains("helper:fd\tmissing") {
+        assert!(text.contains("cmd=[]"), "goatty's old value is gone, fzf walks the directory itself: {text}");
+        assert!(text.contains("t=['--walker=file,follow' '--walker-skip=.git'] c=['--walker=dir,follow' '--walker-skip=.git']"), "{text}");
+    } else {
+        assert!(text.contains("cmd=[fd --strip-cwd-prefix --follow --exclude .git --type f]"), "no --hidden: {text}");
+    }
+    assert!(text.contains("file=[]"), "your options file (even empty) wins: {text}");
+    assert!(!text.contains("helper:bat") && !text.contains("helper:eza"), "previews are off: {text}");
 }
 
 /// The user's aliases from host.json (#88): defined in a real shell,

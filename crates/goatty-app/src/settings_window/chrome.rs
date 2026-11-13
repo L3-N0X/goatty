@@ -32,7 +32,7 @@ impl SettingsWindow {
         match page {
             Page::Shell => d.shell != h.shell,
             Page::Prompt => d.prompt != h.prompt || plugin("starship"),
-            Page::History => d.history != h.history || plugin("atuin"),
+            Page::History => d.history != h.history || plugin("fzf") || plugin("fzf-tab"),
             Page::Aliases => {
                 d.aliases != h.aliases
                     || d.plugins
@@ -392,10 +392,15 @@ impl SettingsWindow {
         Some((inst.manifest.name.clone().into(), inst.manifest.summary.clone().into()))
     }
 
-    fn back(&mut self, cx: &mut Context<'_, Self>) {
+    pub(super) fn back(&mut self, cx: &mut Context<'_, Self>) {
         if self.page == Page::Prompt {
             self.close_prompt_modules(cx);
-        } else if self.plugins.plan.take().is_none() {
+        } else if let Some(back) = self.plugins.dismiss_plan() {
+            if let Some(page) = back {
+                self.go(page, cx);
+                return;
+            }
+        } else {
             self.plugins.detail = None;
         }
         self.menu = None;

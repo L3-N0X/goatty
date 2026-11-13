@@ -53,7 +53,7 @@ impl Progress {
         self.tools.iter().position(|t| t.2 == Step::Running).map(|i| (i + 1, self.tools[i].1.as_str()))
     }
 
-    /// "Installing Atuin… (2 of 3)".
+    /// "Installing fzf… (2 of 3)".
     pub fn status_line(&self) -> String {
         match self.current() {
             Some((i, name)) => format!("Installing {name}… ({i} of {})", self.tools.len()),
@@ -62,8 +62,8 @@ impl Progress {
     }
 }
 
-/// "Starship", "Starship and Atuin", "Starship, Atuin and fzf",
-/// "Starship, Atuin and 2 more".
+/// "Starship", "Starship and fzf", "Starship, fzf and fzf-tab",
+/// "Starship, fzf and 2 more".
 pub fn names(list: &[&str]) -> String {
     match list {
         [] => String::new(),
@@ -236,7 +236,7 @@ mod tests {
     fn lists_names_like_a_sentence() {
         assert_eq!(names(&[]), "");
         assert_eq!(names(&["Starship"]), "Starship");
-        assert_eq!(names(&["Starship", "Atuin"]), "Starship and Atuin");
+        assert_eq!(names(&["Starship", "fzf"]), "Starship and fzf");
         assert_eq!(names(&["A", "B", "C"]), "A, B and C");
         assert_eq!(names(&["A", "B", "C", "D"]), "A, B and 2 more");
     }

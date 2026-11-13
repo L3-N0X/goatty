@@ -212,7 +212,7 @@ enum ShellCmd {
     /// directory (no sudo). Without names: the default ones the shell is
     /// missing (what `goatty-setup` runs).
     Install {
-        /// Built-in plugins: autosuggestions, syntax-highlighting, starship, atuin, fzf.
+        /// Built-in plugins: fzf, fzf-tab, autosuggestions, syntax-highlighting, starship.
         tools: Vec<String>,
         /// Don't ask before downloading.
         #[arg(short, long)]
@@ -248,8 +248,12 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let cmd = cli.cmd.unwrap_or(Cmd::Serve);
     // The proxy's stderr goes back over ssh into the GUI's log: keep it quiet.
-    let default_level =
-        if matches!(cmd, Cmd::Proxy | Cmd::Shell(_) | Cmd::Settings(_) | Cmd::Plugin(_) | Cmd::Alias(_)) { "warn" } else { "info" };
+    // Silence rio_vt's [unhandled osc_dispatch] warnings (e.g. systemd OSC 3008) by default (#20).
+    let default_level = if matches!(cmd, Cmd::Proxy | Cmd::Shell(_) | Cmd::Settings(_) | Cmd::Plugin(_) | Cmd::Alias(_)) {
+        "warn,rio_vt=error"
+    } else {
+        "info,rio_vt=error"
+    };
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_level)).init();
 
     match cmd {

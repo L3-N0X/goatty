@@ -119,11 +119,11 @@ mod tests {
 
     #[test]
     fn parses_status_lines() {
-        let f = parse_status("\natuin\tmissing\nfzf\toff\nstarship\tok\t/usr/bin/starship\nnoise line\nx\tweird\n");
+        let f = parse_status("\nfzf-tab\tmissing\nfzf\toff\nstarship\tok\t/usr/bin/starship\nnoise line\nx\tweird\n");
         assert_eq!(
             f,
             vec![
-                Feature { name: "atuin".into(), state: State::Missing },
+                Feature { name: "fzf-tab".into(), state: State::Missing },
                 Feature { name: "fzf".into(), state: State::Off },
                 Feature { name: "starship".into(), state: State::Ok("/usr/bin/starship".into()) },
             ]

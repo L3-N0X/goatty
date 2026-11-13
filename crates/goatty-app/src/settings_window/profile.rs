@@ -4,16 +4,21 @@
 
 use std::time::{Duration, Instant};
 
-use goatty_config::{ClientSettings, ThemeSettings};
+use goatty_config::{ClientSettings, HostSettings, ThemeSettings};
+use goatty_plugin::api::Catalog;
 use goatty_shell::history::{Entry, NAME_MAX};
-use gpui::{AnyElement, ClipboardItem, Context, FontWeight, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px};
+use gpui::{
+    AnyElement, ClipboardItem, Context, ElementId, FontWeight, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div,
+    px,
+};
 
-use super::SettingsWindow;
 use super::host::GenRow;
 use super::kit::{self, card, row, section};
+use super::{Page, SettingsWindow};
 use crate::settings::AppSettings;
 use crate::toast::{self, Toast};
 use crate::ui::controls::{ButtonKind, Tone, badge, button, button_with, icon_button};
+use crate::ui::focus;
 use crate::ui::icons::Icon;
 use crate::ui::style::{Ui, text};
 
@@ -23,6 +28,16 @@ const COPIED: Duration = Duration::from_millis(1500);
 const RECENT_GENERATIONS: usize = 5;
 /// Changes listed in an open generation before "and N more".
 const CHANGE_LINES: usize = 12;
+
+fn missing_profile_plugins(imported: &[String], host: Option<&HostSettings>, catalog: Option<&Catalog>) -> Vec<String> {
+    let Some(host) = host else { return Vec::new() };
+    imported
+        .iter()
+        .filter(|id| goatty_shell::builtins::get(id).is_none() && host.plugins.contains_key(id.as_str()))
+        .filter(|id| catalog.is_none_or(|c| !c.installed.iter().any(|i| i.id == **id)))
+        .cloned()
+        .collect()
+}
 
 /// `/home/me/.config/x` → `~/.config/x`, for showing (copying keeps the full path).
 fn tilde(path: &str) -> String {
@@ -56,6 +71,90 @@ fn gen_desc(e: &Entry) -> String {
 }
 
 impl SettingsWindow {
+    pub(super) fn missing_imported_plugins(&self) -> Vec<String> {
+        missing_profile_plugins(&self.imported_plugins, self.host_value(), self.plugins.catalog.as_ref())
+    }
+
+    fn imported_plugins_section(&self, ui: Ui, cx: &Context<'_, Self>) -> Option<AnyElement> {
+        let missing = self.missing_imported_plugins();
+        if missing.is_empty() {
+            return None;
+        }
+        let label = self.host_label();
+        let rows = missing.into_iter().map(|id| {
+            let enabled_in_profile = self.host_value().and_then(|h| h.plugins.get(&id)).is_none_or(|p| p.enabled);
+            let disabled_note = if enabled_in_profile { "" } else { " · disabled in profile (installing enables it)" };
+            match &self.plugins.catalog {
+                None if self.plugins.error.is_some() => row(ui, id)
+                    .icon(Icon::Puzzle)
+                    .desc("Couldn't check registries on this host")
+                    .control(badge("Unavailable", Tone::Warning, ui)),
+                None => row(ui, id).icon(Icon::Puzzle).desc("Checking plugin registries…").control(badge("Checking…", Tone::Neutral, ui)),
+                Some(cat) => match cat.available.iter().find(|a| a.id == id) {
+                    Some(a) if a.incompatible.is_none() => {
+                        let pid = id.clone();
+                        row(ui, a.name.clone())
+                            .icon(Icon::Puzzle)
+                            .desc(format!("{} · {} registry {}{disabled_note}", a.summary, a.registry, a.version))
+                            .control(button_with(
+                                SharedString::from(format!("imported-plugin-install-{id}")),
+                                Some(Icon::Download),
+                                "Review & install",
+                                ButtonKind::Normal,
+                                ui,
+                                self.act(cx, move |v, cx| v.review_plugin_from(pid.clone(), Page::Profile, cx)),
+                            ))
+                    }
+                    Some(a) => {
+                        let why = a.incompatible.as_deref().unwrap_or("Not compatible with this host");
+                        row(ui, a.name.clone()).icon(Icon::Puzzle).desc(format!("{why}{disabled_note}")).control(badge(
+                            "Not for this host",
+                            Tone::Danger,
+                            ui,
+                        ))
+                    }
+                    None => {
+                        let desc = if cat.registries.iter().any(|r| r.error.is_some()) {
+                            format!("Couldn't read every registry; refresh or install locally{disabled_note}")
+                        } else {
+                            format!("Not in this host's registries; add one with goattyd plugin registry add{disabled_note}")
+                        };
+                        row(ui, id).icon(Icon::Puzzle).desc(desc).control(badge("Not in registries", Tone::Warning, ui))
+                    }
+                },
+            }
+        });
+        let actions = div()
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .child(icon_button(
+                "imported-plugins-refresh",
+                if self.plugins.is_loading() { Icon::Loader } else { Icon::Refresh },
+                "Check plugin registries",
+                ui,
+                self.act(cx, |v, cx| v.load_plugins(true, cx)),
+            ))
+            .child(button(
+                "imported-plugins-dismiss",
+                "Dismiss",
+                ButtonKind::Ghost,
+                ui,
+                self.act_window(cx, |v, window, cx| {
+                    focus::hand_over(&v.focus, focus::Handover::Control(ElementId::from("import")), window, cx);
+                    v.imported_plugins.clear();
+                    cx.notify();
+                }),
+            ));
+        Some(
+            section(ui, "Plugins in this profile")
+                .desc(format!("This profile configures plugins that aren't installed on {label} yet"))
+                .action(actions)
+                .children(rows)
+                .into_any_element(),
+        )
+    }
+
     /// Open or close a generation's details.
     fn toggle_generation(&mut self, number: u32, cx: &mut Context<'_, Self>) {
         if self.gen_open == Some(number) {
@@ -409,6 +508,82 @@ impl SettingsWindow {
                     }),
                 )),
         );
-        div().flex().flex_col().gap(px(28.)).child(status).child(files).child(share).child(gens).child(reset).into_any_element()
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(28.))
+            .child(status)
+            .child(files)
+            .child(share)
+            .children(self.imported_plugins_section(ui, cx))
+            .child(gens)
+            .child(reset)
+            .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use goatty_config::PluginConfig;
+    use goatty_plugin::api::Installed;
+    use goatty_plugin::manifest::Manifest;
+
+    use super::*;
+
+    fn installed(id: &str) -> Installed {
+        Installed {
+            id: id.into(),
+            version: "1.0.0".into(),
+            source: "test".into(),
+            verified: true,
+            manifest: Manifest {
+                schema: 1,
+                id: id.into(),
+                name: id.into(),
+                version: "1.0.0".into(),
+                summary: String::new(),
+                description: String::new(),
+                publisher: "test".into(),
+                license: None,
+                homepage: None,
+                category: Default::default(),
+                keywords: Vec::new(),
+                requires: Default::default(),
+                compat: Default::default(),
+                packages: Vec::new(),
+                zsh: Default::default(),
+                env: Vec::new(),
+                aliases: Vec::new(),
+                files: Vec::new(),
+                settings: Vec::new(),
+                permissions: Default::default(),
+            },
+            enabled: true,
+            incompatible: None,
+            update: None,
+            installed_unix: 0,
+            builtin: false,
+            packages: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn missing_profile_plugins_filters_builtins_installed_and_discarded() {
+        let imported = vec!["starship".into(), "greet".into(), "demo".into(), "removed".into()];
+        let host = HostSettings {
+            plugins: BTreeMap::from([
+                ("starship".into(), PluginConfig::default()),
+                ("greet".into(), PluginConfig::default()),
+                ("demo".into(), PluginConfig::default()),
+            ]),
+            ..Default::default()
+        };
+        assert_eq!(missing_profile_plugins(&imported, None, None), Vec::<String>::new());
+        assert_eq!(missing_profile_plugins(&imported, Some(&host), None), vec!["greet", "demo"]);
+
+        let cat = Catalog { installed: vec![installed("greet")], ..Default::default() };
+        assert_eq!(missing_profile_plugins(&imported, Some(&host), Some(&cat)), vec!["demo"]);
     }
 }

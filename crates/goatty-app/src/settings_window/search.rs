@@ -53,8 +53,11 @@ pub const INDEX: &[Entry] = &[
         "theme.light",
         "theme.dark",
     ]),
-    e(Page::Appearance, "Theme", "Customize colors", "palette color editor ansi background foreground cursor").keys(&["theme.overrides"]),
+    e(Page::Appearance, "Theme", "Customize colors", "palette color editor ansi background foreground cursor accent primary")
+        .keys(&["theme.overrides"]),
     e(Page::Appearance, "Text", "Font", "family typeface monospace nerd").keys(&["font.family", "font.fallbacks"]),
+    e(Page::Appearance, "Text", "Interface font", "ui gui window tabs settings dialog proportional sans")
+        .keys(&["font.ui_family", "font.ui_fallbacks"]),
     e(Page::Appearance, "Text", "Size", "font size zoom bigger smaller").keys(&["font.size"]),
     e(Page::Appearance, "Text", "Line height", "spacing leading").keys(&["font.line_height"]),
     e(Page::Appearance, "Text", "Ligatures", "renderer shaping").keys(&["terminal.renderer"]),
@@ -123,11 +126,13 @@ pub const INDEX: &[Entry] = &[
     e(Page::History, "Saving", "Skip duplicates", "dedupe repeat").keys(&["history.ignore_duplicates"]),
     e(Page::History, "Saving", "Skip commands starting with a space", "secret ignore space private").keys(&["history.ignore_space"]),
     e(Page::History, "Saving", "Share between running shells", "sync share tabs").keys(&["history.share_between_sessions"]),
-    e(Page::History, "Search", "Atuin", "ctrl+r history search").keys(&["plugins.atuin.enabled"]),
-    e(Page::History, "Search", "Atuin on the Up arrow", "up arrow").keys(&["plugins.atuin.settings.up_arrow"]),
+    e(Page::History, "Search", "Fuzzy history search", "ctrl+r fzf history search ctrl+t alt+c files").keys(&["plugins.fzf.enabled"]),
+    e(Page::History, "Search", "Fuzzy Tab completion", "fzf-tab completion menu tab").keys(&["plugins.fzf-tab.enabled"]),
+    e(Page::History, "Search", "Previews in Tab completion", "fzf-tab preview eza bat").keys(&["plugins.fzf-tab.settings.previews"]),
+    e(Page::History, "Search", "Atuin", "atuin history database sync plugin"),
     e(Page::Diagnostics, "Shell", "Startup time", "slow startup speed doctor status"),
     e(Page::Diagnostics, "Shell", "Configuration", "generation doctor status zdotdir"),
-    e(Page::Diagnostics, "Shell", "Program", "doctor status setup features installed missing tools starship atuin"),
+    e(Page::Diagnostics, "Shell", "Program", "doctor status setup features installed missing tools starship fzf fd bat eza"),
     e(Page::Profile, "Files", "Appearance, shortcuts, workspace and hosts", "settings.json config file path"),
     e(Page::Profile, "Share", "Export a profile", "backup save file"),
     e(Page::Profile, "Share", "Import a profile", "restore load file"),
@@ -264,8 +269,10 @@ mod tests {
         };
         assert!(labels("opacity").contains(&"Background opacity"));
         assert!(labels("transparent").contains(&"Background opacity"));
+        assert!(labels("accent").contains(&"Customize colors"));
         assert!(labels("cursor blink").contains(&"Blinking"));
         assert!(labels("starship").contains(&"Use my own starship.toml"));
+        assert!(labels("gui font").contains(&"Interface font"));
         assert!(labels("zzzz").is_empty());
     }
 
@@ -279,6 +286,7 @@ mod tests {
             }
         }
         assert_eq!(entry_for(false, "terminal.padding.top").map(|e| e.label), Some("Padding"));
+        assert_eq!(entry_for(false, "font.ui_family").map(|e| e.label), Some("Interface font"));
         assert_eq!(entry_for(true, "prompt.style").map(|e| (e.page, e.label)), Some((Page::Prompt, "Style")));
         assert_eq!(entry_for(false, "tabs.style").map(|e| (e.page, e.label)), Some((Page::Workspace, "Style")));
         assert!(entry_for(false, "keybindings.ctrl-k").is_none());

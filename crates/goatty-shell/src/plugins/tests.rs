@@ -276,10 +276,10 @@ fn registry_plugins_cannot_shadow_builtins() {
     let w = world();
     let p = w.plugins();
     let settings = HostSettings::default();
-    let dir = w.tmp.path().join("fake-atuin");
+    let dir = w.tmp.path().join("fake-fzf-tab");
     std::fs::create_dir_all(&dir).unwrap();
     let text = std::fs::read_to_string(w.tmp.path().join("registry/plugins/demo/1.0.0/plugin.toml")).unwrap();
-    std::fs::write(dir.join("plugin.toml"), text.replace("id = \"demo\"\nname", "id = \"atuin\"\nname")).unwrap();
+    std::fs::write(dir.join("plugin.toml"), text.replace("id = \"demo\"\nname", "id = \"fzf-tab\"\nname")).unwrap();
     let err = p.plan(&Candidate::local(&dir).unwrap(), &settings).unwrap_err().to_string();
     assert!(err.contains("comes with goatty"), "{err}");
     // A package id of a built-in plugin (tools/<id>/ is theirs).
@@ -292,7 +292,34 @@ fn registry_plugins_cannot_shadow_builtins() {
     let err = p.plan(&Candidate::local(&dir).unwrap(), &settings).unwrap_err().to_string();
     assert!(err.contains("belongs to goatty's built-in fzf plugin"), "{err}");
     // `find` always resolves a built-in id to the built-in plugin.
-    assert!(p.find("atuin", None).unwrap().builtin.is_some());
+    assert!(p.find("fzf-tab", None).unwrap().builtin.is_some());
+    // Atuin was built in until #165: now a registry plugin can be it, and
+    // use the package goatty downloaded back then.
+    std::fs::write(
+        dir.join("plugin.toml"),
+        text.replace("id = \"demo\"\nname", "id = \"atuin\"\nname")
+            .replace("id = \"demo\"\nversion = \"2.0\"", "id = \"atuin\"\nversion = \"2.0\""),
+    )
+    .unwrap();
+    p.plan(&Candidate::local(&dir).unwrap(), &settings).unwrap();
+}
+
+#[test]
+fn retired_builtin_downloads_are_removed_unless_a_plugin_owns_them() {
+    let w = world();
+    let p = w.plugins();
+    let version = w.dirs.tools_dir().join("atuin/18.24.2");
+    std::fs::create_dir_all(&version).unwrap();
+    std::fs::write(version.join("atuin"), "#!/bin/sh\n").unwrap();
+    std::fs::create_dir_all(w.dirs.bin_dir()).unwrap();
+    std::os::unix::fs::symlink(version.join("atuin"), w.dirs.bin_dir().join("atuin")).unwrap();
+    let launcher = crate::launch::Launcher::new(Some(w.dirs.clone()), None);
+    assert!(crate::cmd::uninstall(&launcher, &["atuin".into(), "typo".into()], false).is_err());
+    assert!(w.dirs.tools_dir().join("atuin").exists(), "a typo in the command leaves the install untouched");
+    assert_eq!(p.remove_retired("atuin", &["atuin"]).unwrap(), Some(true));
+    assert!(!w.dirs.tools_dir().join("atuin").exists());
+    assert!(w.dirs.bin_dir().join("atuin").symlink_metadata().is_err());
+    assert_eq!(p.remove_retired("atuin", &["atuin"]).unwrap(), Some(false));
 }
 
 #[test]
@@ -300,8 +327,8 @@ fn builtins_are_active_unless_turned_off_and_ordered() {
     let w = world();
     let mut s = HostSettings::default();
     let ids = |s: &HostSettings| super::active(&w.dirs, s).0.into_iter().map(|a| a.manifest.id).collect::<Vec<_>>();
-    assert_eq!(ids(&s), ["fzf", "atuin", "autosuggestions", "starship", "syntax-highlighting"]);
-    s.edit_plugin("atuin", |c| c.enabled = false);
+    assert_eq!(ids(&s), ["fzf", "fzf-tab", "autosuggestions", "starship", "syntax-highlighting"]);
+    s.edit_plugin("fzf-tab", |c| c.enabled = false);
     assert_eq!(ids(&s), ["fzf", "autosuggestions", "starship", "syntax-highlighting"]);
     let (_, issues) = super::active(&w.dirs, &s);
     assert!(issues.is_empty(), "settings for built-in plugins aren't 'not installed': {issues:?}");
@@ -311,7 +338,7 @@ fn builtins_are_active_unless_turned_off_and_ordered() {
     list.reverse();
     let order: Vec<String> = load_order(list.clone()).into_iter().map(|a| a.manifest.id).collect();
     let pos = |id: &str| order.iter().position(|x| x == id).unwrap();
-    assert!(pos("fzf") < pos("atuin") && pos("atuin") < pos("autosuggestions"), "{order:?}");
+    assert!(pos("fzf") < pos("fzf-tab") && pos("fzf-tab") < pos("autosuggestions"), "{order:?}");
     assert_eq!(order.last().map(String::as_str), Some("syntax-highlighting"));
     for a in &mut list {
         if a.manifest.id == "fzf" {

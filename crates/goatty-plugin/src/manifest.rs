@@ -355,8 +355,8 @@ pub struct ZshIntegration {
     #[serde(default)]
     pub load: Load,
     /// Plugins this one loads after when they're there (same `load` slot;
-    /// an earlier slot always comes first). Atuin loads after fzf so that
-    /// Ctrl+R stays Atuin's.
+    /// an earlier slot always comes first). fzf-tab loads after fzf, so
+    /// it wraps Tab after fzf's bindings did.
     #[serde(default)]
     pub after: Vec<String>,
 }
@@ -367,7 +367,7 @@ pub struct ZshIntegration {
 #[serde(rename_all = "kebab-case")]
 pub enum Load {
     /// After completion is set up, before the prompt: tools that add line
-    /// editor widgets and key bindings (fzf, Atuin, autosuggestions).
+    /// editor widgets and key bindings (fzf, fzf-tab, autosuggestions).
     LineEditor,
     /// The prompt. When no prompt plugin loads, goatty sets a small one.
     Prompt,

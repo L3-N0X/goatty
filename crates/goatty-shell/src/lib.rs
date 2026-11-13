@@ -2,9 +2,10 @@
 //!
 //! A goatty session runs zsh with `ZDOTDIR` pointing at startup files
 //! goatty generates, so the user gets autosuggestions, syntax highlighting,
-//! completion, Starship, Atuin and shell integration without touching their
-//! dotfiles. The user's `.zshenv`/`.zprofile` still run (and `.zshrc` on
-//! request); the user's `ZDOTDIR` is restored once startup is done.
+//! fuzzy history search and completion (fzf), Starship and shell integration
+//! without touching their dotfiles. The user's `.zshenv`/`.zprofile` still
+//! run (and `.zshrc` on request); the user's `ZDOTDIR` is restored once
+//! startup is done.
 //!
 //! * [`aliases`]: the user's and the plugins' aliases, `goattyd alias …`,
 //! * [`launch`]: which shell a session runs, and its environment,
@@ -12,7 +13,7 @@
 //! * [`generation`]: build, validate, activate and roll back configurations,
 //! * [`history`]: what each generation changed, names for them,
 //! * [`builtins`]: the plugins that come with goatty (autosuggestions,
-//!   syntax highlighting, Starship, Atuin, fzf),
+//!   syntax highlighting, Starship, fzf, fzf-tab),
 //! * [`plugins`]: registries, install plans, installs, what goes into the shell,
 //! * [`packages`]: where a plugin's package is found (system or goatty's copy),
 //! * [`install`]: user-space installs of packages (no sudo),

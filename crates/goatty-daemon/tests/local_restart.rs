@@ -22,7 +22,7 @@ fn goattyd(exe: &Path, dir: &Path) -> Command {
     let mut c = Command::new(exe);
     c.env("GOATTY_SOCKET", dir.join("d.sock"))
         .env("GOATTY_SHELL", "/bin/sh")
-        .env("RUST_LOG", "warn")
+        .env("RUST_LOG", "warn,rio_vt=error")
         .env("HOME", dir)
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_DATA_HOME");

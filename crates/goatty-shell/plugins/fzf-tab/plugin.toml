@@ -1,0 +1,52 @@
+# Built into goatty (crates/goatty-shell/plugins/): always available, turned
+# off rather than uninstalled. Same format as registry plugins (docs/plugins.md).
+schema = 1
+id = "fzf-tab"
+name = "fzf-tab"
+version = "1.0.0"
+summary = "Tab completion in fzf, with previews"
+description = """
+fzf-tab replaces zsh's completion menu with fzf: press Tab, type to filter, Enter to pick, / to accept a directory and go on into it. Next to the list it previews what's selected: directory contents (with eza), files (with bat), the process for kill, the value of a variable, git diffs and logs, systemctl status, tldr and man pages. It uses fzf's colors from goatty's theme. Needs fzf; goatty uses your distribution's copy of fzf-tab when it's installed and downloads its own otherwise."""
+publisher = "goatty"
+homepage = "https://github.com/Aloxaf/fzf-tab"
+license = "MIT"
+keywords = ["completion", "tab", "fuzzy", "preview", "menu"]
+
+[requires]
+commands = ["fzf"]
+
+[[package]]
+id = "fzf-tab"
+version = "1.3.0"
+source = "fzf-tab.plugin.zsh"
+system_paths = [
+  "/usr/share/zsh/plugins/fzf-tab-git/fzf-tab.plugin.zsh",                 # Arch (AUR fzf-tab-git)
+  "/usr/share/zsh/plugins/fzf-tab/fzf-tab.plugin.zsh",
+  "/run/current-system/sw/share/fzf-tab/fzf-tab.plugin.zsh",               # NixOS (zsh-fzf-tab)
+  "/nix/var/nix/profiles/default/share/fzf-tab/fzf-tab.plugin.zsh",        # Nix
+]
+
+[[package.asset]]
+target = "any"
+url = "https://github.com/Aloxaf/fzf-tab/archive/refs/tags/v1.3.0.tar.gz"
+sha256 = "d75ac08c2c8af5a6a0478787b0f11fabbe24951973b7841ae963431e2070ee9a"
+size = 36387
+root = "fzf-tab-1.3.0"
+
+[[setting]]
+id = "previews"
+label = "Previews"
+help = "Shows what's selected next to the list: directories (needs eza), files (needs bat), processes, variables, git, services, tldr and man pages. Ctrl+/ moves the preview or hides it."
+type = "bool"
+default = true
+
+[zsh]
+init = "zsh/init.zsh"
+load = "line-editor"
+# After fzf's bindings (which wrap Tab for `**` completion); before
+# autosuggestions, which wraps the widgets defined before it.
+after = ["fzf"]
+
+[permissions]
+binaries = "fzf-tab is a zsh plugin: unless your distribution's copy is installed, goatty downloads its release tarball from GitHub."
+shell-code = "Sets fzf-tab's completion styles and previews before it loads."

@@ -7,7 +7,7 @@
 
 use std::time::Instant;
 
-use goatty_shell::setup::{FeatureState, Status, ToolLocation, size};
+use goatty_shell::setup::{FeatureState, Status, ToolLocation, helper_use, size};
 use gpui::{AnyElement, ClipboardItem, Context, IntoElement, ParentElement, SharedString, Styled, div, prelude::*, px};
 
 use super::kit::{self, card, row, section};
@@ -168,7 +168,7 @@ impl SettingsWindow {
             .into_any_element();
         };
         let offer: Vec<_> = s.offer().collect();
-        let missing = st.features.iter().filter(|f| f.state == FeatureState::Missing).count();
+        let missing = st.features.iter().filter(|f| f.state == FeatureState::Missing && !f.is_helper()).count();
         let installing = self.diag.progress.as_ref().is_some_and(|p| !p.finished);
         let (tone, title) = if !st.stderr.is_empty() {
             (Tone::Warning, "The shell printed errors while starting".to_string())
@@ -242,8 +242,14 @@ impl SettingsWindow {
                 FeatureState::Loaded { detail, managed: Some(v) } => {
                     r.desc(format!("goatty's copy {v} · {detail}")).control(badge("Loaded", Tone::Success, ui))
                 }
+                FeatureState::Loaded { detail, .. } if f.is_helper() => {
+                    r.desc(format!("Optional: {} · {detail}", helper_use(&f.id))).control(badge("Found", Tone::Success, ui))
+                }
                 FeatureState::Loaded { detail, managed: None } => r.desc(detail.clone()).control(badge("Loaded", Tone::Success, ui)),
                 FeatureState::Off => r.desc("Turned off in the settings").control(badge("Off", Tone::Neutral, ui)),
+                FeatureState::Missing if f.is_helper() => r
+                    .desc(format!("Optional: {}. Install the {} plugin, or your distribution's package", helper_use(&f.id), f.name))
+                    .control(badge("Not installed", Tone::Neutral, ui)),
                 FeatureState::Missing => match s.tool(&f.id) {
                     Some(t) if t.installable() => {
                         let id = t.id.clone();
@@ -379,6 +385,7 @@ fn report(s: &Status) -> String {
                     FeatureState::Loaded { detail, managed: Some(v) } => format!("  {} ok (managed {v}) {detail}", f.id),
                     FeatureState::Loaded { detail, managed: None } => format!("  {} ok {detail}", f.id),
                     FeatureState::Off => format!("  {} off", f.id),
+                    FeatureState::Missing if f.is_helper() => format!("  {} missing (optional)", f.id),
                     FeatureState::Missing => format!("  {} missing", f.id),
                 });
             }

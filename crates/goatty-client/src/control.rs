@@ -125,6 +125,15 @@ impl Control {
         }
     }
 
+    /// A plugin operation (`goatty_plugin::api::Request` as JSON); returns
+    /// the reply JSON.
+    pub fn plugin(&mut self, request: String) -> Result<String> {
+        match self.request(|req| ClientMsg::Plugin { req, request })? {
+            ServerMsg::Plugin { reply, .. } => Ok(reply),
+            other => bail!("unexpected reply {other:?}"),
+        }
+    }
+
     /// Stop the daemon and every session it owns.
     pub fn shutdown(&mut self) -> Result<()> {
         self.request(|req| ClientMsg::Shutdown { req }).map(drop)

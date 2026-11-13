@@ -10,7 +10,7 @@ use crate::ui::icons::Icon;
 use crate::ui::style::Ui;
 
 /// The built-in plugins the Shell page used to switch, now on Plugins.
-const BUILTIN_TOOLS: &[&str] = &["autosuggestions", "syntax-highlighting", "fzf", "starship", "atuin"];
+const BUILTIN_TOOLS: &[&str] = &["autosuggestions", "syntax-highlighting", "fzf", "fzf-tab", "starship"];
 
 impl SettingsWindow {
     /// Problems loading the host's settings, shown on top of its pages.
@@ -137,7 +137,7 @@ impl SettingsWindow {
                 .child(
                     row(ui, "Built-in plugins")
                         .icon(Icon::Puzzle)
-                        .desc(format!("Autosuggestions, syntax highlighting, fzf, Starship and Atuin · {on} of {} on", BUILTIN_TOOLS.len()))
+                        .desc(format!("Autosuggestions, syntax highlighting, fzf, fzf-tab and Starship · {on} of {} on", BUILTIN_TOOLS.len()))
                         .on_click("shell-plugins", self.listener_go(cx, Page::Plugins)),
                 );
             vec![hero.into_any_element(), program_section.into_any_element(), dotfiles.into_any_element(), integration.into_any_element()]
@@ -156,7 +156,8 @@ impl SettingsWindow {
             }
             let size_opts = sizes.into_iter().map(|n| opt(n, group_digits(n))).collect();
             let this = cx.entity().downgrade();
-            let atuin = h.plugin_enabled("atuin");
+            let fzf = h.plugin_enabled("fzf");
+            let fzf_tab = h.plugin_enabled("fzf-tab");
             let kept =
                 section(ui, "Saving")
                     .child(row(ui, "Commands to keep").desc("In memory and in the history file").control(self.select(
@@ -187,22 +188,37 @@ impl SettingsWindow {
                         self.host(cx, |h| h.history.share_between_sessions = !h.history.share_between_sessions),
                     )));
             let search = section(ui, "Search")
-                .child(row(ui, "Atuin").desc("Search your whole history on Ctrl+R, with filters and context").control(toggle(
-                    "atuin",
-                    atuin,
-                    ui,
-                    self.toggle_plugin(cx, "atuin"),
-                )))
                 .child(
-                    row(ui, "Atuin on the Up arrow")
-                        .desc(if atuin { "Off: Up steps through history matching what you typed" } else { "Needs Atuin" })
-                        .disabled(!atuin)
+                    row(ui, "Fuzzy history search")
+                        .desc("Ctrl+R searches your history with fzf as you type; Ctrl+T picks files, Alt+C directories")
+                        .control(toggle("fzf", fzf, ui, self.toggle_plugin(cx, "fzf"))),
+                )
+                .child(
+                    row(ui, "Fuzzy Tab completion")
+                        .desc(if fzf { "Tab opens the matches in fzf (fzf-tab)" } else { "Needs fuzzy history search (fzf)" })
+                        .disabled(!fzf)
+                        .control(toggle("fzf-tab", fzf_tab, ui, self.toggle_plugin(cx, "fzf-tab"))),
+                )
+                .child(
+                    row(ui, "Previews in Tab completion")
+                        .desc(if fzf && fzf_tab {
+                            "Directories with eza, files with bat (when installed), processes, variables, git"
+                        } else {
+                            "Needs fuzzy Tab completion"
+                        })
+                        .disabled(!(fzf && fzf_tab))
                         .control(toggle(
-                            "atuin-up",
-                            h.plugin_bool("atuin", "up_arrow", builtin_bool_default("atuin", "up_arrow")),
+                            "fzf-tab-previews",
+                            h.plugin_bool("fzf-tab", "previews", builtin_bool_default("fzf-tab", "previews")),
                             ui,
-                            self.toggle_plugin_bool(cx, "atuin", "up_arrow"),
+                            self.toggle_plugin_bool(cx, "fzf-tab", "previews"),
                         )),
+                )
+                .child(
+                    row(ui, "Atuin")
+                        .icon(Icon::Puzzle)
+                        .desc("History in a database with each command's directory and exit status, synced between machines if you like: a plugin")
+                        .on_click("history-plugins", self.listener_go(cx, Page::Plugins)),
                 );
             vec![kept.into_any_element(), search.into_any_element()]
         })

@@ -312,9 +312,11 @@ pub struct SettingsWindow {
     /// "Search settings" in the sidebar.
     search: Entity<TextInput>,
     font_filter: Entity<TextInput>,
+    ui_font_filter: Entity<TextInput>,
     shell_path: Entity<TextInput>,
     file_opener: Entity<TextInput>,
     show_all_fonts: bool,
+    show_all_ui_fonts: bool,
     /// The color editor is open (Appearance).
     colors_open: bool,
     /// Padding: one value for all sides, or each side.
@@ -345,6 +347,8 @@ pub struct SettingsWindow {
     highlight: Option<(SharedString, Instant)>,
     /// What was just copied (a path, "about"), to say so for a moment.
     copied: Option<(SharedString, Instant)>,
+    /// Profile: non-builtin plugins present in the last imported profile.
+    imported_plugins: Vec<String>,
     /// Profile: "Reset…" was clicked once.
     confirm_reset: bool,
     /// Profile: every generation, not only the recent ones.
@@ -369,6 +373,7 @@ impl SettingsWindow {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let font_filter = cx.new(|cx| TextInput::new("Search fonts", "", cx).bare());
+        let ui_font_filter = cx.new(|cx| TextInput::new("Search fonts", "", cx).bare());
         let search = cx.new(|cx| TextInput::new("Search settings", "", cx).bare());
         let shell_path = cx.new(|cx| TextInput::new("/usr/bin/nu", "", cx).label("Shell program"));
         let picker = cx.new(|cx| ColorPicker::new(cx.global::<AppSettings>().colors.get(ColorSlot::Background), cx));
@@ -386,6 +391,7 @@ impl SettingsWindow {
             // desktop light/dark, outside edits): keep the picker current.
             cx.observe_global::<AppSettings>(|this, cx| this.sync_picker(cx)),
             cx.subscribe(&font_filter, |_, _, _: &TextInputEvent, cx| cx.notify()),
+            cx.subscribe(&ui_font_filter, |_, _, _: &TextInputEvent, cx| cx.notify()),
             cx.subscribe(&search, |this, _, ev: &TextInputEvent, cx| {
                 if let TextInputEvent::Submitted(_) = ev {
                     this.open_first_result(cx);
@@ -447,9 +453,11 @@ impl SettingsWindow {
             drawer_trap: cx.focus_handle(),
             search,
             font_filter,
+            ui_font_filter,
             shell_path,
             file_opener,
             show_all_fonts: false,
+            show_all_ui_fonts: false,
             colors_open: false,
             drawer: false,
             padding_linked: cx.global::<AppSettings>().file.value.terminal.padding.is_uniform(),
@@ -473,6 +481,7 @@ impl SettingsWindow {
             shortcuts: shortcuts::ShortcutsPage::new(cx),
             highlight: None,
             copied: None,
+            imported_plugins: Vec::new(),
             confirm_reset: false,
             gens_expanded: false,
             gen_open: None,
@@ -503,6 +512,7 @@ impl SettingsWindow {
         self.host = None;
         self.host_error = None;
         self.outcome = None;
+        self.imported_plugins.clear();
         self.generations.clear();
         self.gen_open = None;
         self.gen_diff = None;
@@ -521,7 +531,7 @@ impl SettingsWindow {
         if self.page != page {
             self.scroll.set_offset(gpui::point(px(0.), px(0.)));
             self.plugins.detail = None;
-            self.plugins.plan = None;
+            self.plugins.clear_review();
             self.prompt.modules_open = false;
             self.prompt.dialog = None;
         }
@@ -562,6 +572,9 @@ impl SettingsWindow {
         if id == "font" {
             // The font list starts with its filter.
             let filter = self.font_filter.focus_handle(cx);
+            window.focus(&filter, cx);
+        } else if id == "ui-font" {
+            let filter = self.ui_font_filter.focus_handle(cx);
             window.focus(&filter, cx);
         } else {
             self.menu_autofocus.set(true);
@@ -614,6 +627,7 @@ impl SettingsWindow {
     fn sync_picker(&mut self, cx: &mut Context<'_, Self>) {
         let color = cx.global::<AppSettings>().colors.get(self.edit_slot);
         self.picker.update(cx, |p, cx| p.sync(color, cx));
+        cx.notify();
     }
 
     /// The picker moved to `color`: show it live, and save it once the changes stop.
@@ -876,6 +890,9 @@ impl SettingsWindow {
                         let program = loaded.value.shell.program.clone().unwrap_or_default();
                         view.shell_path.update(cx, |input, cx| input.set_text(program, cx));
                         let before = view.host.as_ref().map(|h| h.issues.clone());
+                        if view.draft.as_ref() == Some(&loaded.value) {
+                            view.draft = None;
+                        }
                         view.host = Some(HostView { loaded, issues, env_overrides: snap.env_overrides, generation: snap.generation });
                         if let Some(before) = before {
                             view.announce_host_issues(&before, cx);
@@ -966,6 +983,7 @@ impl SettingsWindow {
         self.draft = None;
         self.outcome = None;
         self.show_diff = false;
+        self.imported_plugins.clear();
         if let Some(h) = &self.host {
             let program = h.loaded.value.shell.program.clone().unwrap_or_default();
             self.shell_path.update(cx, |input, cx| input.set_text(program, cx));
@@ -1083,9 +1101,34 @@ impl SettingsWindow {
                         }
                         if let Some(h) = host {
                             lines.extend(h.issues.iter().map(|i| format!("⚠ host: {i}")));
+                            let imported_plugins: Vec<String> = if view.host_value().is_some() {
+                                h.value.plugins.keys().filter(|id| goatty_shell::builtins::get(id).is_none()).cloned().collect()
+                            } else {
+                                Vec::new()
+                            };
                             view.edit_host(cx, |d| *d = h.value);
                             view.sync_prompt_inputs(cx);
                             lines.push("Shell, prompt and history settings are staged: preview and apply them below.".into());
+                            view.imported_plugins = imported_plugins;
+                            if !view.imported_plugins.is_empty() {
+                                let missing = view.missing_imported_plugins();
+                                if !missing.is_empty() {
+                                    if view.plugins.catalog.is_some() {
+                                        lines.push(format!(
+                                            "This profile uses {} plugin(s) not installed here ({}): review and install them below.",
+                                            missing.len(),
+                                            missing.join(", ")
+                                        ));
+                                    } else {
+                                        lines.push(format!(
+                                            "This profile uses {} plugin(s) ({}): checking which ones need installing.",
+                                            missing.len(),
+                                            missing.join(", ")
+                                        ));
+                                        view.load_plugins(false, cx);
+                                    }
+                                }
+                            }
                         }
                         view.outcome = Some(Outcome { ok: true, lines, diff: Vec::new(), reload: false });
                     }
