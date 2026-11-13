@@ -40,10 +40,8 @@ impl Host {
         }
         let ssh = dir.path().join("bin/ssh");
         let p = dir.path().display();
-        std::fs::write(
-            &ssh,
-            format!(
-                r#"#!/bin/sh
+        let script = format!(
+            r#"#!/bin/sh
 while [ $# -gt 0 ]; do
   case "$1" in --) shift; break;; -e|-o) shift 2;; -*) shift;; *) break;; esac
 done
@@ -52,10 +50,15 @@ export HOME="{p}/home" XDG_RUNTIME_DIR="{p}/run" GOATTY_SOCKET="{p}/run/d.sock" 
 unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME
 exec sh -c "$*"
 "#
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
+        // Write and chmod in a short-lived child process so the test binary
+        // never holds a write fd to `bin/ssh`; otherwise a concurrent test
+        // thread calling `fork()` can inherit that fd and trigger ETXTBSY.
+        let mut child =
+            Command::new("sh").args(["-c", "cat > \"$1\" && chmod 0755 \"$1\"", "sh"]).arg(&ssh).stdin(Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
+        let status = child.wait().unwrap();
+        assert!(status.success(), "writing fake ssh failed: {status}");
         Self { dir }
     }
 
