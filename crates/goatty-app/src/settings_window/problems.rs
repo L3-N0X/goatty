@@ -20,6 +20,11 @@ use crate::ui::style::Ui;
 /// `GOATTY_*` variables in effect, with the settings each one replaces.
 type Overrides = Vec<(String, &'static [&'static str])>;
 
+fn uninstalled_plugin_issue_id(path: &str) -> Option<&str> {
+    let id = path.strip_prefix("plugins.")?;
+    (!id.is_empty() && !id.contains('.')).then_some(id)
+}
+
 impl SettingsWindow {
     /// The host's problems with its settings. One about a value changed in
     /// the draft is left out: the edit is the fix, applied or not.
@@ -158,6 +163,22 @@ impl SettingsWindow {
                     ui,
                     self.act(cx, move |v, cx| v.open_hit(&Hit::Setting(e), cx)),
                 ));
+            } else if is_host
+                && let Some(plugin_id) = uninstalled_plugin_issue_id(&issue.path)
+                && self.plugins.catalog.as_ref().is_some_and(|c| {
+                    !c.installed.iter().any(|inst| inst.id == plugin_id)
+                        && c.available.iter().any(|a| a.id == plugin_id && a.incompatible.is_none())
+                })
+            {
+                let pid = plugin_id.to_owned();
+                r = r.control(button_with(
+                    ("problem-install", i),
+                    Some(Icon::Download),
+                    "Review & install",
+                    ButtonKind::Ghost,
+                    ui,
+                    self.act(cx, move |v, cx| v.review_plugin_from(pid.clone(), Page::Profile, cx)),
+                ));
             }
             rows.push(r);
         }
@@ -196,6 +217,14 @@ fn notes(page: Page, issues: &[Issue], overrides: &Overrides) -> HashMap<SharedS
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uninstalled_plugin_issue_id_matches_only_plugin_root_path() {
+        assert_eq!(uninstalled_plugin_issue_id("plugins.eza"), Some("eza"));
+        assert_eq!(uninstalled_plugin_issue_id("plugins.eza.settings.icons"), None);
+        assert_eq!(uninstalled_plugin_issue_id("plugins."), None);
+        assert_eq!(uninstalled_plugin_issue_id("shell.program"), None);
+    }
 
     #[test]
     fn notes_land_on_the_row_that_edits_the_setting() {

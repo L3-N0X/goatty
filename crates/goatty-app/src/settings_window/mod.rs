@@ -345,6 +345,8 @@ pub struct SettingsWindow {
     highlight: Option<(SharedString, Instant)>,
     /// What was just copied (a path, "about"), to say so for a moment.
     copied: Option<(SharedString, Instant)>,
+    /// Profile: non-builtin plugins present in the last imported profile.
+    imported_plugins: Vec<String>,
     /// Profile: "Reset…" was clicked once.
     confirm_reset: bool,
     /// Profile: every generation, not only the recent ones.
@@ -476,6 +478,7 @@ impl SettingsWindow {
             shortcuts: shortcuts::ShortcutsPage::new(cx),
             highlight: None,
             copied: None,
+            imported_plugins: Vec::new(),
             confirm_reset: false,
             gens_expanded: false,
             gen_open: None,
@@ -506,6 +509,7 @@ impl SettingsWindow {
         self.host = None;
         self.host_error = None;
         self.outcome = None;
+        self.imported_plugins.clear();
         self.generations.clear();
         self.gen_open = None;
         self.gen_diff = None;
@@ -524,7 +528,7 @@ impl SettingsWindow {
         if self.page != page {
             self.scroll.set_offset(gpui::point(px(0.), px(0.)));
             self.plugins.detail = None;
-            self.plugins.plan = None;
+            self.plugins.clear_review();
         }
         self.page = page;
         self.menu = None;
@@ -879,6 +883,9 @@ impl SettingsWindow {
                         let program = loaded.value.shell.program.clone().unwrap_or_default();
                         view.shell_path.update(cx, |input, cx| input.set_text(program, cx));
                         let before = view.host.as_ref().map(|h| h.issues.clone());
+                        if view.draft.as_ref() == Some(&loaded.value) {
+                            view.draft = None;
+                        }
                         view.host = Some(HostView { loaded, issues, env_overrides: snap.env_overrides, generation: snap.generation });
                         if let Some(before) = before {
                             view.announce_host_issues(&before, cx);
@@ -968,6 +975,7 @@ impl SettingsWindow {
         self.draft = None;
         self.outcome = None;
         self.show_diff = false;
+        self.imported_plugins.clear();
         if let Some(h) = &self.host {
             let program = h.loaded.value.shell.program.clone().unwrap_or_default();
             self.shell_path.update(cx, |input, cx| input.set_text(program, cx));
@@ -1084,8 +1092,33 @@ impl SettingsWindow {
                         }
                         if let Some(h) = host {
                             lines.extend(h.issues.iter().map(|i| format!("⚠ host: {i}")));
+                            let imported_plugins: Vec<String> = if view.host_value().is_some() {
+                                h.value.plugins.keys().filter(|id| goatty_shell::builtins::get(id).is_none()).cloned().collect()
+                            } else {
+                                Vec::new()
+                            };
                             view.edit_host(cx, |d| *d = h.value);
                             lines.push("Shell, prompt and history settings are staged: preview and apply them below.".into());
+                            view.imported_plugins = imported_plugins;
+                            if !view.imported_plugins.is_empty() {
+                                let missing = view.missing_imported_plugins();
+                                if !missing.is_empty() {
+                                    if view.plugins.catalog.is_some() {
+                                        lines.push(format!(
+                                            "This profile uses {} plugin(s) not installed here ({}): review and install them below.",
+                                            missing.len(),
+                                            missing.join(", ")
+                                        ));
+                                    } else {
+                                        lines.push(format!(
+                                            "This profile uses {} plugin(s) ({}): checking which ones need installing.",
+                                            missing.len(),
+                                            missing.join(", ")
+                                        ));
+                                        view.load_plugins(false, cx);
+                                    }
+                                }
+                            }
                         }
                         view.outcome = Some(Outcome { ok: true, lines, diff: Vec::new(), reload: false });
                     }
