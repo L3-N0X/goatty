@@ -3,14 +3,14 @@
 schema = 1
 id = "fzf"
 name = "fzf"
-version = "1.0.0"
-summary = "Fuzzy finder: Ctrl+T picks files, Alt+C changes directory"
+version = "1.1.0"
+summary = "Fuzzy search: Ctrl+R history, Ctrl+T files, Alt+C directories"
 description = """
-fzf filters any list as you type. goatty loads its key bindings: Ctrl+T inserts files picked from the current directory, Alt+C changes into a directory picked the same way (Ctrl+R stays Atuin's when Atuin is on). Used when installed; `goattyd shell install fzf` downloads it."""
+fzf filters any list as you type. Ctrl+R searches your whole history and puts the command you pick on the command line, Ctrl+T inserts files picked from the current directory, Alt+C changes into a directory picked the same way. Its colors come from goatty's theme. With fd installed it lists files faster (hidden ones included, .git left out); with bat and eza it shows a preview of the file or directory under the cursor. Tab completion in fzf is the fzf-tab plugin."""
 publisher = "goatty"
 homepage = "https://github.com/junegunn/fzf"
 license = "MIT"
-keywords = ["fuzzy", "finder", "files"]
+keywords = ["fuzzy", "finder", "files", "history", "search", "ctrl-r"]
 
 [[package]]
 id = "fzf"
@@ -29,10 +29,47 @@ url = "https://github.com/junegunn/fzf/releases/download/v0.74.5/fzf-0.74.5-linu
 sha256 = "cf058001da21724a469b714a29cf4aab9cbe860d218a0d6c1b5b661efad7784c"
 size = 2078357
 
+[[setting]]
+id = "hidden_files"
+label = "Hidden files too"
+help = "Ctrl+T and Alt+C also list files and directories starting with a dot. .git is always left out."
+type = "bool"
+default = true
+
+[[setting]]
+id = "previews"
+label = "Previews"
+help = "Ctrl+T shows the file under the cursor (needs bat), Alt+C what's in the directory (needs eza). Ctrl+/ moves the preview or hides it."
+type = "bool"
+default = true
+
+# fzf's look and layout, read through FZF_DEFAULT_OPTS_FILE (set by
+# zsh/init.zsh unless you point it at your own file). Options in your own
+# FZF_DEFAULT_OPTS come after these and win. fzf's key bindings paste this
+# file into FZF_DEFAULT_OPTS, which fzf splits like a shell: quote values
+# with | < ( or spaces.
+[[file]]
+name = "fzfrc"
+format = "lines"
+lines = [
+  "# goatty's fzf options. The colors are the terminal's 16, so fzf follows goatty's theme.",
+  "--layout=reverse",
+  "--height=60%",
+  "--info=inline-right",
+  "--prompt='❯ '",
+  "--pointer='▌'",
+  "--marker='┃'",
+  "--color=fg:-1,bg:-1,hl:2,fg+:-1:bold,bg+:-1,hl+:2:bold,gutter:8",
+  "--color=info:8,border:8,separator:8,scrollbar:8,spinner:5,prompt:4,pointer:4,marker:5,header:6",
+  "# Previews on the right, below in narrow panes; Ctrl+/ moves or hides them.",
+  "--preview-window='right:60%,border-left,wrap,<80(down:50%,border-top,wrap)'",
+  "--bind='ctrl-/:change-preview-window(down,50%,border-top|hidden|)'",
+]
+
 [zsh]
 init = "zsh/init.zsh"
 load = "line-editor"
 
 [permissions]
 binaries = "fzf is a program: unless it's already installed, goatty downloads its official release from GitHub."
-shell-code = "Loads fzf's key bindings (`fzf --zsh`) when the shell has a terminal."
+shell-code = "Points fzf at goatty's options, makes fd list the files (when it's installed), sets up the previews and loads fzf's key bindings (`fzf --zsh`) when the shell has a terminal."

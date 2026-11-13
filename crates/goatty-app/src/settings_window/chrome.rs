@@ -32,7 +32,7 @@ impl SettingsWindow {
         match page {
             Page::Shell => d.shell != h.shell,
             Page::Prompt => d.prompt != h.prompt || plugin("starship"),
-            Page::History => d.history != h.history || plugin("atuin"),
+            Page::History => d.history != h.history || plugin("fzf") || plugin("fzf-tab"),
             Page::Aliases => {
                 d.aliases != h.aliases
                     || d.plugins

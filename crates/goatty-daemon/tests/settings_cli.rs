@@ -33,7 +33,7 @@ fn set_show_validate_unset() {
 
     let o = goattyd(home, &["settings", "path"]);
     assert_eq!(out(&o).trim(), file.display().to_string());
-    assert_eq!(out(&goattyd(home, &["settings", "show"])), "{\n  \"version\": 2\n}\n");
+    assert_eq!(out(&goattyd(home, &["settings", "show"])), "{\n  \"version\": 3\n}\n");
 
     let o = goattyd(home, &["settings", "set", "history.size", "5000"]);
     assert!(o.status.success(), "{}", err(&o));

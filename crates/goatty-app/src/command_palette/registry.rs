@@ -182,7 +182,7 @@ pub fn builtins() -> Vec<Command> {
         page("settings.appearance", "Appearance and themes", Page::Appearance, &["theme", "colors", "font", "cursor"]),
         page("settings.shell", "Shell", Page::Shell, &["zsh", "managed", "dotfiles", "zshrc"]),
         page("settings.prompt", "Prompt", Page::Prompt, &["starship"]),
-        page("settings.history", "History", Page::History, &["atuin"]),
+        page("settings.history", "History", Page::History, &["fzf", "ctrl+r", "fzf-tab", "completion", "atuin"]),
         page(
             "settings.aliases",
             "Aliases: add, edit and switch aliases",
@@ -216,7 +216,7 @@ pub fn builtins() -> Vec<Command> {
             "onboarding",
             "install tools",
             "starship",
-            "atuin",
+            "fzf",
             "getting started",
         ]),
         Command::handler("settings.open_file", "Settings", "Open settings.json in an editor", |_, cx| {

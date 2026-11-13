@@ -51,7 +51,7 @@ Threads per session: `s{id}-reader` (PTY → terminal → subscribers) and `s{id
 |-----------|-------------------------------------------------------------------------|
 | `launch`  | `Launcher`: resolve the shell program, write the managed ZDOTDIR, build the `Launch` (program, args, env) |
 | `zsh`     | render `settings.zsh`, the plugin slot files (`plugins-*.zsh`) + the static startup files in `zsh/`, write them atomically |
-| `builtins`| the plugins that come with goatty (`plugins/<id>/`, compiled in): autosuggestions, syntax highlighting, Starship, Atuin, fzf |
+| `builtins`| the plugins that come with goatty (`plugins/<id>/`, compiled in): fzf, fzf-tab, autosuggestions, syntax highlighting, Starship |
 | `packages`| where a plugin's package is: system copy, goatty's managed copy, or missing |
 | `install` | download (curl/wget), verify, unpack, activate `bin/` and `plugins/` symlinks, uninstall packages |
 | `doctor`  | start a real managed shell and parse `goatty-status`                    |

@@ -65,7 +65,7 @@ pub fn render(cfg: &ZshConfig<'_>) -> Vec<GeneratedFile> {
 /// What each slot file says about itself.
 fn slot_header(load: Load) -> &'static str {
     match load {
-        Load::LineEditor => "line editor tools (after compinit, before the prompt): fzf, Atuin, autosuggestions, …",
+        Load::LineEditor => "line editor tools (after compinit, before the prompt): fzf, fzf-tab, autosuggestions, …",
         Load::Prompt => "the prompt (goatty sets a small one when none loads)",
         Load::Normal => "aliases and the plugins' shell code (after the prompt, before your aliases and additions)",
         Load::Last => "what has to load after your additions (syntax highlighting wraps every widget defined before it)",
@@ -236,7 +236,7 @@ mod tests {
         assert!(out.contains("_goatty_daemon='/usr/bin/goattyd'"));
         assert!(out.contains("_goatty_features=(integration)"));
         assert!(out.contains("_goatty_pkgs='/r o/ot'\\''s/data/plugins'"), "{out}");
-        assert!(out.contains("_goatty_setup_defaults=(atuin autosuggestions syntax-highlighting)"), "starship is off: {out}");
+        assert!(out.contains("_goatty_setup_defaults=(fzf fzf-tab autosuggestions syntax-highlighting)"), "starship is off: {out}");
     }
 
     #[test]
@@ -244,23 +244,57 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = Dirs::under(tmp.path());
         let mut s = HostSettings::default();
-        s.plugins.entry("fzf".into()).or_default().enabled = false;
-        s.plugins.entry("atuin".into()).or_default().settings.insert("up_arrow".into(), true.into());
+        s.plugins.entry("starship".into()).or_default().enabled = false;
+        s.plugins.entry("fzf-tab".into()).or_default().settings.insert("previews".into(), false.into());
         let (plugins, issues) = crate::plugins::active(&dirs, &s);
         assert!(issues.is_empty(), "{issues:?}");
         let files = render(&ZshConfig { settings: &s, dirs: &dirs, daemon_exe: None, plugins: &plugins });
         let get = |n: &str| &files.iter().find(|f| f.name == n).unwrap_or_else(|| panic!("no {n}")).contents;
-        assert!(get("plugins-early.zsh").contains("_goatty_state[fzf]=off"));
+        assert!(get("plugins-early.zsh").contains("_goatty_state[starship]=off"));
         let line = get("plugins-line-editor.zsh");
-        let (atuin, auto) = (line.find("# --- atuin").unwrap(), line.find("# --- autosuggestions").unwrap());
-        assert!(atuin < auto, "Atuin's widgets exist before autosuggestions wraps them:\n{line}");
-        assert!(!line.contains("fzf 1.0.0"), "fzf is off");
-        assert!(line.contains("goatty_settings=(up_arrow 'true')"), "{line}");
-        assert!(line.contains("_goatty_state[atuin]=\"ok\""), "built-in plugins report under their id: {line}");
-        assert!(get("plugins-prompt.zsh").contains("typeset -g _goatty_prompt=starship"));
+        let pos = |id: &str| line.find(&format!("# --- {id} ")).unwrap_or_else(|| panic!("no {id}:\n{line}"));
+        assert!(pos("fzf") < pos("fzf-tab"), "fzf-tab wraps Tab after fzf's bindings:\n{line}");
+        assert!(pos("fzf-tab") < pos("autosuggestions"), "their widgets exist before autosuggestions wraps them:\n{line}");
+        assert!(line.contains("goatty_settings=(previews 'false')"), "{line}");
+        assert!(line.contains("if (( $+commands[fzf] && ${+_goatty_src[fzf-tab]} )); then"), "fzf-tab needs fzf: {line}");
+        assert!(line.contains("_goatty_state[fzf]=\"ok\""), "built-in plugins report under their id: {line}");
+        assert!(!line.contains("atuin"), "{line}");
+        assert!(!get("plugins-prompt.zsh").contains("_goatty_prompt=starship"), "starship is off");
         assert!(get("plugins-last.zsh").contains("_goatty_src[syntax-highlighting]"));
         assert!(!get("plugins.zsh").contains("# ---"), "nothing in the normal slot");
-        assert!(files.iter().any(|f| f.name == "plugins/starship/zsh/init.zsh"), "the shipped init file");
+        assert!(files.iter().any(|f| f.name == "plugins/fzf-tab/zsh/init.zsh"), "the shipped init file");
+        let rc = get("plugins/fzf/fzfrc");
+        assert!(rc.contains("--color=fg:-1,bg:-1") && rc.contains("--preview-window='right:60%"), "{rc}");
+    }
+
+    /// fzf's key bindings paste goatty's options file into
+    /// FZF_DEFAULT_OPTS before their own options (Ctrl+R's `--read0`):
+    /// a value fzf can't split would break them all.
+    #[test]
+    fn fzf_options_survive_the_key_bindings() {
+        let Some(fzf) = crate::launch::which("fzf") else {
+            eprintln!("fzf not installed; skipping");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = Dirs::under(tmp.path());
+        let s = HostSettings::default();
+        let (plugins, _) = crate::plugins::active(&dirs, &s);
+        let files = render(&ZshConfig { settings: &s, dirs: &dirs, daemon_exe: None, plugins: &plugins });
+        let rc = &files.iter().find(|f| f.name == "plugins/fzf/fzfrc").unwrap().contents;
+        let mut child = std::process::Command::new(fzf)
+            .args(["--filter", ""])
+            .env("FZF_DEFAULT_OPTS", format!("--height 40%\n{rc} --read0"))
+            .env_remove("FZF_DEFAULT_OPTS_FILE")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write;
+        child.stdin.take().unwrap().write_all(b"one\0two\0").unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "one\ntwo\n", "{}", String::from_utf8_lossy(&out.stderr));
     }
 
     #[test]

@@ -1,12 +1,12 @@
-//! The plugins that come with goatty: autosuggestions, syntax highlighting,
-//! Starship, Atuin and fzf (`crates/goatty-shell/plugins/<id>/`).
+//! The plugins that come with goatty: fzf, fzf-tab, autosuggestions,
+//! Starship and syntax highlighting (`crates/goatty-shell/plugins/<id>/`).
 //!
 //! They're ordinary plugin manifests, compiled into goatty: same install
 //! plans, settings UI and load-order slots as registry plugins. What's
 //! different: they're always there (no lock entry, nothing to verify:
 //! they're part of goatty), they're turned off instead of uninstalled, and
-//! their status key in `goatty-status` is the bare id (`atuin`, not
-//! `plugin:atuin`). Their packages keep the ids the old built-in tool table
+//! their status key in `goatty-status` is the bare id (`fzf`, not
+//! `plugin:fzf`). Their packages keep the ids the old built-in tool table
 //! used, so managed installs from before plugins (`tools/<id>/`, the
 //! `bin/` and `plugins/` links) are picked up as they are.
 
@@ -41,12 +41,18 @@ macro_rules! plugin {
 
 /// In the order the old `.zshrc` listed them.
 pub static BUILTINS: &[Builtin] = &[
-    plugin!("fzf", false, ["plugin.toml", "zsh/init.zsh"]),
-    plugin!("atuin", true, ["plugin.toml", "zsh/init.zsh"]),
+    plugin!("fzf", true, ["plugin.toml", "zsh/init.zsh"]),
+    plugin!("fzf-tab", true, ["plugin.toml", "zsh/init.zsh"]),
     plugin!("autosuggestions", true, ["plugin.toml", "zsh/init.zsh"]),
     plugin!("starship", true, ["plugin.toml", "zsh/init.zsh"]),
     plugin!("syntax-highlighting", true, ["plugin.toml", "zsh/init.zsh"]),
 ];
+
+/// Packages of plugins that used to come with goatty: (package id, its
+/// executables). goatty's downloads of them stay usable by a registry
+/// plugin with the same package (Atuin's, since #165) and are removed by
+/// `goattyd shell uninstall NAME|--all`.
+pub static RETIRED: &[(&str, &[&str])] = &[("atuin", &["atuin"])];
 
 fn manifests() -> &'static [Manifest] {
     static PARSED: OnceLock<Vec<Manifest>> = OnceLock::new();
@@ -145,8 +151,11 @@ mod tests {
     fn package_ids_match_the_old_tool_table() {
         // Installs made before plugins live in tools/<these ids>/.
         let ids: Vec<&str> = package_ids().into_keys().collect();
-        assert_eq!(ids, ["atuin", "autosuggestions", "fzf", "starship", "syntax-highlighting"]);
-        assert_eq!(executables().into_keys().collect::<Vec<_>>(), ["atuin", "fzf", "starship"]);
+        assert_eq!(ids, ["autosuggestions", "fzf", "fzf-tab", "starship", "syntax-highlighting"]);
+        assert_eq!(executables().into_keys().collect::<Vec<_>>(), ["fzf", "starship"]);
+        for (id, _) in RETIRED {
+            assert!(!ids.contains(id), "{id} is retired");
+        }
     }
 
     #[test]
@@ -154,7 +163,7 @@ mod tests {
         use goatty_plugin::manifest::Load;
         let slot = |id: &str| get(id).unwrap().manifest().zsh.load;
         assert_eq!(slot("fzf"), Load::LineEditor);
-        assert_eq!(slot("atuin"), Load::LineEditor);
+        assert_eq!(slot("fzf-tab"), Load::LineEditor);
         assert_eq!(slot("autosuggestions"), Load::LineEditor);
         assert_eq!(slot("starship"), Load::Prompt);
         assert_eq!(slot("syntax-highlighting"), Load::Last);

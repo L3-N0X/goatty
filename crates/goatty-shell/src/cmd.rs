@@ -66,6 +66,9 @@ pub fn status(svc: &crate::HostService) -> Result<()> {
                     FeatureState::Loaded { managed: Some(v), .. } => format!("\u{2713} managed {} {v}", f.name),
                     FeatureState::Loaded { detail, .. } => format!("\u{2713} {detail}"),
                     FeatureState::Off => "- off".into(),
+                    FeatureState::Missing if f.is_helper() => {
+                        format!("- not installed (optional: {}; goattyd plugin install {})", setup::helper_use(&f.id), f.name)
+                    }
                     FeatureState::Missing => match s.tool(&f.id) {
                         Some(t) => format!("\u{2717} not installed: goattyd shell install {} ({} {})", t.id, t.name, t.version),
                         None => "\u{2717} its command isn't installed (see `goattyd plugin info`)".into(),
@@ -215,14 +218,29 @@ fn confirm(prompt: &str) -> Result<bool> {
 
 /// `goattyd shell uninstall NAME...|--all`: remove goatty's downloads of
 /// built-in plugins' tools (the plugins stay; system copies still work).
+/// Downloads of tools that used to come with goatty (Atuin) are removed by
+/// name and with `--all`, unless an installed plugin uses them now.
 pub fn uninstall(launcher: &Launcher, names: &[String], all: bool) -> Result<()> {
     let dirs = dirs_of(launcher)?;
-    let list = if all { BUILTINS.iter().collect() } else { resolve_names(names)? };
-    if list.is_empty() {
-        bail!("name the tools to remove, or pass --all");
-    }
     let fetch = goatty_plugin::fetch::Curl { cache: dirs.cache.clone() };
     let plugins = Plugins { dirs, fetch: &fetch, builtin: &[] };
+    let retired: Vec<_> = builtins::RETIRED.iter().filter(|(id, _)| all || names.iter().any(|n| n == id)).collect();
+    let names: Vec<String> = names.iter().filter(|n| !retired.iter().any(|(id, _)| id == n)).cloned().collect();
+    for (id, bins) in &retired {
+        match plugins.remove_retired(id, bins)? {
+            Some(true) => println!("Removed goatty's old copy of {id}."),
+            Some(false) if !all => println!("{id} has no goatty-managed copy."),
+            None if !all => println!("The {id} plugin uses goatty's copy of {id}: goattyd plugin uninstall {id} removes it."),
+            _ => {}
+        }
+    }
+    let list = if all { BUILTINS.iter().collect() } else { resolve_names(&names)? };
+    if list.is_empty() {
+        if !retired.is_empty() {
+            return Ok(());
+        }
+        bail!("name the tools to remove, or pass --all");
+    }
     for b in list {
         let name = &b.manifest().name;
         if !plugins.remove_packages(b)?.is_empty() {

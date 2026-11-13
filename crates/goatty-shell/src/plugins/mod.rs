@@ -526,6 +526,20 @@ impl Plugins<'_> {
         Ok(removed)
     }
 
+    /// Remove goatty's download of a package that used to come with
+    /// goatty ([`builtins::RETIRED`]), unless an installed plugin uses it
+    /// now. `Ok(None)`: an installed plugin owns it (its id); `Ok(Some(removed))`
+    /// otherwise.
+    pub fn remove_retired(&self, package: &str, bins: &[&str]) -> Result<Option<bool>> {
+        let _guard = op_lock(self.dirs)?;
+        let lock = Lock::load(self.dirs)?;
+        if lock.plugins.values().any(|e| e.packages.iter().any(|p| p.id == package)) {
+            return Ok(None);
+        }
+        let bins: Vec<String> = bins.iter().map(|b| (*b).to_owned()).collect();
+        install::uninstall_package(package, &bins, self.dirs).map(Some)
+    }
+
     /// Installed plugins and what the registries offer.
     pub fn catalog(&self, refresh: bool, settings: &HostSettings) -> Catalog {
         let (snaps, registries, mut issues) = self.snapshots(refresh, true);

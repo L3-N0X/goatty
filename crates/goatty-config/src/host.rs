@@ -19,8 +19,8 @@ pub struct HostSettings {
     /// aliases, so one of these with the same name wins.
     pub aliases: BTreeMap<String, UserAlias>,
     /// Plugins' configuration, by plugin id (Stage 5): the built-in ones
-    /// (`autosuggestions`, `syntax-highlighting`, `starship`, `atuin`,
-    /// `fzf`) and installed ones. Which plugins are installed is host state,
+    /// (`fzf`, `fzf-tab`, `autosuggestions`, `starship`,
+    /// `syntax-highlighting`) and installed ones. Which plugins are installed is host state,
     /// not a setting (goatty-shell's lock file); an entry for a plugin that
     /// isn't there is ignored.
     pub plugins: BTreeMap<String, PluginConfig>,
@@ -132,8 +132,8 @@ impl Default for ShellSettings {
     }
 }
 
-/// How goatty's managed zsh starts. The tools it loads (autosuggestions,
-/// syntax highlighting, Starship, Atuin, fzf) are built-in plugins,
+/// How goatty's managed zsh starts. The tools it loads (fzf, fzf-tab,
+/// autosuggestions, Starship, syntax highlighting) are built-in plugins,
 /// turned on and off in [`HostSettings::plugins`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -211,11 +211,11 @@ impl Default for HistorySettings {
 
 impl Document for HostSettings {
     const NAME: &'static str = "host";
-    const VERSION: u32 = 2;
+    const VERSION: u32 = 3;
     const OPEN_MAPS: &'static [&'static str] = &["aliases", "plugins"];
 
     fn migrations() -> &'static [Migration] {
-        &[(1, builtin_tools_became_plugins)]
+        &[(1, builtin_tools_became_plugins), (2, atuin_left_the_builtins)]
     }
 
     fn validate(&mut self) -> Vec<Issue> {
@@ -297,6 +297,16 @@ fn builtin_tools_became_plugins(doc: &mut Value) {
         if let Some((obj, name)) = target {
             obj.entry(name).or_insert(v);
         }
+    }
+}
+
+/// Version 2 → 3 (#165): Atuin is no longer built in (fzf searches the
+/// history), so its entry goes. It would only be reported as a plugin that
+/// isn't installed; the Atuin plugin from the registry starts from its
+/// defaults.
+fn atuin_left_the_builtins(doc: &mut Value) {
+    if let Some(plugins) = doc.get_mut("plugins").and_then(Value::as_object_mut) {
+        plugins.remove("atuin");
     }
 }
 
@@ -486,7 +496,7 @@ mod tests {
                 "shell": {"zsh": {"autosuggestions": false, "syntax_highlighting": false, "fzf": true, "user_rc": true}},
                 "prompt": {"starship": false, "prefer_user_config": false, "two_line": false},
                 "history": {"atuin_up_arrow": true, "size": 500},
-                "plugins": {"atuin": {"settings": {"other": 1}}, "eza": {"enabled": false}}}"#,
+                "plugins": {"starship": {"settings": {"other": 1}}, "eza": {"enabled": false}}}"#,
         );
         assert!(loaded.issues.is_empty(), "{:?}", loaded.issues);
         assert!(loaded.unknown.is_empty(), "{:?}", loaded.unknown);
@@ -496,15 +506,14 @@ mod tests {
         assert!(s.plugin_enabled("fzf"));
         assert!(!s.plugin_enabled("starship"));
         assert!(!s.plugin_bool("starship", "prefer_user_config", true));
-        assert!(s.plugin_enabled("atuin"));
-        assert!(s.plugin_bool("atuin", "up_arrow", false));
-        assert_eq!(s.plugins["atuin"].settings["other"], 1, "existing plugin settings stay");
+        assert_eq!(s.plugins["starship"].settings["other"], 1, "existing plugin settings stay");
+        assert!(!s.plugins.contains_key("atuin"), "Atuin's options moved, then went with it (version 3)");
         assert!(!s.plugin_enabled("eza"));
         assert!(s.shell.zsh.user_rc && !s.prompt.two_line && s.history.size == 500, "the rest is untouched");
-        // Written back as version 2, without the old keys.
+        // Written back as version 3, without the old keys.
         let json = crate::store::to_json(&loaded.value, &loaded.unknown);
-        assert!(json.contains("\"version\": 2"), "{json}");
-        assert!(!json.contains("syntax_highlighting") && !json.contains("atuin_up_arrow"), "{json}");
+        assert!(json.contains("\"version\": 3"), "{json}");
+        assert!(!json.contains("syntax_highlighting") && !json.contains("atuin"), "{json}");
         // A version 2 file is left alone; old keys in it are unknown.
         let v2 = crate::store::parse::<HostSettings>(r#"{"version": 2, "prompt": {"starship": false}}"#);
         assert!(v2.value.plugin_enabled("starship"));
@@ -512,11 +521,24 @@ mod tests {
     }
 
     #[test]
+    fn version_2_drops_the_builtin_atuin() {
+        let loaded = crate::store::parse::<HostSettings>(
+            r#"{"version": 2, "plugins": {"atuin": {"enabled": false, "settings": {"up_arrow": true}}, "fzf": {"enabled": false}}}"#,
+        );
+        assert!(loaded.issues.is_empty() && loaded.unknown.is_empty(), "{:?} {:?}", loaded.issues, loaded.unknown);
+        assert!(!loaded.value.plugins.contains_key("atuin"));
+        assert!(!loaded.value.plugin_enabled("fzf"), "other plugins stay");
+        // From version 3 on, `atuin` is the registry plugin's entry.
+        let v3 = crate::store::parse::<HostSettings>(r#"{"version": 3, "plugins": {"atuin": {"settings": {"up_arrow": true}}}}"#);
+        assert!(v3.value.plugin_bool("atuin", "up_arrow", false));
+    }
+
+    #[test]
     fn plugin_entries_stay_sparse() {
         let mut s = HostSettings::default();
-        s.edit_plugin("atuin", |p| p.enabled = false);
-        assert!(!s.plugin_enabled("atuin"));
-        s.edit_plugin("atuin", |p| p.enabled = true);
+        s.edit_plugin("fzf-tab", |p| p.enabled = false);
+        assert!(!s.plugin_enabled("fzf-tab"));
+        s.edit_plugin("fzf-tab", |p| p.enabled = true);
         assert!(s.plugins.is_empty(), "back to the default: no entry");
         s.edit_plugin("starship", |p| {
             p.settings.insert("prefer_user_config".into(), false.into());

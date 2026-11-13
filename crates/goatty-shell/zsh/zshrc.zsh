@@ -6,7 +6,7 @@
 # Load order matters: options and completion first, then line-editor
 # plugins, the prompt, shell integration, your additions, and syntax
 # highlighting last (it has to wrap every widget defined before it).
-# The tools themselves (fzf, Atuin, autosuggestions, Starship, syntax
+# The tools themselves (fzf, fzf-tab, autosuggestions, Starship, syntax
 # highlighting, and the plugins you install) are plugins: each loads in its
 # slot from a generated plugins-*.zsh file.
 #
@@ -105,8 +105,8 @@ if (( _goatty_user_rc )); then
 fi
 
 # --- Plugins: line editor tools --------------------------------------------
-# fzf (Ctrl+T, Alt+C), then Atuin (Ctrl+R, so it keeps that key), then
-# autosuggestions, which wraps the widgets defined before it.
+# fzf (Ctrl+R, Ctrl+T, Alt+C), then fzf-tab (Tab), then autosuggestions,
+# which wraps the widgets defined before it.
 builtin source -- "$_goatty_dir/plugins-line-editor.zsh"
 
 # --- Prompt -----------------------------------------------------------------
