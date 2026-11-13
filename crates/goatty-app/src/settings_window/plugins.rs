@@ -31,10 +31,12 @@ use crate::ui::text_input::{TextInput, TextInputEvent};
 #[derive(Default)]
 pub struct PluginsPage {
     pub catalog: Option<Catalog>,
-    pub loading: bool,
+    in_flight: usize,
     pub error: Option<String>,
     /// The install/update being reviewed.
     pub plan: Option<Box<Plan>>,
+    /// Return to this page when an install review opened from elsewhere closes.
+    pub plan_return: Option<Page>,
     pub show_code: bool,
     pub show_advanced: bool,
     /// The installed plugin whose page is open.
@@ -46,6 +48,12 @@ pub struct PluginsPage {
     inputs: HashMap<String, Entity<TextInput>>,
     filter: Option<Entity<TextInput>>,
     _subs: Vec<Subscription>,
+}
+
+impl PluginsPage {
+    pub fn is_loading(&self) -> bool {
+        self.in_flight > 0
+    }
 }
 
 /// Which list the page shows.
@@ -78,7 +86,7 @@ impl SettingsWindow {
             cx.notify();
             return;
         };
-        self.plugins.loading = true;
+        self.plugins.in_flight += 1;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -89,7 +97,7 @@ impl SettingsWindow {
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                view.plugins.loading = false;
+                view.plugins.in_flight = view.plugins.in_flight.saturating_sub(1);
                 done(view, result, cx);
                 cx.notify();
             });
@@ -117,6 +125,13 @@ impl SettingsWindow {
         );
     }
 
+    /// Open the install review for `id` and return to `from` once closed.
+    pub fn review_plugin_from(&mut self, id: String, from: Page, cx: &mut Context<'_, Self>) {
+        self.go(Page::Plugins, cx);
+        self.plugins.plan_return = Some(from);
+        self.review_plugin(id, None, cx);
+    }
+
     /// Ask the host what installing (or updating to) `id` would do.
     pub fn review_plugin(&mut self, id: String, version: Option<String>, cx: &mut Context<'_, Self>) {
         self.plugins.show_code = false;
@@ -126,12 +141,17 @@ impl SettingsWindow {
                 api::Reply::Plan(p) => Some(p),
                 _ => None,
             },
-            Box::new(|view, result, _cx| match result {
+            Box::new(|view, result, cx| match result {
                 Ok(p) => {
                     view.plugins.plan = Some(p);
                     view.scroll.set_offset(gpui::point(px(0.), px(0.)));
                 }
-                Err(e) => view.outcome = Some(Outcome { ok: false, lines: vec![format!("{e:#}")], diff: Vec::new(), reload: false }),
+                Err(e) => {
+                    view.outcome = Some(Outcome { ok: false, lines: vec![format!("{e:#}")], diff: Vec::new(), reload: false });
+                    if let Some(back) = view.plugins.plan_return.take() {
+                        view.go(back, cx);
+                    }
+                }
             }),
             cx,
         );
@@ -158,7 +178,13 @@ impl SettingsWindow {
             Ok(c) => {
                 if let (Some(draft), Some(id)) = (self.draft.as_mut(), id) {
                     if installed {
-                        draft.edit_plugin(&id, |p| p.enabled = true);
+                        if goatty_shell::builtins::get(&id).is_some() {
+                            draft.edit_plugin(&id, |p| p.enabled = true);
+                        } else {
+                            // Keep non-builtin plugin entries even with default
+                            // config so applying the draft doesn't remove them.
+                            draft.plugins.entry(id).or_default().enabled = true;
+                        }
                     } else {
                         draft.plugins.remove(&id);
                     }
@@ -169,6 +195,9 @@ impl SettingsWindow {
         }
         self.load_host(cx);
         self.load_plugins(false, cx);
+        if let Some(back) = self.plugins.plan_return.take() {
+            self.go(back, cx);
+        }
     }
 
     // ---- Settings -----------------------------------------------------------
@@ -265,7 +294,7 @@ impl SettingsWindow {
                 .child(card(ui).child(kit::empty(
                     ui,
                     Icon::Loader,
-                    if self.plugins.loading { "Loading plugins…" } else { "No plugins to show" },
+                    if self.plugins.is_loading() { "Loading plugins…" } else { "No plugins to show" },
                     format!("From {}", self.host_label()),
                 )))
                 .into_any_element();
@@ -318,7 +347,7 @@ impl SettingsWindow {
                 .child(
                     icon_button(
                         "plugins-refresh",
-                        if self.plugins.loading { Icon::Loader } else { Icon::Refresh },
+                        if self.plugins.is_loading() { Icon::Loader } else { Icon::Refresh },
                         "Check the registries for new plugins and updates",
                         ui,
                         self.act(cx, |v, cx| v.load_plugins(true, cx)),
@@ -1015,17 +1044,8 @@ impl SettingsWindow {
                 .items_center()
                 .justify_end()
                 .gap(px(8.))
-                .when(self.plugins.loading, |d| d.child(kit::hint(ui, "Installing…")))
-                .child(button(
-                    "plan-cancel",
-                    "Cancel",
-                    ButtonKind::Ghost,
-                    ui,
-                    self.act(cx, |v, cx| {
-                        v.plugins.plan = None;
-                        cx.notify();
-                    }),
-                ))
+                .when(self.plugins.is_loading(), |d| d.child(kit::hint(ui, "Installing…")))
+                .child(button("plan-cancel", "Cancel", ButtonKind::Ghost, ui, self.act(cx, |v, cx| v.back(cx))))
                 .child(button_with(
                     "plan-install",
                     Some(Icon::Download),

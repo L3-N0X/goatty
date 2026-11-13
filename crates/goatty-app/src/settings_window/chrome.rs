@@ -389,8 +389,13 @@ impl SettingsWindow {
         Some((inst.manifest.name.clone().into(), inst.manifest.summary.clone().into()))
     }
 
-    fn back(&mut self, cx: &mut Context<'_, Self>) {
-        if self.plugins.plan.take().is_none() {
+    pub(super) fn back(&mut self, cx: &mut Context<'_, Self>) {
+        if self.plugins.plan.take().is_some() {
+            if let Some(page) = self.plugins.plan_return.take() {
+                self.go(page, cx);
+                return;
+            }
+        } else {
             self.plugins.detail = None;
         }
         self.menu = None;

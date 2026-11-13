@@ -119,3 +119,52 @@ fn profile_export_import_without_daemon() {
     assert!(std::fs::read_to_string(other.path().join(".config/goatty/host.json")).unwrap().contains("4321"));
     assert!(other.path().join(".local/share/goatty/current/zsh/.zshrc").is_file(), "host settings were applied as a generation");
 }
+
+#[test]
+fn profile_import_lists_uninstalled_plugins() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let reg = tmp.path().join("registry");
+    let key_path = tmp.path().join("reg.key");
+    let public = goatty_plugin::sign::keygen_file(&key_path).unwrap();
+    let key = goatty_plugin::sign::load_secret(&key_path).unwrap();
+    let plugin_dir = reg.join("plugins/greet/0.1.0");
+    std::fs::create_dir_all(plugin_dir.join("zsh")).unwrap();
+    std::fs::write(reg.join(goatty_plugin::index::META), format!("name = \"test\"\nkeys = [\"{public}\"]\n")).unwrap();
+    std::fs::write(
+        plugin_dir.join("plugin.toml"),
+        "schema = 1\nid = \"greet\"\nname = \"Greet\"\nversion = \"0.1.0\"\nsummary = \"Says hi\"\npublisher = \"tests\"\n[zsh]\ninit = \"zsh/init.zsh\"\n[permissions]\nshell-code = \"defines greet\"\n",
+    )
+    .unwrap();
+    std::fs::write(plugin_dir.join("zsh/init.zsh"), "greet() { echo hi }\n").unwrap();
+    let idx = goatty_plugin::index::build(&reg).unwrap();
+    std::fs::write(reg.join(goatty_plugin::index::INDEX), idx.to_bytes()).unwrap();
+    goatty_plugin::index::sign_dir(&reg, &key).unwrap();
+
+    // Point the sandbox at the local signed registry instead of the network.
+    let config_dir = home.join(".config/goatty");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("registries.json"),
+        serde_json::json!({
+            "version": 1,
+            "builtin": false,
+            "registries": [{ "name": "test", "url": reg, "keys": [public] }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let profile = tmp.path().join("profile.json");
+    std::fs::write(&profile, r#"{"goatty_profile": 1, "host": {"version": 3, "plugins": {"greet": {"settings": {"name": "ada"}}}}}"#)
+        .unwrap();
+
+    let o = ok(goatty(home, &["settings", "import", "--yes", profile.to_str().unwrap()]));
+    let stdout = out(&o);
+    let stderr = err(&o);
+    assert!(!stderr.contains("plugins.greet: not installed on this host"), "redundant issue should be suppressed:\n{stderr}");
+    assert!(stdout.contains("1 plugin(s) in this profile are not installed"), "{stdout}");
+    assert!(stdout.contains("greet (test) 0.1.0"), "{stdout}");
+    assert!(stdout.contains("Review and install with: goattyd plugin install greet"), "{stdout}");
+    assert!(!home.join(".local/share/goatty/plugins/installed/greet").exists(), "--yes must not bypass plan approval");
+}

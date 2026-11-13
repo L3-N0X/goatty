@@ -45,7 +45,7 @@ fn approve(prompt: &str) -> Result<bool> {
     Ok(matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
 }
 
-fn print_changed(c: &Changed) {
+pub fn print_changed(c: &Changed) {
     for l in &c.lines {
         println!("{l}");
     }
@@ -133,7 +133,7 @@ pub fn info(svc: &HostService, id: &str) -> Result<()> {
     }
     println!("\nPermissions:");
     for g in goatty_plugin::permissions::describe(m) {
-        println!("  {} {}{}", if g.permission.runs_code() { "\u{26a0}" } else { "\u{2022}" }, g.title, details(&g.details));
+        println!("  {} {}{}", if g.permission.runs_code() { "⚠" } else { "•" }, g.title, details(&g.details));
         if !g.reason.is_empty() {
             println!("      why: {}", g.reason);
         }
@@ -205,7 +205,7 @@ pub fn print_plan(plan: &Plan) {
     }
     println!("\nPermissions:");
     for g in &plan.permissions {
-        println!("  {} {}{}", if g.permission.runs_code() { "\u{26a0}" } else { "\u{2022}" }, g.title, details(&g.details));
+        println!("  {} {}{}", if g.permission.runs_code() { "⚠" } else { "•" }, g.title, details(&g.details));
         if !g.reason.is_empty() {
             println!("      why: {}", g.reason);
         }
@@ -226,14 +226,14 @@ pub fn print_plan(plan: &Plan) {
     if let Some((file, code)) = &plan.shell_code {
         println!("\nShell code ({file}), run at the start of every goatty shell:");
         for line in code.lines() {
-            println!("  \u{2502} {line}");
+            println!("  │ {line}");
         }
     }
     for r in &plan.requires {
         println!("\nNeeds {r}");
     }
     for w in &plan.warnings {
-        println!("\n\u{26a0} {w}");
+        println!("\n⚠ {w}");
     }
     println!();
 }
@@ -332,7 +332,7 @@ pub fn list(svc: &HostService) -> Result<()> {
         println!("{:<20} {:<8} {:<10} {}{notes}", i.id, i.version, i.source, i.manifest.summary);
     }
     for issue in &cat.issues {
-        println!("\u{26a0} {issue}");
+        println!("⚠ {issue}");
     }
     Ok(())
 }
@@ -353,7 +353,7 @@ fn print_outcome(o: &crate::service::ApplyOutcome) {
         _ => println!("Saved; the shell configuration didn't change."),
     }
     for i in &o.issues {
-        println!("\u{26a0} {i}");
+        println!("⚠ {i}");
     }
 }
 
@@ -398,7 +398,7 @@ pub fn registries(svc: &HostService, refresh: bool) -> Result<()> {
         println!("{:<12} {}{}\n             {state}", r.name, r.url, if r.builtin { " (built in)" } else { "" });
     }
     for i in issues {
-        println!("\u{26a0} {i}");
+        println!("⚠ {i}");
     }
     Ok(())
 }
@@ -411,7 +411,7 @@ pub fn registry_add(svc: &HostService, name: &str, url: &str, keys: &[String]) -
     println!("Added registry {name}. Its plugins are signed by {}.", keys.join(", "));
     match svc.plugins(|p| registry::refresh(dirs, &source, p.fetch)) {
         Ok(s) => println!("Fetched: {} plugins.", s.index.plugins.len()),
-        Err(e) => println!("\u{26a0} couldn't fetch it yet: {e:#}"),
+        Err(e) => println!("⚠ couldn't fetch it yet: {e:#}"),
     }
     Ok(())
 }
