@@ -212,7 +212,7 @@ enum ShellCmd {
     /// directory (no sudo). Without names: the default ones the shell is
     /// missing (what `goatty-setup` runs).
     Install {
-        /// Built-in plugins: autosuggestions, syntax-highlighting, starship, atuin, fzf.
+        /// Built-in plugins: fzf, fzf-tab, autosuggestions, syntax-highlighting, starship.
         tools: Vec<String>,
         /// Don't ask before downloading.
         #[arg(short, long)]

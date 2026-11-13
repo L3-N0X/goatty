@@ -91,7 +91,7 @@ Settings travel as JSON documents rather than typed structs, so a schema change 
 | Hosts | open hosts in a new window or tab (`ssh.open_in`), add hosts (`user@host` or an ssh alias, optional name), plain SSH per host, list the hosts in `~/.ssh/config`, connect | saved immediately |
 | Shell | managed zsh, program, user dotfiles, shell integration (the built-in tools are on Plugins) | staged → preview → apply |
 | Prompt | live preview; Starship, rich/minimal style, own starship.toml (off by default), two-line, blank line, duration threshold | staged |
-| History | size, duplicates, leading space, sharing, Atuin, Atuin on Up | staged |
+| History | size, duplicates, leading space, sharing, fzf history search, fzf-tab completion and its previews | staged |
 | Aliases | yours first, then each plugin's (folded); filters All / Mine / From plugins; add/edit in a dialog (group completes existing groups) | staged |
 | Plugins | installed and built-in plugins, each with its own page (settings by the manifest's groups, advanced folded; tools; permissions; aliases); browse the registries; install review | staged / installs right away |
 | Profile | problems (show, copy all), file locations (copy, open folder), env overrides, export/import, generations (name, one-line summary; click for every change, the file diff and naming) with rollback, reset | – |

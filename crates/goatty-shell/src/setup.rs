@@ -120,7 +120,8 @@ pub struct Startup {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Feature {
-    /// `goatty-status`'s key: `starship`, `integration`, `plugin:<id>`.
+    /// `goatty-status`'s key: `starship`, `integration`, `plugin:<id>`,
+    /// `helper:<command>` (optional tools the fzf plugins use).
     pub id: String,
     /// For people: `Starship`, `Shell integration`.
     pub name: String,
@@ -312,9 +313,31 @@ pub fn status(svc: &HostService) -> Result<Status> {
     Ok(s)
 }
 
+/// The prefix of optional helpers in `goatty-status` (`helper:fd`): tools
+/// the fzf plugins use when they're there.
+pub const HELPER: &str = "helper:";
+
+/// What an optional helper adds (`helper:bat`).
+pub fn helper_use(id: &str) -> &'static str {
+    match id.strip_prefix(HELPER).unwrap_or(id) {
+        "fd" => "lists files for fzf faster, with hidden files and without .git",
+        "bat" => "file previews in fzf and Tab completion",
+        "eza" => "directory previews in fzf and Tab completion",
+        _ => "used by fzf when it's installed",
+    }
+}
+
+impl Feature {
+    /// An optional helper (`helper:fd`), not a plugin: missing is fine.
+    pub fn is_helper(&self) -> bool {
+        self.id.starts_with(HELPER)
+    }
+}
+
 fn feature(id: &str, state: &State, dirs: &Dirs) -> Feature {
     let name = match id {
         "integration" => "Shell integration".to_owned(),
+        _ if id.starts_with(HELPER) => id[HELPER.len()..].to_owned(),
         _ => match builtins::get(id) {
             Some(b) => b.manifest().name.clone(),
             None => id.strip_prefix("plugin:").unwrap_or(id).to_owned(),
@@ -480,8 +503,8 @@ mod tests {
             managed: true,
             tools: vec![
                 t("starship", true, ToolLocation::Missing, None),
-                t("atuin", true, ToolLocation::System { path: "/usr/bin/atuin".into() }, None),
-                t("fzf", false, ToolLocation::Missing, None),
+                t("fzf", true, ToolLocation::System { path: "/usr/bin/fzf".into() }, None),
+                t("fzf-tab", false, ToolLocation::Missing, None),
                 t("autosuggestions", true, ToolLocation::Missing, Some("no build")),
             ],
             ..Status::default()

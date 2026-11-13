@@ -58,8 +58,9 @@ advanced = true
 [zsh]
 init = "zsh/init.zsh"
 load = "line-editor"
-# It wraps the widgets defined before it: let fzf and Atuin define theirs first.
-after = ["fzf", "atuin"]
+# It wraps the widgets defined before it: let fzf, fzf-tab and the Atuin
+# plugin (from the registry) define theirs first.
+after = ["fzf", "fzf-tab", "atuin"]
 
 [permissions]
 binaries = "zsh-autosuggestions is a zsh plugin: unless your distribution's copy is installed, goatty downloads its release tarball from GitHub."

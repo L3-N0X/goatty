@@ -1,8 +1,8 @@
 # Managed zsh (Stage 3)
 
-goatty sessions run zsh with a configuration goatty generates: autosuggestions, syntax highlighting, completion, Starship, Atuin, fzf key bindings and shell integration (OSC 133/7). Nothing in the user's dotfiles changes. Code: `crates/goatty-shell`. Startup files: `crates/goatty-shell/zsh/`.
+goatty sessions run zsh with a configuration goatty generates: autosuggestions, syntax highlighting, completion in fzf (fzf-tab), Starship, fzf's history and file search, and shell integration (OSC 133/7). Nothing in the user's dotfiles changes. Code: `crates/goatty-shell`. Startup files: `crates/goatty-shell/zsh/`.
 
-The tools (autosuggestions, syntax highlighting, Starship, Atuin, fzf) are **built-in plugins** since #98: ordinary plugin manifests in `crates/goatty-shell/plugins/<id>/`, compiled into goatty. They get the same install plans, settings UI and load-order slots as registry plugins ([`plugins.md`](plugins.md#built-in-plugins)).
+The tools (fzf, fzf-tab, autosuggestions, syntax highlighting, Starship) are **built-in plugins** since #98: ordinary plugin manifests in `crates/goatty-shell/plugins/<id>/`, compiled into goatty. They get the same install plans, settings UI and load-order slots as registry plugins ([`plugins.md`](plugins.md#built-in-plugins)).
 
 ## How a session starts
 
@@ -22,7 +22,7 @@ zsh then reads the startup files from goatty's directory:
 .zprofile  (login) source the user's .zprofile with their ZDOTDIR, re-pin goatty's
 .zshrc     options, history, PATH, plugins-early.zsh (plugin fpath + env), keys, compinit
            [user's .zshrc, if shell.zsh.user_rc]
-           plugins-line-editor.zsh (fzf → atuin → autosuggestions)
+           plugins-line-editor.zsh (fzf → fzf-tab → autosuggestions)
            plugins-prompt.zsh (starship), or goatty's fallback prompt when no prompt plugin loaded
            plugins.zsh (plugin aliases + code) → aliases.zsh (yours) → integration
            ZDOTDIR = the user's again
@@ -80,19 +80,35 @@ XDG variables are respected. History stays in the file plain zsh would use (`${Z
 | `shell.zsh.integration` | on | |
 | `prompt.style` (`rich`/`minimal`), `prompt.two_line`, `prompt.newline_before`, `prompt.duration_threshold_ms` (2000; 0 = never) | rich, on, off, 2000 | |
 | `history.size` (100 000), `history.ignore_duplicates`, `history.ignore_space`, `history.share_between_sessions` | 100 000, on, on, off | |
-| `plugins.<id>.enabled` for `autosuggestions`, `syntax-highlighting`, `starship`, `atuin`, `fzf` | on | |
+| `plugins.<id>.enabled` for `fzf`, `fzf-tab`, `autosuggestions`, `syntax-highlighting`, `starship` | on | |
+| `plugins.fzf.settings.{hidden_files, previews}` | on, on | |
+| `plugins.fzf-tab.settings.previews` | on | |
 | `plugins.autosuggestions.settings.{strategy, max_length}` | `history-completion`, 80 | |
 | `plugins.syntax-highlighting.settings.brackets` | off | |
 | `plugins.starship.settings.prefer_user_config` | off | |
-| `plugins.atuin.settings.up_arrow` | off | |
 
-Each built-in plugin has its own page under Plugins with all its settings; Prompt and History also show the Starship and Atuin switches. `host.json` version 1 had the switches as `shell.zsh.{autosuggestions, syntax_highlighting, fzf}`, `prompt.starship`, `history.atuin` and the options as `prompt.prefer_user_config`, `history.atuin_up_arrow`: loading one moves them to `plugins.*` (version 2; only keys the file had, so it stays sparse).
+Each built-in plugin has its own page under Plugins with all its settings; Prompt shows the Starship switches, History the fzf and fzf-tab ones. `host.json` version 1 had the switches as `shell.zsh.{autosuggestions, syntax_highlighting, fzf}`, `prompt.starship`, `history.atuin` and the options as `prompt.prefer_user_config`, `history.atuin_up_arrow`: loading one moves them to `plugins.*` (version 2; only keys the file had, so it stays sparse). Version 3 (#165) drops `plugins.atuin`: Atuin left the built-in plugins, and its entry would only be reported as a plugin that isn't installed.
 
 `.zshrc` is off by default because most `.zshrc` files load their own prompt and plugins, which would fight goatty's. With it on, it runs after compinit and before goatty's plugins, so goatty's prompt still wins. Turn off the Starship plugin to keep your own prompt. The default `rich` prompt uses Nerd Font symbols; goatty draws them with its bundled JetBrainsMono Nerd Font whatever the terminal font is. The `minimal` style uses plain characters only, for a plainer look.
 
 Each plugin checks for its tool at shell startup and is skipped if the tool is missing. Binaries come from `$commands`, which sees the PATH after the user's `.zprofile` ran; zsh plugins come from their package's `system_paths` (distro/Homebrew/NixOS), then the managed copy. A system install always wins over a managed one.
 
-Defaults chosen here: emacs keymap; Up/Down search history by prefix; Home/End/Delete/Ctrl+arrows/Ctrl+Backspace/Shift+Tab bound to the sequences goatty sends; word motions stop at `/`; menu completion with case-insensitive matching; `auto_cd`; 100k history entries, `extended_history`, `inc_append_history`, no duplicates; Atuin on Ctrl+R with `--disable-up-arrow`; fzf on Ctrl+T/Alt+C (Atuin keeps Ctrl+R).
+Defaults chosen here: emacs keymap; Up/Down search history by prefix; Home/End/Delete/Ctrl+arrows/Ctrl+Backspace/Shift+Tab bound to the sequences goatty sends; word motions stop at `/`; completion with case-insensitive matching, in fzf (fzf-tab; zsh's menu selection when fzf-tab is off or missing); `auto_cd`; 100k history entries, `extended_history`, `inc_append_history`, no duplicates; fzf on Ctrl+R/Ctrl+T/Alt+C.
+
+## fzf: history, files, completion
+
+fzf is goatty's one fuzzy finder (#165), split over two built-in plugins:
+
+- **fzf** loads fzf's key bindings (`fzf --zsh`): **Ctrl+R** searches the zsh history (the same file plain zsh uses) and puts the pick on the command line, **Ctrl+T** inserts files, **Alt+C** changes directory. Files and directories come from `fd` (`fdfind` on Debian/Ubuntu: hidden ones included unless `hidden_files` is off, `.git` excluded, symlinks followed); without fd, fzf walks the directory itself with the same rules (`--walker`, `--walker-skip=.git`). With `previews` on, Ctrl+T previews the file with bat and Alt+C the directory with eza, each only when that tool is installed.
+- **fzf-tab** (Aloxaf/fzf-tab 1.3.0) makes Tab open the matches in fzf: no group headers, `/` accepts a directory and completes inside it, zsh's own menu off. Its previews: directory contents (eza) and files (bat) for paths and `cd`, the full command line for `kill`/`ps`, the value for variables (`export`, `unset`, `$…`), `git diff` for `git add/diff/restore`, the last commit for `git log/checkout/switch/show`, `systemctl status`, `tldr` and `man` (at the preview's width). It needs fzf (`requires.commands`) and loads after fzf's bindings, before autosuggestions.
+
+**Look.** fzf's options come from a file the fzf plugin generates (`plugins/fzf/fzfrc`, through `FZF_DEFAULT_OPTS_FILE`): reverse layout, 60 % height, and colors given as the terminal's 16 ANSI colors (`fg:-1,bg:-1,hl:2,…`), so fzf, its previews (bat with `--theme=ansi` unless `BAT_THEME` is set, eza's own ANSI colors) and fzf-tab follow goatty's theme, local or remote. Previews sit on the right at 60 %, below in panes narrower than 80 columns, wrap long lines, and Ctrl+/ cycles below/hidden/right. fzf's key bindings paste that file into `FZF_DEFAULT_OPTS`, which fzf splits like a shell: values with `|`, `<` or `(` are quoted (`zsh::tests::fzf_options_survive_the_key_bindings`).
+
+**Yours win.** `FZF_DEFAULT_OPTS` is applied after goatty's file; `FZF_DEFAULT_OPTS_FILE`, `FZF_DEFAULT_COMMAND`, `FZF_CTRL_T_COMMAND`, `FZF_ALT_C_COMMAND`, `FZF_CTRL_T_OPTS` and `FZF_ALT_C_OPTS` set before goatty's plugins load (`.zshenv`, `.zprofile`) are kept, and `~/.config/goatty/zshrc` runs after them anyway (zstyles too). The values goatty exports are remembered in `_goatty_fzf_<NAME>`, so `goatty-reload`, whose new shell inherits them, replaces them instead of mistaking them for yours.
+
+**Missing helpers.** fd, bat and eza are optional: each plugin records them in `goatty-status` as `helper:fd`, `helper:bat`, `helper:eza` (ok with the path, or `missing`; bat and eza only while previews are on). Diagnostics shows them as optional rows that don't count as missing tools, and neither `goatty-setup` nor the first-run setup installs them; the registry's fd, bat and eza plugins do.
+
+**Atuin** was a built-in plugin until #165. It's now a registry plugin (`goattyd plugin install atuin`) that loads after fzf and takes Ctrl+R, optionally Up. A download goatty made for the old built-in (`tools/atuin/`, `bin/atuin`) is reused by that plugin at the same version, or removed with `goattyd shell uninstall atuin` (or `--all`).
 
 ## Shell integration
 
@@ -111,13 +127,13 @@ No sudo, nothing outside goatty's data directory. `goattyd shell uninstall NAME�
 
 | Built-in plugin     | Package (id)                               | Version | Builds                    | Load slot   | Installed by goatty-setup |
 |---------------------|--------------------------------------------|---------|---------------------------|-------------|---------------------------|
-| autosuggestions     | zsh-autosuggestions (`autosuggestions`)    | 0.7.1   | source tarball            | line-editor | yes |
+| fzf                 | fzf (`fzf`)                                | 0.74.5  | x86_64/aarch64 Linux      | line-editor | yes |
+| fzf-tab             | fzf-tab (`fzf-tab`)                        | 1.3.0   | source tarball            | line-editor (after fzf) | yes |
+| autosuggestions     | zsh-autosuggestions (`autosuggestions`)    | 0.7.1   | source tarball            | line-editor (after fzf, fzf-tab) | yes |
 | syntax-highlighting | zsh-syntax-highlighting (`syntax-highlighting`) | 0.8.0 | source tarball          | last        | yes |
 | starship            | Starship (`starship`)                      | 1.27.0  | x86_64/aarch64 Linux musl | prompt      | yes |
-| atuin               | Atuin (`atuin`)                            | 18.24.2 | x86_64/aarch64 Linux musl | line-editor (after fzf) | yes |
-| fzf                 | fzf (`fzf`)                                | 0.74.5  | x86_64/aarch64 Linux      | line-editor | no (integrated when present) |
 
-Pinned 2026-11-07 to releases at least two weeks old. Checksums were computed from the downloads and matched upstream's published `.sha256`/checksums files where they exist (Starship, Atuin, fzf). The package ids are the tool ids from before #98, so managed installs made then (`tools/<id>/`, `bin/` and `plugins/` links) are used as they are. zsh itself isn't installed: if it's missing, goatty starts `$SHELL` and `goattyd shell status` says so.
+Pinned 2026-11-07 to releases at least two weeks old (fzf-tab 2026-11-13: v1.3.0 is from 2026-03-16). Checksums were computed from the downloads and matched upstream's published `.sha256`/checksums files where they exist (Starship, fzf); GitHub's source tarballs (fzf-tab, the zsh plugins) have none, so their checksum was taken from two separate downloads. fzf-tab's system copies: Arch's AUR `fzf-tab-git`, NixOS/Nix `zsh-fzf-tab`. The package ids are the tool ids from before #98, so managed installs made then (`tools/<id>/`, `bin/` and `plugins/` links) are used as they are. zsh itself isn't installed: if it's missing, goatty starts `$SHELL` and `goattyd shell status` says so.
 
 ## First run and the GUI
 
@@ -145,9 +161,19 @@ Measured 2026-11-07 on the dev machine (CachyOS, zsh 5.9.2), `zsh -l -i -c exit`
 | + autosuggestions                                    | 42   |
 | + syntax highlighting                                | 44   |
 | + Starship init                                      | 59   |
-| + Atuin init (everything on)                         | 60–67 |
+| + Atuin init (everything on, Atuin built in then)    | 60–67 |
 
 Moving the tools to built-in plugins (#98) didn't change it: 61 ms median on both `main` and the branch (2026-11-08, same machine, sandboxed `$HOME` with the host's Starship, fzf and distro zsh plugins, Atuin missing; `goattyd shell status` built the generation, then 21 runs of `zsh -l -i -c exit` each, two rounds).
+
+fzf and fzf-tab by default (#165), measured 2026-11-13 on the same machine: sandboxed `$HOME` with the host's fzf 0.74.5, fd, bat, eza, Starship and distro zsh plugins, goatty's fzf-tab 1.3.0, median of 21 runs of `zsh -l -i -c exit`, two rounds. Without a TTY fzf's key bindings aren't loaded, so the TTY column (through `script`, which adds its own ~10 ms) is the one that counts:
+
+| Configuration                        | no TTY ms | TTY ms |
+|--------------------------------------|-----------|--------|
+| fzf and fzf-tab off                  | 59.5–59.7 | 72.2–72.5 |
+| + fzf (`fzf --zsh` and its eval, fd/bat/eza lookups) | 58.7–59.7 | 77.1–80.1 |
+| + fzf-tab (sourcing it, zstyles)     | 62.5–64.4 | 83.6–84.3 |
+
+So fzf costs about 6 ms (one process spawn for `fzf --zsh`) and fzf-tab about 5 ms. Caching `fzf --zsh` belongs to #41.
 
 goatty's part is about 30 ms, half of it `starship init` (two process spawns). Caching the init scripts is #41. The first start after a zsh upgrade or on a fresh machine builds the completion dump (178 ms once in the real home dir; 47 ms after that, measured with `goattyd shell status`).
 
@@ -157,4 +183,4 @@ Installed plugins (Stage 5, [`plugins.md`](plugins.md)) render into `plugins-ear
 
 ## Not done yet
 
-Caching tool init scripts (#41), installs for macOS and other architectures (#42), managed completions for installed tools (#43), importing existing history into Atuin on first install (#44), updating managed tools after a pin bump (#45), an interactive GUI smoke test (#47), and the terminal side of shell integration (#28).
+Caching tool init scripts (#41, including `fzf --zsh`), installs for macOS and other architectures (#42), managed completions for installed tools (#43), updating managed tools after a pin bump (#45), an interactive GUI smoke test (#47), and the terminal side of shell integration (#28).

@@ -254,7 +254,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join("config/host.json");
         let svc = HostService::new(Launcher::new(Some(Dirs::under(tmp.path())), None), Some(file.clone()));
-        assert_eq!(svc.snapshot().json, "{\n  \"version\": 2\n}\n");
+        assert_eq!(svc.snapshot().json, "{\n  \"version\": 3\n}\n");
 
         let preview = svc.set(r#"{"prompt": {"two_line": false}}"#, false).unwrap();
         assert!(!preview.applied && !preview.diff.is_empty() && !file.exists());

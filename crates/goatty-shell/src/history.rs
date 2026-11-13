@@ -374,7 +374,7 @@ mod tests {
         let c = settings_changes("{}", r#"{"history": {"size": 5000}}"#);
         assert_eq!(c, [change("history.size", Some("100000"), Some("5000"))]);
         assert_eq!(c[0].text(), "history.size 100000 → 5000");
-        assert!(settings_changes(r#"{"version": 2}"#, "{}").is_empty(), "same settings, other spelling");
+        assert!(settings_changes(r#"{"version": 3}"#, "{}").is_empty(), "same settings, other spelling");
         assert!(settings_changes("{}", r#"{"nonsense": 1}"#).is_empty(), "unknown keys don't count");
     }
 
@@ -383,8 +383,8 @@ mod tests {
         let texts = |a: &str, b: &str| settings_changes(a, b).iter().map(SettingChange::text).collect::<Vec<_>>();
         assert_eq!(texts("{}", r#"{"plugins": {"starship": {"enabled": false}}}"#), ["starship off"]);
         assert_eq!(texts(r#"{"plugins": {"starship": {"enabled": false}}}"#, "{}"), ["starship on"]);
-        assert_eq!(texts("{}", r#"{"plugins": {"atuin": {"settings": {"up_arrow": true}}}}"#), ["atuin.up_arrow → on"]);
-        assert_eq!(texts(r#"{"plugins": {"atuin": {"settings": {"up_arrow": true}}}}"#, "{}"), ["atuin.up_arrow reset"]);
+        assert_eq!(texts("{}", r#"{"plugins": {"fzf-tab": {"settings": {"previews": false}}}}"#), ["fzf-tab.previews → off"]);
+        assert_eq!(texts(r#"{"plugins": {"fzf-tab": {"settings": {"previews": false}}}}"#, "{}"), ["fzf-tab.previews reset"]);
         assert!(texts("{}", r#"{"plugins": {"eza": {}}}"#).is_empty(), "an entry at its defaults");
         let alias = r#"{"aliases": {"ll": {"command": "ls -l"}}}"#;
         assert_eq!(texts("{}", alias), ["alias ll added"]);

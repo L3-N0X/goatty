@@ -50,7 +50,7 @@ The defining idea is **a complete terminal environment, not just another termina
 | PTY abstraction | Start by evaluating **`portable-pty`**; retain a platform-specific abstraction | Create and manage pseudoterminals across operating systems |
 | Default shell | **Zsh** | Real, familiar interactive shell |
 | Prompt | **Starship**, generated from goatty's prompt settings | Cross-shell prompt rendering and customization |
-| History | **Atuin** as the initial rich history backend; `fzf` as an optional general fuzzy finder | Searchable command history and fuzzy selection |
+| History | **fzf** on `Ctrl+R` over the plain zsh history, and as the completion menu (fzf-tab); Atuin as an optional plugin for a history database (#165) | Searchable command history and fuzzy selection |
 | Shell enhancements | `zsh-autosuggestions`, `zsh-syntax-highlighting`, Zsh completion system | Suggestions, highlighting and completion |
 | Profile model | Versioned JSON with typed Rust structures | Single source of truth for user configuration |
 | Plugin manifests | Declarative YAML or TOML, with JSON Schema for settings | Describe integrations and generate GUI settings |
@@ -176,12 +176,12 @@ Ship a curated, managed configuration with:
 | Autosuggestions | `zsh-autosuggestions` |
 | Syntax highlighting | `zsh-syntax-highlighting` |
 | Prompt | Starship, configured by goatty |
-| Searchable history | Atuin, configured for Zsh and bound to `Ctrl+R` |
-| Fuzzy selection | `fzf`, optional but supported |
+| Searchable history | fzf's history search on `Ctrl+R` (Atuin as a registry plugin) |
+| Fuzzy selection | `fzf` for history, files (`Ctrl+T`), directories (`Alt+C`) and Tab completion (fzf-tab) |
 | Shell lifecycle hooks | Zsh hooks such as `precmd` and `preexec`, installed carefully |
 | Terminal semantic integration | OSC 133 and OSC 7 shell integration |
 
-The load order matters. In particular, syntax highlighting should be loaded after plugins that modify Zsh's line editor. Atuin and other line-editor integrations also need to be tested together so keybindings and hooks do not override one another unexpectedly.
+The load order matters. In particular, syntax highlighting should be loaded after plugins that modify Zsh's line editor. fzf, fzf-tab and other line-editor integrations also need to be tested together so keybindings and hooks do not override one another unexpectedly.
 
 ### Shell support policy
 
@@ -569,7 +569,7 @@ These are the primary sources to consult while implementing. Pin actual crate ve
 
 ## Final direction
 
-Build **goatty** as a native Rust terminal environment with GPUI, Rio-VT and a custom GPU terminal renderer. Use a separate Rust daemon to own PTYs, sessions, profiles and plugin operations. Make Zsh the default shell, with a curated managed configuration built around Starship, Atuin, Zsh autosuggestions, syntax highlighting and the native completion system.
+Build **goatty** as a native Rust terminal environment with GPUI, Rio-VT and a custom GPU terminal renderer. Use a separate Rust daemon to own PTYs, sessions, profiles and plugin operations. Make Zsh the default shell, with a curated managed configuration built around Starship, fzf, Zsh autosuggestions, syntax highlighting and the native completion system.
 
 Make the profile the source of truth. Let declarative plugins contribute tools, shell integrations, prompt modules and GUI settings. Install tools in a goatty-managed user environment by default, and make host-shell integration opt-in, inspectable and reversible. Add Bash and Fish adapters after the Zsh experience is solid. Add remote/web configuration only after the local daemon API is stable.
 
