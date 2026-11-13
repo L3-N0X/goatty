@@ -313,6 +313,9 @@ fn retired_builtin_downloads_are_removed_unless_a_plugin_owns_them() {
     std::fs::write(version.join("atuin"), "#!/bin/sh\n").unwrap();
     std::fs::create_dir_all(w.dirs.bin_dir()).unwrap();
     std::os::unix::fs::symlink(version.join("atuin"), w.dirs.bin_dir().join("atuin")).unwrap();
+    let launcher = crate::launch::Launcher::new(Some(w.dirs.clone()), None);
+    assert!(crate::cmd::uninstall(&launcher, &["atuin".into(), "typo".into()], false).is_err());
+    assert!(w.dirs.tools_dir().join("atuin").exists(), "a typo in the command leaves the install untouched");
     assert_eq!(p.remove_retired("atuin", &["atuin"]).unwrap(), Some(true));
     assert!(!w.dirs.tools_dir().join("atuin").exists());
     assert!(w.dirs.bin_dir().join("atuin").symlink_metadata().is_err());

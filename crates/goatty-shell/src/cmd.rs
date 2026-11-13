@@ -226,6 +226,10 @@ pub fn uninstall(launcher: &Launcher, names: &[String], all: bool) -> Result<()>
     let plugins = Plugins { dirs, fetch: &fetch, builtin: &[] };
     let retired: Vec<_> = builtins::RETIRED.iter().filter(|(id, _)| all || names.iter().any(|n| n == id)).collect();
     let names: Vec<String> = names.iter().filter(|n| !retired.iter().any(|(id, _)| id == n)).cloned().collect();
+    let list = if all { BUILTINS.iter().collect() } else { resolve_names(&names)? };
+    if list.is_empty() && retired.is_empty() {
+        bail!("name the tools to remove, or pass --all");
+    }
     for (id, bins) in &retired {
         match plugins.remove_retired(id, bins)? {
             Some(true) => println!("Removed goatty's old copy of {id}."),
@@ -233,13 +237,6 @@ pub fn uninstall(launcher: &Launcher, names: &[String], all: bool) -> Result<()>
             None if !all => println!("The {id} plugin uses goatty's copy of {id}: goattyd plugin uninstall {id} removes it."),
             _ => {}
         }
-    }
-    let list = if all { BUILTINS.iter().collect() } else { resolve_names(&names)? };
-    if list.is_empty() {
-        if !retired.is_empty() {
-            return Ok(());
-        }
-        bail!("name the tools to remove, or pass --all");
     }
     for b in list {
         let name = &b.manifest().name;

@@ -11,7 +11,7 @@
 # (whose new shell inherits it) replaces it rather than keeping it as yours.
 _goatty_fzf_export() {
   local mine=_goatty_fzf_$1
-  if [[ -z ${(P)1+set} || ${(P)1} == "${(P)mine-}" ]]; then
+  if [[ -z ${(P)1+set} || ( -n ${(P)mine+set} && ${(P)1} == "${(P)mine}" ) ]]; then
     builtin export $1=$2 $mine=$2
   fi
 }

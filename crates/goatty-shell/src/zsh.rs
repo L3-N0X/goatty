@@ -235,7 +235,7 @@ mod tests {
         assert!(out.contains("hist_ignore_space share_history)"), "{out}");
         assert!(out.contains("_goatty_daemon='/usr/bin/goattyd'"));
         assert!(out.contains("_goatty_features=(integration)"));
-        assert!(out.contains("_goatty_pkgs='/r o/ot'\\''s/data/plugins'"), "{out}");
+        assert!(out.contains(r"_goatty_pkgs='/r o/ot'\''s/data/plugins'"), "{out}");
         assert!(out.contains("_goatty_setup_defaults=(fzf fzf-tab autosuggestions syntax-highlighting)"), "starship is off: {out}");
     }
 
@@ -265,6 +265,7 @@ mod tests {
         assert!(files.iter().any(|f| f.name == "plugins/fzf-tab/zsh/init.zsh"), "the shipped init file");
         let rc = get("plugins/fzf/fzfrc");
         assert!(rc.contains("--color=fg:-1,bg:-1") && rc.contains("--preview-window='right:60%"), "{rc}");
+        assert!(!rc.lines().any(|l| l.trim_start().starts_with('#')), "fzf < 0.55 rejects comments: {rc}");
     }
 
     /// fzf's key bindings paste goatty's options file into

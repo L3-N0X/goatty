@@ -146,6 +146,17 @@ fn no_highlighting() -> HostSettings {
     s
 }
 
+/// Whether the host has a distro copy at any of `builtin_id`'s `system_paths`.
+fn has_system_copy(builtin_id: &str) -> bool {
+    goatty_shell::builtins::get(builtin_id)
+        .unwrap()
+        .manifest()
+        .packages
+        .iter()
+        .flat_map(|p| &p.system_paths)
+        .any(|p| Path::new(p).is_file())
+}
+
 fn exe(p: &Path, body: &str) {
     std::fs::write(p, body).unwrap();
     std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -219,7 +230,11 @@ fn default_startup_sources_user_env_not_rc() {
     use goatty_shell::doctor::State;
     // Found through the PATH entry the user's .zprofile added.
     assert_eq!(state("starship"), Some(State::Ok(sb.home.join("userbin/starship").to_string_lossy().into_owned())));
-    assert_eq!(state("fzf-tab"), Some(State::Missing));
+    if matches!(state("fzf"), Some(State::Ok(_))) && has_system_copy("fzf-tab") {
+        assert!(matches!(state("fzf-tab"), Some(State::Ok(_))));
+    } else {
+        assert_eq!(state("fzf-tab"), Some(State::Missing));
+    }
     assert_eq!(state("syntax-highlighting"), Some(State::Off));
     assert!(matches!(state("integration"), Some(State::Ok(_))));
 
@@ -640,13 +655,12 @@ fn builtin_plugins_load_in_their_slots() {
         "print -r -- \"cmd=[$FZF_DEFAULT_COMMAND] alt=[$FZF_ALT_C_COMMAND] topts=[$FZF_CTRL_T_OPTS]\"; [[ -r $FZF_DEFAULT_OPTS_FILE ]] && print -r -- rc=${FZF_DEFAULT_OPTS_FILE:t}; \
          zstyle -L ':completion:*' menu; zstyle -L ':fzf-tab:complete:*:*' fzf-preview",
     ));
-    let host_tab = Path::new("/usr/share/zsh/plugins/fzf-tab-git/fzf-tab.plugin.zsh").exists();
+    let host_tab = has_system_copy("fzf-tab");
     assert!(out.contains("\"^R\" fzf_w") && out.contains("\"^T\" fzf_w"), "{out}");
     if !host_tab {
         assert!(out.contains("\"^I\" ftb_w"), "fzf-tab loads after fzf and takes Tab: {out}");
     }
-    let host_copy = Path::new("/usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh").exists()
-        || Path::new("/usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh").exists();
+    let host_copy = has_system_copy("autosuggestions");
     assert!(out.contains("strat=history "), "the plugin's setting reached it: {out}");
     if !host_copy {
         assert!(out.contains("suggest=history "), "the managed copy loaded after its options were set: {out}");
@@ -680,15 +694,16 @@ fn fzf_keeps_your_variables_and_replaces_its_own() {
         p.settings.insert("previews".into(), false.into());
         p.settings.insert("hidden_files".into(), false.into());
     });
+    settings.edit_plugin("fzf-tab", |p| p.enabled = false);
     let mut launch = sb.launch_with(settings, None);
     launch.env.extend([
         ("FZF_DEFAULT_COMMAND".to_string(), "goatty-old".to_string()),
         ("_goatty_fzf_FZF_DEFAULT_COMMAND".into(), "goatty-old".into()),
-        ("FZF_DEFAULT_OPTS_FILE".into(), "/my/fzfrc".into()),
+        ("FZF_DEFAULT_OPTS_FILE".into(), String::new()),
     ]);
     let out = sb.run(
         &launch,
-        "print -r -- \"cmd=[$FZF_DEFAULT_COMMAND] file=[$FZF_DEFAULT_OPTS_FILE] t=[$FZF_CTRL_T_OPTS] c=[$FZF_ALT_C_OPTS]\"; goatty-status",
+        "print -r -- \"cmd=[$FZF_DEFAULT_COMMAND] file=[${FZF_DEFAULT_OPTS_FILE-unset}] t=[$FZF_CTRL_T_OPTS] c=[$FZF_ALT_C_OPTS]\"; goatty-status",
     );
     let text = stdout(&out);
     assert!(String::from_utf8_lossy(&out.stderr).trim().is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -699,7 +714,7 @@ fn fzf_keeps_your_variables_and_replaces_its_own() {
     } else {
         assert!(text.contains("cmd=[fd --strip-cwd-prefix --follow --exclude .git --type f]"), "no --hidden: {text}");
     }
-    assert!(text.contains("file=[/my/fzfrc]"), "your options file wins: {text}");
+    assert!(text.contains("file=[]"), "your options file (even empty) wins: {text}");
     assert!(!text.contains("helper:bat") && !text.contains("helper:eza"), "previews are off: {text}");
 }
 

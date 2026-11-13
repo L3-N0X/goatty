@@ -584,7 +584,7 @@ impl Plugins<'_> {
                 installed_unix: 0,
             });
         }
-        for (id, e) in &lock.plugins {
+        for (id, e) in lock.plugins.iter().filter(|(id, _)| builtins::get(id).is_none()) {
             let m = match lock::manifest_of(self.dirs, id, e) {
                 Ok(m) => m,
                 Err(err) => {
@@ -750,7 +750,7 @@ pub fn active(dirs: &Dirs, settings: &HostSettings) -> (Vec<Active>, Vec<String>
         issues.push(format!("plugins.{id}: not installed on this host; ignored (goattyd plugin install {id})"));
     }
     let target = current_target();
-    for (id, entry) in lock.plugins.iter().filter(|(id, _)| enabled(id)) {
+    for (id, entry) in lock.plugins.iter().filter(|(id, _)| builtins::get(id).is_none() && enabled(id)) {
         let mut m = match lock::manifest_of(dirs, id, entry) {
             Ok(m) => m,
             Err(e) => {

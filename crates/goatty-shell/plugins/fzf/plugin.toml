@@ -47,12 +47,12 @@ default = true
 # zsh/init.zsh unless you point it at your own file). Options in your own
 # FZF_DEFAULT_OPTS come after these and win. fzf's key bindings paste this
 # file into FZF_DEFAULT_OPTS, which fzf splits like a shell: quote values
-# with | < ( or spaces.
+# with | < ( or spaces, and keep comments out (fzf < 0.55 rejects `#` lines).
 [[file]]
 name = "fzfrc"
 format = "lines"
 lines = [
-  "# goatty's fzf options. The colors are the terminal's 16, so fzf follows goatty's theme.",
+  # The colors are the terminal's 16, so fzf follows goatty's theme.
   "--layout=reverse",
   "--height=60%",
   "--info=inline-right",
@@ -61,7 +61,7 @@ lines = [
   "--marker='┃'",
   "--color=fg:-1,bg:-1,hl:2,fg+:-1:bold,bg+:-1,hl+:2:bold,gutter:8",
   "--color=info:8,border:8,separator:8,scrollbar:8,spinner:5,prompt:4,pointer:4,marker:5,header:6",
-  "# Previews on the right, below in narrow panes; Ctrl+/ moves or hides them.",
+  # Previews on the right, below in narrow panes; Ctrl+/ moves or hides them.
   "--preview-window='right:60%,border-left,wrap,<80(down:50%,border-top,wrap)'",
   "--bind='ctrl-/:change-preview-window(down,50%,border-top|hidden|)'",
 ]
