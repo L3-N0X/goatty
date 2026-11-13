@@ -528,8 +528,7 @@ impl SettingsWindow {
         if self.page != page {
             self.scroll.set_offset(gpui::point(px(0.), px(0.)));
             self.plugins.detail = None;
-            self.plugins.plan = None;
-            self.plugins.plan_return = None;
+            self.plugins.clear_review();
         }
         self.page = page;
         self.menu = None;

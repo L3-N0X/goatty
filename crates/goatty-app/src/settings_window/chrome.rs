@@ -390,8 +390,8 @@ impl SettingsWindow {
     }
 
     pub(super) fn back(&mut self, cx: &mut Context<'_, Self>) {
-        if self.plugins.plan.take().is_some() {
-            if let Some(page) = self.plugins.plan_return.take() {
+        if let Some(back) = self.plugins.dismiss_plan() {
+            if let Some(page) = back {
                 self.go(page, cx);
                 return;
             }
