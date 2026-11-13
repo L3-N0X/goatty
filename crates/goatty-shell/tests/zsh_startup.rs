@@ -4,10 +4,9 @@
 //!
 //! Skipped (with a note) when zsh isn't installed; CI installs it.
 
-use std::io::Read;
-use std::os::unix::fs::PermissionsExt;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use goatty_config::{Effective, HostSettings, ZshSettings};
@@ -158,8 +157,13 @@ fn has_system_copy(builtin_id: &str) -> bool {
 }
 
 fn exe(p: &Path, body: &str) {
-    std::fs::write(p, body).unwrap();
-    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // Write and chmod in a short-lived child process so the test binary never
+    // holds a write fd to the script while other test threads fork (ETXTBSY).
+    let mut child =
+        Command::new("sh").args(["-c", "cat > \"$1\" && chmod 0755 \"$1\"", "sh"]).arg(p).stdin(Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(body.as_bytes()).unwrap();
+    let status = child.wait().unwrap();
+    assert!(status.success(), "writing fake binary {} failed: {status}", p.display());
 }
 
 fn stdout(o: &Output) -> String {
@@ -407,6 +411,7 @@ impl PtyShell {
         });
         let mut sh = Self { pty, rx, out: Vec::new() };
         sh.wait_for_prompts(1);
+        sh.wait_for_idle();
         sh
     }
 
@@ -425,9 +430,38 @@ impl PtyShell {
         }
     }
 
+    /// Wait until zsh has entered zle and is blocked reading input for the
+    /// latest prompt, avoiding the brief window right after `133;B` where
+    /// `zlecore` resets `errflag` before reading.
+    fn wait_for_idle(&mut self) {
+        let start = self.out.windows(7).rposition(|w| w == b"\x1b]133;B").unwrap_or(0);
+        self.wait_for_from(start, b"\x1b[?2004h");
+        if let Some(pid) = self.pty.pid() {
+            let wchan = format!("/proc/{pid}/wchan");
+            if std::path::Path::new(&wchan).exists() {
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while Instant::now() < deadline {
+                    if let Ok(w) = std::fs::read_to_string(&wchan) {
+                        let w = w.trim();
+                        if !w.is_empty() && w != "0" {
+                            return;
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                return;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
     fn wait_for(&mut self, needle: &[u8]) {
+        self.wait_for_from(0, needle);
+    }
+
+    fn wait_for_from(&mut self, start: usize, needle: &[u8]) {
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !self.out.windows(needle.len()).any(|w| w == needle) {
+        while !self.out[start..].windows(needle.len()).any(|w| w == needle) {
             match self.rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
                 Ok(chunk) => self.out.extend(chunk),
                 Err(_) => panic!("waiting for {:?}:\n{}", String::from_utf8_lossy(needle), String::from_utf8_lossy(&self.out)),
@@ -435,11 +469,12 @@ impl PtyShell {
         }
     }
 
-    /// Type `line` + Enter and wait for the next prompt.
+    /// Type `line` + Enter and wait for the next idle prompt.
     fn run(&mut self, line: &str) {
         let n = self.prompts() + 1;
         self.pty.write(format!("{line}\r").as_bytes()).unwrap();
         self.wait_for_prompts(n);
+        self.wait_for_idle();
     }
 
     fn text(&self) -> String {
@@ -468,8 +503,10 @@ fn reloads_on_request() {
     // Busy: reloads once the command is done.
     sh.run("y=1");
     let n = sh.prompts();
+    let offset = sh.out.len();
     sh.pty.write(b"/bin/sleep 0.5\r").unwrap();
-    std::thread::sleep(Duration::from_millis(200));
+    sh.wait_for_from(offset, b"\x1b]133;C");
+    std::thread::sleep(Duration::from_millis(100));
     svc.reload_shells();
     sh.wait_for_prompts(n + 1);
     sh.run("print -r -- Y=${y:-unset}");
@@ -485,7 +522,9 @@ fn reloads_on_request() {
     svc.reload_shells();
     let deadline = Instant::now() + Duration::from_secs(3);
     while sh.prompts() == n && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
+        if let Ok(chunk) = sh.rx.recv_timeout(Duration::from_millis(50)) {
+            sh.out.extend(chunk);
+        }
     }
     assert_eq!(sh.prompts(), n, "no reload while typing");
     sh.run("");
