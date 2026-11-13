@@ -1,9 +1,9 @@
 //! The Appearance page: a live preview, the theme gallery and color editor,
 //! text, cursor and window settings.
 
-use goatty_config::{ColorSlot, CursorShape, FontSettings, Renderer, TerminalSettings, ThemeColors, ThemeEntry};
+use goatty_config::{ClientSettings, ColorSlot, CursorShape, FontSettings, Renderer, TerminalSettings, ThemeColors, ThemeEntry};
 use gpui::{
-    AnyElement, Context, Focusable, FontWeight, Hsla, IntoElement, MouseButton, ParentElement, SharedString, Styled, Window, div,
+    AnyElement, Context, Entity, Focusable, FontWeight, Hsla, IntoElement, MouseButton, ParentElement, SharedString, Styled, Window, div,
     prelude::*, px, rgb,
 };
 
@@ -16,6 +16,7 @@ use crate::ui::controls::{
 use crate::ui::focus::{self, Ring, Scroller};
 use crate::ui::icons::Icon;
 use crate::ui::style::{Ui, radius, text};
+use crate::ui::text_input::TextInput;
 
 fn c(color: goatty_config::Color) -> Hsla {
     rgb(color.0).into()
@@ -527,7 +528,63 @@ impl SettingsWindow {
         let app = cx.global::<AppSettings>();
         let current = app.file.value.font.family.clone();
         let resolved = app.client.font.family.clone().unwrap_or_default();
-        let id: SharedString = "font".into();
+        self.font_dropdown(
+            ui,
+            "font",
+            "Font",
+            current,
+            resolved,
+            &self.font_filter,
+            self.show_all_fonts,
+            "Monospace",
+            looks_monospace,
+            |v, all| v.show_all_fonts = all,
+            |s, val| s.font.family = val,
+            window,
+            cx,
+        )
+    }
+
+    fn ui_font_picker(&self, ui: Ui, window: &Window, cx: &Context<'_, Self>) -> AnyElement {
+        let app = cx.global::<AppSettings>();
+        let current = app.file.value.font.ui_family.clone();
+        let resolved = app.ui_font.to_string();
+        self.font_dropdown(
+            ui,
+            "ui-font",
+            "Interface font",
+            current,
+            resolved,
+            &self.ui_font_filter,
+            self.show_all_ui_fonts,
+            "Proportional",
+            |f| !looks_monospace(f),
+            |v, all| v.show_all_ui_fonts = all,
+            |s, val| s.font.ui_family = val,
+            window,
+            cx,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn font_dropdown(
+        &self,
+        ui: Ui,
+        id: &'static str,
+        name: &'static str,
+        current: Option<String>,
+        resolved: String,
+        filter_input: &Entity<TextInput>,
+        show_all: bool,
+        kind_label: &'static str,
+        kind_filter: fn(&str) -> bool,
+        set_show_all: fn(&mut Self, bool),
+        set_font: fn(&mut ClientSettings, Option<String>),
+        window: &Window,
+        cx: &Context<'_, Self>,
+    ) -> AnyElement {
+        let app = cx.global::<AppSettings>();
+        let id: SharedString = id.into();
         let open = self.menu.as_ref() == Some(&id);
         let label = div()
             .flex()
@@ -541,20 +598,19 @@ impl SettingsWindow {
                     .child(SharedString::from(resolved.clone())),
             )
             .when(current.is_none(), |d| d.child(badge("Auto", Tone::Neutral, ui).h(px(18.)).px(px(6.))));
-        let filter = self.font_filter.clone();
+        let filter = filter_input.clone();
         let trigger =
-            select_trigger(ui, id.clone(), "Font", resolved.clone(), label, open).on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            select_trigger(ui, id.clone(), name, resolved.clone(), label, open).on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 window.focus(&filter.focus_handle(cx), cx);
             });
         let mut list =
             div().flex().flex_col().w(px(320.)).p(px(5.)).rounded(px(14.)).bg(ui.menu).border_1().border_color(ui.border).shadow_lg();
         if open {
-            let query = self.font_filter.read(cx).text().to_lowercase();
-            let show_all = self.show_all_fonts;
+            let query = filter_input.read(cx).text().to_lowercase();
             let fonts: Vec<String> = app
                 .fonts
                 .iter()
-                .filter(|f| show_all || looks_monospace(f))
+                .filter(|f| show_all || kind_filter(f) || current.as_deref() == Some(f.as_str()))
                 .filter(|f| query.is_empty() || f.to_lowercase().contains(&query))
                 .take(300)
                 .cloned()
@@ -562,10 +618,11 @@ impl SettingsWindow {
             let pick = |value: Option<String>| {
                 cx.listener(move |v, _, window, cx| {
                     let value = value.clone();
-                    AppSettings::update(cx, |s| s.font.family = value);
+                    AppSettings::update(cx, |s| set_font(s, value));
                     v.close_menu(window, cx);
                 })
             };
+            let item_prefix = id.clone();
             list = list
                 .child(
                     div()
@@ -574,37 +631,37 @@ impl SettingsWindow {
                         .gap(px(8.))
                         .p(px(6.))
                         .pb(px(8.))
-                        .child(search_field(ui, "font-search", &self.font_filter, window, cx))
+                        .child(search_field(ui, &format!("{id}-search"), filter_input, window, cx))
                         .child(
                             div()
                                 .flex()
                                 .gap(px(6.))
                                 .child(chip(
                                     ui,
-                                    "fonts-mono",
-                                    "Monospace",
+                                    SharedString::from(format!("{id}-kind")),
+                                    kind_label,
                                     None,
                                     !show_all,
-                                    self.act(cx, |v, cx| {
-                                        v.show_all_fonts = false;
+                                    self.act(cx, move |v, cx| {
+                                        set_show_all(v, false);
                                         cx.notify();
                                     }),
                                 ))
                                 .child(chip(
                                     ui,
-                                    "fonts-all",
+                                    SharedString::from(format!("{id}-all")),
                                     "All fonts",
                                     None,
                                     show_all,
-                                    self.act(cx, |v, cx| {
-                                        v.show_all_fonts = true;
+                                    self.act(cx, move |v, cx| {
+                                        set_show_all(v, true);
                                         cx.notify();
                                     }),
                                 )),
                         ),
                 )
                 .child(
-                    menu(ui, "font-list")
+                    menu(ui, SharedString::from(format!("{id}-list")))
                         .p_0()
                         .border_0()
                         .shadow_none()
@@ -614,16 +671,16 @@ impl SettingsWindow {
                         .child(
                             menu_item(
                                 ui,
-                                "font-auto",
+                                SharedString::from(format!("{id}-auto")),
                                 "Automatic".into(),
                                 Some("The first installed of goatty's list".into()),
                                 current.is_none(),
                             )
                             .on_click(pick(None)),
                         )
-                        .children(fonts.into_iter().enumerate().map(|(i, f)| {
+                        .children(fonts.into_iter().enumerate().map(move |(i, f)| {
                             let selected = current.as_deref() == Some(f.as_str());
-                            menu_item(ui, ("font", i), f.clone().into(), None, selected).on_click(pick(Some(f)))
+                            menu_item(ui, (item_prefix.clone(), i), f.clone().into(), None, selected).on_click(pick(Some(f)))
                         })),
                 );
         }
@@ -635,6 +692,11 @@ impl SettingsWindow {
         let (size, lh) = (s.font.size, s.font.line_height);
         section(ui, "Text")
             .child(row(ui, "Font").desc("Monospace fonts keep columns lined up").control(self.font_picker(ui, window, cx)))
+            .child(
+                row(ui, "Interface font")
+                    .desc("Used in tabs, settings, the command palette and dialogs")
+                    .control(self.ui_font_picker(ui, window, cx)),
+            )
             .child(row(ui, "Size").control(stepper(
                 "font-size",
                 format!("{size:.0} px"),

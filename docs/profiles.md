@@ -6,7 +6,7 @@ The profile is the source of truth for everything goatty manages. The settings w
 
 | Document | File (`$XDG_CONFIG_HOME/goatty/`) | Lives on | Contains |
 |---|---|---|---|
-| `ClientSettings` | `settings.json` | the machine running the window | font, theme, cursor, padding (one number, or `{top, right, bottom, left}`), background opacity/blur, renderer, keybindings, links, paste, selection (copy on select), workspace (on launch), ssh hosts (added hosts, plain SSH per host, list `~/.ssh/config`, open hosts in a new window or tab), debug |
+| `ClientSettings` | `settings.json` | the machine running the window | font (terminal and interface), theme, cursor, padding (one number, or `{top, right, bottom, left}`), background opacity/blur, renderer, keybindings, links, paste, selection (copy on select), workspace (on launch), ssh hosts (added hosts, plain SSH per host, list `~/.ssh/config`, open hosts in a new window or tab), debug |
 | `HostSettings` | `host.json` | each machine running a goattyd | shell program, managed zsh and its features, user dotfiles, prompt, history |
 
 The split follows where a setting takes effect. The window draws text, so fonts and colors are the client's. Shells run on the daemon's host, so their configuration belongs to that host. A remote host keeps its own `host.json`, and the settings window edits it through the protocol. Connecting to a different host shows that host's shell settings.
@@ -21,7 +21,7 @@ The split follows where a setting takes effect. The window draws text, so fonts 
 - **Validation.** `Document::validate` clamps ranges (font size 6–48, line height 1–2, padding 0–48, opacity 0.1–1, history 100–10M), reports unknown theme and action names, and drops empty values.
 - **Sparse save.** Only values that differ from the defaults are written, so improved defaults reach everyone who never changed that setting. The previous file goes to `backups/<name>-<unix time>.json` (newest 20 kept), and the new one replaces it atomically (temp file + rename). Unchanged content isn't rewritten.
 - **Environment overrides.** `GOATTY_*` variables apply on top for one run and are never saved. `ClientSettings::ENV_KEYS` / `HostSettings::ENV_KEYS` say which settings each one replaces, so the settings window can mark those rows.
-- **Checks against the machine.** Some values parse but can't work here: `ClientSettings::check_environment` reports a `font.family` that isn't installed (or no installed `font.fallbacks`) and a `links.file_opener` program that isn't on PATH; `ThemeLibrary::check` reports unknown `theme.name`, or `theme.light` *and* `theme.dark` when following the system (the unused one too). On the host, `HostService` adds a `shell.program` that isn't installed there and plugin settings that don't fit their schema. These are issues like any other; nothing is rewritten.
+- **Checks against the machine.** Some values parse but can't work here: `ClientSettings::check_environment` reports a `font.family` or `font.ui_family` that isn't installed (or no installed `font.fallbacks` / custom `font.ui_fallbacks`) and a `links.file_opener` program that isn't on PATH; `ThemeLibrary::check` reports unknown `theme.name`, or `theme.light` *and* `theme.dark` when following the system (the unused one too). On the host, `HostService` adds a `shell.program` that isn't installed there and plugin settings that don't fit their schema. These are issues like any other; nothing is rewritten.
 
 ### Where problems show up
 
@@ -72,7 +72,7 @@ Settings travel as JSON documents rather than typed structs, so a schema change 
 
 ## The app
 
-- `settings::AppSettings` (GPUI global) holds the loaded file, the effective value (file + env, with the font family resolved against the installed fonts), the installed font list and problems. `AppSettings::update` edits, validates, saves and replaces the global. Every view observes the global, so font, size, line height, padding, renderer, cursor shape/blink and theme apply live. The file is polled every 500 ms, so edits in an editor apply live too.
+- `settings::AppSettings` (GPUI global) holds the loaded file, the effective value (file + env, with the font families resolved against the installed fonts), the installed font list and problems. `AppSettings::update` edits, validates, saves and replaces the global. Every view observes the global, so terminal and interface font, size, line height, padding, renderer, cursor shape/blink and theme apply live. The file is polled every 500 ms, so edits in an editor apply live too.
 - Keybindings: `goatty_config::keys` holds the action table and defaults. `actions::apply_keybindings` rebuilds every binding with `KeyBinding::load`, so an invalid keystroke is reported instead of panicking.
 - Keystrokes are stored canonically (`keys::canonical_keystroke`): lowercase, modifiers ordered `ctrl-alt-shift-super-fn`, aliases like `plus` resolved, and no `shift` in front of a symbol or digit. GPUI on Linux names a symbol key by the character it types and never reports Shift with it (Ctrl+Shift+= is `ctrl-+`, Ctrl+Shift with the German + key is `ctrl-*`), so `ctrl-shift-+` could never fire. Loading rewrites old spellings and drops overrides that repeat a default.
 - Theme: `ThemeSettings { name, bold_is_bright, overrides }` resolves to `ThemeColors`. The terminal palette is swappable at runtime (`Terminal::set_palette`), and goatty's own UI colors derive from it (`ui::style::Ui`).
@@ -84,7 +84,7 @@ Settings travel as JSON documents rather than typed structs, so a schema change 
 
 | Page | Edits | Applies |
 |---|---|---|
-| Appearance | live preview; theme gallery (one theme, or light + dark following the desktop), import, color editor (folded); font (searchable picker, monospace or all), size, line height, ligatures, bold-is-bright; cursor shape (visual) and blink; padding (all sides or each side), background opacity (+ blur) | live, saved immediately |
+| Appearance | live preview; theme gallery (one theme, or light + dark following the desktop), import, color editor (folded); font and interface font (searchable pickers, monospace/proportional or all), size, line height, ligatures, bold-is-bright; cursor shape (visual) and blink; padding (all sides or each side), background opacity (+ blur) | live, saved immediately |
 | Terminal | how links open, file opener command, copy on select (primary selection / clipboard / off), what a middle click pastes, when to ask before pasting | live |
 | Workspace | what a new window shows, tab style (visual), tab bar, program icons, fading inactive panes, asking before closing a running program | live / next launch |
 | Shortcuts | a table of every action: grouped or sorted by name or keys, search by name or keys (typed, or pressed with the keyboard button), filters for changed and unbound; per action: keycaps (× removes), + records a keystroke, reset; warnings when a recorded key took over another action's key, when a key you added is one the shell uses, and when a keystroke doesn't parse | live |

@@ -17,6 +17,7 @@
 //! | Variable               | Setting                                   |
 //! |------------------------|-------------------------------------------|
 //! | `GOATTY_FONT`          | [`FontSettings::family`]                  |
+//! | `GOATTY_UI_FONT`       | [`FontSettings::ui_family`]               |
 //! | `GOATTY_FONT_SIZE`     | [`FontSettings::size`]                    |
 //! | `GOATTY_RENDER`        | [`TerminalSettings::renderer`] (`shaped`/`glyphs`) |
 //! | `GOATTY_THEME`         | [`ThemeSettings::name`]                   |

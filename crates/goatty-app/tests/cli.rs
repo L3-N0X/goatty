@@ -14,6 +14,8 @@ fn goatty(home: &Path, args: &[&str]) -> Output {
         .env_remove("WAYLAND_DISPLAY")
         .env_remove("DISPLAY")
         .env_remove("GOATTY_THEME")
+        .env_remove("GOATTY_FONT")
+        .env_remove("GOATTY_UI_FONT")
         .env_remove("GOATTY_FONT_SIZE")
         .env("GOATTY_SOCKET", home.join("none.sock"))
         .stdin(Stdio::null())
@@ -42,12 +44,20 @@ fn settings_set_show_validate() {
     assert!(out(&ok(goatty(home, &["settings", "path"]))).contains(&file.display().to_string()));
 
     ok(goatty(home, &["settings", "set", "font.size", "16"]));
+    ok(goatty(home, &["settings", "set", "font.ui_family", "Cantarell"]));
     ok(goatty(home, &["settings", "set", "theme.overrides.accent", "#98c379"]));
     ok(goatty(home, &["settings", "set", "keybindings.ctrl-k", "paste"]));
     assert_eq!(out(&ok(goatty(home, &["settings", "show", "font.size"]))).trim(), "16.0");
+    assert_eq!(out(&ok(goatty(home, &["settings", "show", "font.ui_family"]))).trim(), "\"Cantarell\"");
     assert_eq!(out(&ok(goatty(home, &["settings", "show", "theme.overrides.accent"]))).trim(), "\"#98c379\"");
     let stored = out(&ok(goatty(home, &["settings", "show"])));
-    assert!(stored.contains("\"size\": 16.0") && stored.contains("\"#98c379\"") && stored.contains("ctrl-k"), "{stored}");
+    assert!(
+        stored.contains("\"size\": 16.0")
+            && stored.contains("\"ui_family\": \"Cantarell\"")
+            && stored.contains("\"#98c379\"")
+            && stored.contains("ctrl-k"),
+        "{stored}"
+    );
     assert!(!goatty(home, &["settings", "set", "font.size", "huge"]).status.success());
     assert!(!goatty(home, &["settings", "set", "keybindings.ctrl-j", "explode"]).status.success());
     ok(goatty(home, &["settings", "validate"]));
