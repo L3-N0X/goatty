@@ -35,6 +35,12 @@ pub struct FontSettings {
     pub family: Option<String>,
     /// Preferred monospace families, first installed one wins.
     pub fallbacks: Vec<String>,
+    /// Explicit family for goatty's own windows (tabs, settings, command
+    /// palette, dialogs). `None`: the first installed entry of `ui_fallbacks`.
+    pub ui_family: Option<String>,
+    /// Preferred proportional families for goatty's own windows, first
+    /// installed one wins.
+    pub ui_fallbacks: Vec<String>,
     /// Size in logical pixels.
     pub size: f32,
     /// Line height as a multiple of the font size.
@@ -55,7 +61,14 @@ impl Default for FontSettings {
             "Noto Sans Mono",
             "Liberation Mono",
         ];
-        Self { family: None, fallbacks: fallbacks.map(String::from).to_vec(), size: 14.0, line_height: 1.25 }
+        Self {
+            family: None,
+            fallbacks: fallbacks.map(String::from).to_vec(),
+            ui_family: None,
+            ui_fallbacks: Self::DEFAULT_UI_FALLBACKS.iter().map(|s| (*s).to_string()).collect(),
+            size: 14.0,
+            line_height: 1.25,
+        }
     }
 }
 
@@ -69,6 +82,10 @@ impl FontSettings {
     /// `assets/fonts`): Nerd Font icons work without installing anything.
     pub const BUNDLED: &str = "JetBrainsMono Nerd Font";
 
+    /// Default proportional families for goatty's own windows.
+    pub const DEFAULT_UI_FALLBACKS: &'static [&'static str] =
+        &["Inter", "Cantarell", "Noto Sans", "Ubuntu", "Open Sans", "DejaVu Sans", "Liberation Sans"];
+
     /// The family to use, given the fonts installed on the system (without
     /// the bundled one):
     /// 1. the explicit `family`;
@@ -80,11 +97,29 @@ impl FontSettings {
     pub fn resolve_family(&self, system: &[String]) -> String {
         let installed = |f: &&String| system.iter().any(|i| i == *f);
         self.family
-            .clone()
+            .as_deref()
+            .map(str::trim)
             .filter(|f| !f.is_empty())
+            .map(String::from)
             .or_else(|| self.fallbacks.iter().filter(installed).find(|f| is_nerd_font(f)).cloned())
             .or_else(|| self.fallbacks.iter().find(|f| installed(f) || *f == Self::BUNDLED).cloned())
             .unwrap_or_else(|| Self::BUNDLED.into())
+    }
+
+    /// The proportional family for goatty's own windows, given the
+    /// installed fonts:
+    /// 1. the explicit `ui_family`;
+    /// 2. the first of `ui_fallbacks` that is installed;
+    /// 3. `"sans-serif"`.
+    pub fn resolve_ui_family(&self, fonts: &[String]) -> String {
+        let installed = |f: &&String| fonts.iter().any(|i| i == *f);
+        self.ui_family
+            .as_deref()
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+            .map(String::from)
+            .or_else(|| self.ui_fallbacks.iter().find(installed).cloned())
+            .unwrap_or_else(|| "sans-serif".into())
     }
 }
 
@@ -682,8 +717,11 @@ impl ClientSettings {
     /// Apply `GOATTY_*` overrides read through `var`. Unparsable values are
     /// ignored so a typo never prevents the terminal from starting.
     pub fn apply_env(&mut self, var: impl Fn(&str) -> Option<String>) {
-        if let Some(f) = var("GOATTY_FONT").filter(|f| !f.is_empty()) {
+        if let Some(f) = var("GOATTY_FONT").map(|f| f.trim().to_string()).filter(|f| !f.is_empty()) {
             self.font.family = Some(f);
+        }
+        if let Some(f) = var("GOATTY_UI_FONT").map(|f| f.trim().to_string()).filter(|f| !f.is_empty()) {
+            self.font.ui_family = Some(f);
         }
         if let Some(size) = var("GOATTY_FONT_SIZE").and_then(|s| s.parse::<f32>().ok()) {
             self.font.size = size.clamp(FontSettings::MIN_SIZE, FontSettings::MAX_SIZE);
@@ -712,6 +750,7 @@ impl ClientSettings {
                 "GOATTY_FONT_SIZE" => v.is_some_and(|s| s.parse::<f32>().is_ok()),
                 "GOATTY_RENDER" => matches!(v.as_deref(), Some("shaped" | "glyphs")),
                 "GOATTY_STATS" => v.is_some(),
+                "GOATTY_FONT" | "GOATTY_UI_FONT" => v.is_some_and(|s| !s.trim().is_empty()),
                 _ => v.is_some_and(|s| !s.is_empty()),
             }
         };
@@ -722,6 +761,7 @@ impl ClientSettings {
     /// the settings it replaces (the settings window marks their rows).
     pub const ENV_KEYS: &'static [(&'static str, &'static [&'static str])] = &[
         ("GOATTY_FONT", &["font.family"]),
+        ("GOATTY_UI_FONT", &["font.ui_family"]),
         ("GOATTY_FONT_SIZE", &["font.size"]),
         ("GOATTY_RENDER", &["terminal.renderer"]),
         ("GOATTY_THEME", &["theme.name", "theme.follow_system"]),
@@ -753,6 +793,20 @@ impl ClientSettings {
             }
             _ => {}
         }
+        let custom_ui_fallbacks = self.font.ui_fallbacks.iter().map(String::as_str).ne(FontSettings::DEFAULT_UI_FALLBACKS.iter().copied());
+        match self.font.ui_family.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
+            Some(f) if !GENERIC_FONTS.contains(&f) && !fonts.is_empty() && !installed(f) => {
+                issues.push(Issue::new("font.ui_family", format!("{f:?} isn't installed; the system picks another font")));
+            }
+            None if !fonts.is_empty()
+                && !self.font.ui_fallbacks.is_empty()
+                && custom_ui_fallbacks
+                && !self.font.ui_fallbacks.iter().any(|f| fallback_installed(f)) =>
+            {
+                issues.push(Issue::new("font.ui_fallbacks", "none of these fonts is installed; using sans-serif"));
+            }
+            _ => {}
+        }
         if let Some(program) = self.links.file_opener.as_deref().and_then(split_words).and_then(|w| w.into_iter().next())
             && !has_program(&program)
         {
@@ -777,8 +831,15 @@ mod tests {
 
     #[test]
     fn env_overrides() {
-        let s = with(&[("GOATTY_FONT", "Iosevka"), ("GOATTY_FONT_SIZE", "16"), ("GOATTY_RENDER", "shaped"), ("GOATTY_STATS", "1")]);
+        let s = with(&[
+            ("GOATTY_FONT", "Iosevka"),
+            ("GOATTY_UI_FONT", "Cantarell"),
+            ("GOATTY_FONT_SIZE", "16"),
+            ("GOATTY_RENDER", "shaped"),
+            ("GOATTY_STATS", "1"),
+        ]);
         assert_eq!(s.font.family.as_deref(), Some("Iosevka"));
+        assert_eq!(s.font.ui_family.as_deref(), Some("Cantarell"));
         assert_eq!(s.font.size, 16.0);
         assert_eq!(s.terminal.renderer, Renderer::Shaped);
         assert!(s.debug.stats);
@@ -788,7 +849,7 @@ mod tests {
 
     #[test]
     fn bad_env_values_keep_defaults() {
-        let s = with(&[("GOATTY_FONT_SIZE", "huge"), ("GOATTY_RENDER", "fancy"), ("GOATTY_FONT", "")]);
+        let s = with(&[("GOATTY_FONT_SIZE", "huge"), ("GOATTY_RENDER", "fancy"), ("GOATTY_FONT", ""), ("GOATTY_UI_FONT", "  ")]);
         assert_eq!(s, ClientSettings::default());
         assert_eq!(with(&[("GOATTY_FONT_SIZE", "500")]).font.size, FontSettings::MAX_SIZE);
     }
@@ -816,9 +877,15 @@ mod tests {
         let plain = FontSettings { fallbacks: system(&["Fira Code", "DejaVu Sans Mono"]), ..f.clone() };
         assert_eq!(plain.resolve_family(&system(&["DejaVu Sans Mono", "Fira Code"])), "Fira Code");
         assert_eq!(plain.resolve_family(&system(&["Hack"])), FontSettings::BUNDLED);
-        let explicit = FontSettings { family: Some("Iosevka".into()), ..f };
+        let explicit = FontSettings { family: Some("Iosevka".into()), ..f.clone() };
         assert_eq!(explicit.resolve_family(&[]), "Iosevka");
         assert!(is_nerd_font("Hack NF") && is_nerd_font("JetBrainsMono Nerd Font Mono") && !is_nerd_font("Fira Code"));
+
+        // UI font: explicit family, then first installed fallback, then sans-serif.
+        assert_eq!(f.resolve_ui_family(&[]), "sans-serif");
+        assert_eq!(f.resolve_ui_family(&system(&["Noto Sans", "Inter"])), "Inter");
+        let ui_explicit = FontSettings { ui_family: Some("Atkinson Hyperlegible".into()), ..f };
+        assert_eq!(ui_explicit.resolve_ui_family(&[]), "Atkinson Hyperlegible");
     }
 
     #[test]
@@ -919,6 +986,14 @@ mod tests {
         assert_eq!(paths(&s, &ok), ["font.fallbacks"], "fallbacks are matched exactly, like the resolver does");
         s.font.fallbacks = vec!["Fira Code".into()];
         assert!(paths(&s, &ok).is_empty());
+
+        s.font.ui_family = Some("Nope Sans".into());
+        assert_eq!(paths(&s, &ok), ["font.ui_family"]);
+        s.font.ui_family = Some("sans-serif".into());
+        assert!(paths(&s, &ok).is_empty());
+        s.font.ui_family = None;
+        s.font.ui_fallbacks = vec!["Nope Sans".into()];
+        assert_eq!(paths(&s, &ok), ["font.ui_fallbacks"]);
 
         let mut s = ClientSettings::default();
         s.links.file_opener = Some("'my editor' --goto {path}".into());

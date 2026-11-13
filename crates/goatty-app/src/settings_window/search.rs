@@ -55,6 +55,8 @@ pub const INDEX: &[Entry] = &[
     ]),
     e(Page::Appearance, "Theme", "Customize colors", "palette color editor ansi background foreground cursor").keys(&["theme.overrides"]),
     e(Page::Appearance, "Text", "Font", "family typeface monospace nerd").keys(&["font.family", "font.fallbacks"]),
+    e(Page::Appearance, "Text", "Interface font", "ui gui window tabs settings dialog proportional sans")
+        .keys(&["font.ui_family", "font.ui_fallbacks"]),
     e(Page::Appearance, "Text", "Size", "font size zoom bigger smaller").keys(&["font.size"]),
     e(Page::Appearance, "Text", "Line height", "spacing leading").keys(&["font.line_height"]),
     e(Page::Appearance, "Text", "Ligatures", "renderer shaping").keys(&["terminal.renderer"]),
@@ -238,6 +240,7 @@ mod tests {
         assert!(labels("transparent").contains(&"Background opacity"));
         assert!(labels("cursor blink").contains(&"Blinking"));
         assert!(labels("starship").contains(&"Use my own starship.toml"));
+        assert!(labels("gui font").contains(&"Interface font"));
         assert!(labels("zzzz").is_empty());
     }
 
@@ -251,6 +254,7 @@ mod tests {
             }
         }
         assert_eq!(entry_for(false, "terminal.padding.top").map(|e| e.label), Some("Padding"));
+        assert_eq!(entry_for(false, "font.ui_family").map(|e| e.label), Some("Interface font"));
         assert_eq!(entry_for(true, "prompt.style").map(|e| (e.page, e.label)), Some((Page::Prompt, "Style")));
         assert_eq!(entry_for(false, "tabs.style").map(|e| (e.page, e.label)), Some((Page::Workspace, "Style")));
         assert!(entry_for(false, "keybindings.ctrl-k").is_none());
