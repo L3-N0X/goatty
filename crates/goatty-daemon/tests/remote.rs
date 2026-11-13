@@ -48,7 +48,7 @@ while [ $# -gt 0 ]; do
   case "$1" in --) shift; break;; -e|-o) shift 2;; -*) shift;; *) break;; esac
 done
 shift
-export HOME="{p}/home" XDG_RUNTIME_DIR="{p}/run" GOATTY_SOCKET="{p}/run/d.sock" GOATTY_SHELL=/bin/sh PATH=/usr/bin:/bin RUST_LOG=warn
+export HOME="{p}/home" XDG_RUNTIME_DIR="{p}/run" GOATTY_SOCKET="{p}/run/d.sock" GOATTY_SHELL=/bin/sh PATH=/usr/bin:/bin RUST_LOG=warn,rio_vt=error
 unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME
 exec sh -c "$*"
 "#
@@ -194,7 +194,7 @@ fn start_daemon(dir: &Path) -> (Child, PathBuf) {
     let child = Command::new(env!("CARGO_BIN_EXE_goattyd"))
         .env("GOATTY_SOCKET", &sock)
         .env("GOATTY_SHELL", "/bin/sh")
-        .env("RUST_LOG", "warn")
+        .env("RUST_LOG", "warn,rio_vt=error")
         .env("HOME", dir)
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_DATA_HOME")
@@ -278,7 +278,7 @@ fn daemon_takes_its_socket_from_systemd() {
         // The daemon's own path for its watchdog; the listener comes from fd 3.
         .env("GOATTY_SOCKET", &sock)
         .env("GOATTY_SHELL", "/bin/sh")
-        .env("RUST_LOG", "warn")
+        .env("RUST_LOG", "warn,rio_vt=error")
         .env("HOME", dir.path())
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_DATA_HOME")
