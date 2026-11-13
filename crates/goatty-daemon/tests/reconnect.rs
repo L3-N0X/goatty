@@ -8,10 +8,10 @@
 //!   works, including transparent reconnect + reattach,
 //! * a window's saved layout goes to exactly one later window.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -41,7 +41,7 @@ fn start_daemon() -> Daemon {
     let child = Command::new(env!("CARGO_BIN_EXE_goattyd"))
         .env("GOATTY_SOCKET", &sock)
         .env("GOATTY_SHELL", "/bin/sh")
-        .env("RUST_LOG", "warn")
+        .env("RUST_LOG", "warn,rio_vt=error")
         // Host settings and generations stay in the sandbox.
         .env("HOME", dir.path())
         .env_remove("XDG_CONFIG_HOME")
@@ -417,4 +417,40 @@ fn window_layouts_go_to_one_later_window() {
     drop(b);
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(c.claim_layout().unwrap(), None);
+}
+
+#[test]
+fn unhandled_osc_is_silenced_by_default() {
+    let dir = tempfile::Builder::new().prefix("goatty-osc-test-").tempdir().unwrap();
+    let sock = dir.path().join("d.sock");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_goattyd"))
+        .env("GOATTY_SOCKET", &sock)
+        .env("GOATTY_SHELL", "/bin/sh")
+        .env_remove("RUST_LOG")
+        .env("HOME", dir.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while UnixStream::connect(&sock).is_err() {
+        assert!(Instant::now() < deadline, "daemon did not start");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let mut c = connect(&sock);
+    let (id, mut consumed) = create(&mut c, StreamOpts::LOCAL);
+    let t = term();
+    send(&mut c, &ClientMsg::Input { session: id, data: b"printf '\\033]3008;start=1\\007OSC-DONE\\n'\r".to_vec() });
+    pump_until(&mut c, id, &t, &mut consumed, "OSC-DONE");
+    drop(c);
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut stderr = String::new();
+    child.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
+    assert!(stderr.contains("goattyd"), "expected info logs with RUST_LOG unset; stderr:\n{stderr}");
+    assert!(!stderr.contains("unhandled osc_dispatch"), "rio_vt warning should be silenced by default; stderr:\n{stderr}");
 }

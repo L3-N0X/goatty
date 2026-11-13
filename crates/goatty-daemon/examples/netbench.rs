@@ -67,7 +67,7 @@ impl Sink {
 }
 
 fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error")).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error,rio_vt=error")).init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flood_mb: u64 = std::env::var("FLOOD_MB").ok().and_then(|s| s.parse().ok()).unwrap_or(200);
 

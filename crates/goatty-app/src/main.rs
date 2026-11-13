@@ -54,9 +54,12 @@ fn main() -> Result<()> {
         Some(cli::Command::Theme(c)) => return commands::theme(c),
         None => {}
     }
-    // goatty's own crates at info; dependencies (wgpu, zbus, ...) only warn.
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,goatty=info,goatty_client=info,goatty_term=info"))
-        .init();
+    // goatty's own crates at info; dependencies (wgpu, zbus, ...) only warn, and
+    // rio_vt only logs errors so unhandled OSC sequences (e.g. systemd OSC 3008) stay quiet (#20).
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("warn,goatty=info,goatty_client=info,goatty_term=info,rio_vt=error"),
+    )
+    .init();
     let client = goatty_config::load_client().value;
     let on_launch = client.workspace.on_launch;
 
