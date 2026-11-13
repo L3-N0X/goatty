@@ -103,8 +103,8 @@ fn contrast_ratio(a: Color, b: Color) -> f32 {
     (hi + 0.05) / (lo + 0.05)
 }
 
-/// Derive `accent_text` from `accent` so it keeps readable contrast against
-/// `page`, `card`, and `accent_soft` without changing `accent` itself.
+/// Derive `accent_text` from an explicit `accent` so it keeps readable contrast
+/// against `page`, `card`, and `accent_soft` without changing `accent` itself.
 fn derive_accent_text(accent: Color, fg: Color, page: Color, card: Color, accent_soft: Color, dark: bool) -> Color {
     const MIN_CONTRAST: f32 = 3.0;
     let min_contrast = |c: Color| contrast_ratio(c, page).min(contrast_ratio(c, card)).min(contrast_ratio(c, accent_soft));
@@ -147,7 +147,13 @@ impl Ui {
         let (page, card) = if dark { (bg, mix(bg, fg, 0.055)) } else { (mix(bg, fg, 0.045), bg) };
         let card_c = card;
         let accent_soft_c = mix(page, accent, if dark { 0.2 } else { 0.16 });
-        let accent_text = derive_accent_text(accent, fg, page, card_c, accent_soft_c, dark);
+        let accent_text = if c.accent.is_some() {
+            derive_accent_text(accent, fg, page, card_c, accent_soft_c, dark)
+        } else if dark {
+            mix(accent, fg, 0.15)
+        } else {
+            mix(accent, Color(0), 0.12)
+        };
         Self {
             dark,
             bg: h(page),
@@ -217,6 +223,21 @@ mod tests {
             let actual = derive_accent_text(accent, c.foreground, page, card, accent_soft, dark);
             assert_eq!(actual, expected, "built-in theme {} should keep its existing accent_text", theme.id);
         }
+    }
+
+    #[test]
+    fn existing_themes_without_accent_keep_original_accent_text_even_with_low_contrast_ansi_blue() {
+        let mut dark_theme = goatty_config::find_theme("goatty-night").unwrap().colors;
+        dark_theme.accent = None;
+        dark_theme.ansi[4] = Color(0x000000);
+        let dark_ui = Ui::from_theme(&dark_theme);
+        assert_eq!(dark_ui.accent_text, h(mix(dark_theme.ansi[4], dark_theme.foreground, 0.15)));
+
+        let mut light_theme = goatty_config::find_theme("goatty-day").unwrap().colors;
+        light_theme.accent = None;
+        light_theme.ansi[4] = Color(0xffffff);
+        let light_ui = Ui::from_theme(&light_theme);
+        assert_eq!(light_ui.accent_text, h(mix(light_theme.ansi[4], Color(0), 0.12)));
     }
 
     #[test]
