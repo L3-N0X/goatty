@@ -336,6 +336,33 @@ fn integration_marks_prompts_and_reports_cwd() {
 }
 
 #[test]
+fn transient_prompt_shrinks_accepted_prompts() {
+    let Some(zsh) = zsh() else { return };
+    let sb = Sandbox::new(zsh);
+    let mut settings = HostSettings::default();
+    settings.prompt.transient = true;
+    settings.prompt.character.error = "✗".into();
+    let launch = sb.launch_with(settings, None);
+    let mut sh = PtyShell::start(&sb, &launch);
+    // Accepting a line redraws its prompt as the bold prompt character
+    // (marked as a prompt), colored by the status that prompt showed.
+    sh.pty.write(b"false\r").unwrap();
+    sh.wait_for(b"\x1b]133;A\x07\x1b[1m\x1b[32m\xe2\x9d\xaf");
+    sh.wait_for(b"\x1b]133;D;1\x07");
+    sh.pty.write(b"true\r").unwrap();
+    sh.wait_for("\x1b[31m✗".as_bytes());
+    sh.wait_for(b"\x1b]133;D;0\x07");
+    // The next prompt is the full one again (it shows the directory).
+    let n = sh.prompts() + 1;
+    sh.wait_for_prompts(n);
+    let out = sh.text();
+    let last = &out[out.rfind("\x1b]133;D;0").unwrap()..];
+    assert!(last.contains('~'), "the full prompt is back: {last:?}");
+    assert!(!out.contains("command not found") && !out.contains("no such"), "{out:?}");
+    let _ = sh.pty.write(b"exit\r");
+}
+
+#[test]
 fn dismissed_hint_stays_quiet() {
     let Some(zsh) = zsh() else { return };
     let sb = Sandbox::new(zsh);

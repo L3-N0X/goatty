@@ -170,8 +170,12 @@ fn take(id: &ElementId) -> Option<FocusHandle> {
             return Some(h);
         }
         let Some(h) = p.spare.pop() else {
-            p.want = p.want.max(SPARE) * 2;
-            p.starved = true;
+            // Once per frame: a page with hundreds of new controls would
+            // otherwise double it for each of them.
+            if !p.starved {
+                p.want = p.want.max(SPARE).saturating_mul(2);
+                p.starved = true;
+            }
             return None;
         };
         p.used.insert(id.clone(), h.clone());

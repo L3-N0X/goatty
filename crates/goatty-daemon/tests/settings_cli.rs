@@ -33,7 +33,10 @@ fn set_show_validate_unset() {
 
     let o = goattyd(home, &["settings", "path"]);
     assert_eq!(out(&o).trim(), file.display().to_string());
-    assert_eq!(out(&goattyd(home, &["settings", "show"])), "{\n  \"version\": 2\n}\n");
+    assert_eq!(
+        out(&goattyd(home, &["settings", "show"])),
+        format!("{{\n  \"version\": {}\n}}\n", <goatty_config::HostSettings as goatty_config::Document>::VERSION)
+    );
 
     let o = goattyd(home, &["settings", "set", "history.size", "5000"]);
     assert!(o.status.success(), "{}", err(&o));
@@ -41,9 +44,9 @@ fn set_show_validate_unset() {
     assert!(std::fs::read_to_string(&file).unwrap().contains("5000"));
     assert!(home.join(".local/share/goatty/current/zsh/settings.zsh").is_file());
 
-    let o = goattyd(home, &["settings", "set", "prompt.style", "minimal"]);
+    let o = goattyd(home, &["settings", "set", "prompt.style", "rainbow"]);
     assert!(o.status.success(), "{}", err(&o));
-    assert_eq!(out(&goattyd(home, &["settings", "show", "prompt.style"])).trim(), "\"minimal\"");
+    assert_eq!(out(&goattyd(home, &["settings", "show", "prompt.style"])).trim(), "\"rainbow\"");
     assert!(out(&goattyd(home, &["settings", "show", "--all"])).contains("\"duration_threshold_ms\": 2000"));
 
     for (key, value) in [("history.size", "lots"), ("prompt.style", "fancy"), ("history.nope", "1")] {

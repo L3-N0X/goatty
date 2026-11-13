@@ -537,42 +537,39 @@ impl Welcome {
         }
         if let Some(h) = &self.host {
             let style = h.prompt.style;
-            let card = |s: PromptStyle, label: &'static str, sample: Vec<(&'static str, usize)>| {
-                let selected = style == s;
-                let colors = cx.global::<AppSettings>().colors;
+            let colors = cx.global::<AppSettings>().colors;
+            let font = crate::fonts::terminal(&crate_mono(cx));
+            let card = |s: PromptStyle| {
+                let mut sample = goatty_config::PromptSettings {
+                    style: s,
+                    two_line: false,
+                    show: goatty_config::prompt::ModuleSet::Essential,
+                    modules: Default::default(),
+                    duration_threshold_ms: 0,
+                    ..h.prompt.clone()
+                };
+                sample.directory.truncation_length = 1;
+                let preview = crate::ui::prompt_preview::Preview { p: &sample, theme: &colors, starship: true, line_height: 20. };
                 let line = div()
                     .h(px(64.))
-                    .px(px(14.))
+                    .px(px(12.))
                     .flex()
-                    .items_center()
+                    .flex_col()
+                    .justify_center()
+                    .overflow_hidden()
                     .bg(gpui::Hsla::from(rgb(colors.background.0)))
-                    .font_family(crate_mono(cx))
-                    .text_size(px(13.))
-                    .children(sample.into_iter().map(|(t, i)| {
-                        let c = if i == 99 { colors.foreground } else { colors.ansi[i] };
-                        div().text_color(gpui::Hsla::from(rgb(c.0))).child(t)
-                    }));
-                choice(ui, SharedString::from(format!("prompt-{label}")), label, selected, line)
+                    .font(font.clone())
+                    .text_size(px(12.))
+                    .children(preview.prompt(crate::ui::prompt_preview::Moment::Fresh, div()));
+                choice(ui, SharedString::from(format!("prompt-{}", s.label())), s.label(), style == s, line)
+                    .min_w(px(150.))
                     .on_click(cx.listener(move |v: &mut Self, _: &gpui::ClickEvent, _, cx| v.set_prompt(s, cx)))
             };
-            let mut sec = settings_section(ui, "Prompt").desc("Rich shows icons, minimal plain characters");
+            let mut sec = settings_section(ui, "Prompt").desc("Pick a look: there's more under Settings → Prompt");
             if let Some(e) = &self.prompt_error {
                 sec = sec.footer(format!("Couldn't change it: {e}"));
             }
-            page = page.child(
-                sec.child(
-                    div()
-                        .flex()
-                        .gap(px(12.))
-                        .p(px(14.))
-                        .child(card(
-                            PromptStyle::Rich,
-                            "With icons",
-                            vec![("~/projects", 6), (" on ", 99), ("\u{e0a0} main", 5), (" ❯", 2)],
-                        ))
-                        .child(card(PromptStyle::Minimal, "Plain", vec![("~/projects", 6), (" main", 5), (" ❯", 2)])),
-                ),
-            );
+            page = page.child(sec.child(div().flex().flex_wrap().gap(px(12.)).p(px(14.)).children(PromptStyle::ALL.map(card))));
         }
         page
     }

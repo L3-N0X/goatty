@@ -78,7 +78,10 @@ XDG variables are respected. History stays in the file plain zsh would use (`${Z
 | `shell.zsh.user_env` (`.zshenv`, `.zprofile`) | on | |
 | `shell.zsh.user_rc` (`.zshrc`) | off | `GOATTY_ZSH_USER_RC=0/1` |
 | `shell.zsh.integration` | on | |
-| `prompt.style` (`rich`/`minimal`), `prompt.two_line`, `prompt.newline_before`, `prompt.duration_threshold_ms` (2000; 0 = never) | rich, on, off, 2000 | |
+| `prompt.style` (`rich`/`lean`/`classic`/`rainbow`), `prompt.symbols` (`nerd`/`emoji`/`text`/`none`), `prompt.show` (`all`/`essential`) | rich, nerd, all | |
+| `prompt.two_line`, `prompt.newline_before`, `prompt.transient`, `prompt.duration_threshold_ms` (0 = never) | on, off, off, 2000 | |
+| `prompt.separator`, `prompt.heads`, `prompt.tails` (Classic/Rainbow), `prompt.frame`, `prompt.connection` (two lines) | angled, sharp, flat, none, none | |
+| `prompt.directory.*`, `prompt.character.*`, `prompt.colors.*`, `prompt.modules.<module>.{enabled, side, symbol, color}` | see below | |
 | `history.size` (100 000), `history.ignore_duplicates`, `history.ignore_space`, `history.share_between_sessions` | 100 000, on, on, off | |
 | `plugins.<id>.enabled` for `autosuggestions`, `syntax-highlighting`, `starship`, `atuin`, `fzf` | on | |
 | `plugins.autosuggestions.settings.{strategy, max_length}` | `history-completion`, 80 | |
@@ -88,7 +91,20 @@ XDG variables are respected. History stays in the file plain zsh would use (`${Z
 
 Each built-in plugin has its own page under Plugins with all its settings; Prompt and History also show the Starship and Atuin switches. `host.json` version 1 had the switches as `shell.zsh.{autosuggestions, syntax_highlighting, fzf}`, `prompt.starship`, `history.atuin` and the options as `prompt.prefer_user_config`, `history.atuin_up_arrow`: loading one moves them to `plugins.*` (version 2; only keys the file had, so it stays sparse).
 
-`.zshrc` is off by default because most `.zshrc` files load their own prompt and plugins, which would fight goatty's. With it on, it runs after compinit and before goatty's plugins, so goatty's prompt still wins. Turn off the Starship plugin to keep your own prompt. The default `rich` prompt uses Nerd Font symbols; goatty draws them with its bundled JetBrainsMono Nerd Font whatever the terminal font is. The `minimal` style uses plain characters only, for a plainer look.
+`.zshrc` is off by default because most `.zshrc` files load their own prompt and plugins, which would fight goatty's. With it on, it runs after compinit and before goatty's plugins, so goatty's prompt still wins. Turn off the Starship plugin to keep your own prompt.
+
+### The prompt
+
+The `prompt` settings (`goatty_config::prompt`) cover about what `p10k configure` does, on top of Starship. The settings window's Prompt page edits them with a live preview.
+
+- **Style**: `rich` is Starship's own look ("on main", "via 🦀 v1.85"); `lean` is colored text without words; `classic` puts every segment on one bar (`colors.segment`, 236 by default) with thin `separator`s between segments; `rainbow` gives each segment its own background (the module's color) and text in `colors.segment_text`. In `classic` and `rainbow`, `heads` (the end pointing toward the input) and `tails` shape the segment ends: flat, sharp, round, slanted, blurred.
+- **Symbols** come from Starship's presets: `nerd` (`nerd-font-symbols`, drawn with goatty's bundled JetBrainsMono Nerd Font whatever the terminal font is), `emoji` (Starship's defaults), `text` (`plain-text-symbols`: any font), `none`.
+- **Layout**: `two_line` puts the input on its own line; then `frame` (`left`: `╭─`/`╰─`, `full`: also `─╮`/`─╯`) and `connection` (`dotted`/`solid`, between the left side and what's on the right) apply. `transient` redraws an accepted command's prompt as just the prompt character (`.zshrc`, after integration so it keeps the OSC 133 marks; `transient_rprompt` drops the right prompt).
+- **Modules**: every Starship module goatty knows (`goatty_config::prompt::MODULES`, from Starship 1.27's defaults and presets) can be switched (`show: essential` starts from directory, git and duration), put on the `right` (after a `$fill` on the first line with two lines, else `right_format`), and given its own `symbol` and `color` (text in lean/classic, background in rainbow; git's modules share the branch's segment). The directory always shows; the command duration's switch is `duration_threshold_ms`.
+- **Directory**: `truncation_length` (4; 0 = whole path), `truncate_to_repo`, `abbreviate` (keep cut folders as their first letters, like fish), `truncation_symbol`, `home_symbol`, `read_only`, `repo_root` (bold), `substitutions`.
+- **Character**: `success`/`error`/`vicmd` symbols ("" = `❯`/`❯`/`❮`, or `>`/`x`/`<` with text symbols) and `success_color`/`error_color`.
+
+Colors are Starship colors: the theme's 16 by name (`bright-blue`) or number, 16–255, or `#rrggbb`. `PromptSettings::layout` describes what goes where (modules, ends, separators, frame, fill); `goatty-shell/src/starship.rs` writes it as Starship format strings and the preview (`goatty-app/src/ui/prompt_preview.rs`) draws it with sample values. Separators between Classic segments survive modules that don't show because each sits in a conditional group with its segment, on the side away from an always-shown anchor (the directory, or the OS icon). `host.json` version 2's `minimal` style loads as `lean` with text symbols, essential modules and no branch symbol (version 3).
 
 Each plugin checks for its tool at shell startup and is skipped if the tool is missing. Binaries come from `$commands`, which sees the PATH after the user's `.zprofile` ran; zsh plugins come from their package's `system_paths` (distro/Homebrew/NixOS), then the managed copy. A system install always wins over a managed one.
 

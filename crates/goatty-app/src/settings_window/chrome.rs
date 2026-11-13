@@ -373,6 +373,9 @@ impl SettingsWindow {
 
     /// A sub-view's title and summary (a plugin, an install review), if one is open.
     fn sub_view_title(&self) -> Option<(SharedString, SharedString)> {
+        if self.page == Page::Prompt && self.prompt.modules_open {
+            return Some(("Prompt modules".into(), "What the prompt shows, and where".into()));
+        }
         if self.page != Page::Plugins {
             return None;
         }
@@ -390,7 +393,9 @@ impl SettingsWindow {
     }
 
     fn back(&mut self, cx: &mut Context<'_, Self>) {
-        if self.plugins.plan.take().is_none() {
+        if self.page == Page::Prompt {
+            self.close_prompt_modules(cx);
+        } else if self.plugins.plan.take().is_none() {
             self.plugins.detail = None;
         }
         self.menu = None;
@@ -561,10 +566,12 @@ impl SettingsWindow {
                 window.focus(&self.nav_focus, cx);
             } else if self.aliases_modal_open() {
                 self.close_alias_form(true, cx);
+            } else if self.prompt_modal_open() {
+                self.close_module_dialog(cx);
             } else if !self.search.read(cx).text().is_empty() {
                 self.search.update(cx, |i, cx| i.set_text("", cx));
                 window.focus(&self.focus, cx);
-            } else if self.plugins.plan.is_some() || self.plugins.detail.is_some() {
+            } else if self.plugins.plan.is_some() || self.plugins.detail.is_some() || self.prompt.modules_open {
                 self.back(cx);
             } else {
                 return;
@@ -592,7 +599,7 @@ impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let ui = Ui::get(cx);
         focus::begin(cx, window, &self.scroll, &self.menu_scroll);
-        if let Some(back) = self.aliases.restore.take() {
+        if let Some(back) = self.aliases.restore.take().or_else(|| self.prompt.restore.take()) {
             window.focus(&back, cx);
         }
         let focus_row = self.highlighted(cx);
@@ -611,7 +618,7 @@ impl Render for SettingsWindow {
                 Page::Shortcuts => self.shortcuts_page(ui, window, cx),
                 Page::Hosts => self.hosts_page(ui, cx),
                 Page::Shell => self.shell(ui, cx),
-                Page::Prompt => self.prompt(ui, cx),
+                Page::Prompt => self.prompt(ui, window, cx),
                 Page::History => self.history(ui, cx),
                 Page::Aliases => self.aliases_page(ui, window, cx),
                 Page::Plugins => self.plugins_page(ui, window, cx),
@@ -622,7 +629,7 @@ impl Render for SettingsWindow {
         };
         let bar = self.bottom_bar(ui, cx);
         focus::bar(bar.is_some().then_some(&self.bar_scroll));
-        let modal = self.alias_modal(ui, window, cx);
+        let modal = self.alias_modal(ui, window, cx).or_else(|| self.module_modal(ui, cx));
         let compact = f32::from(window.viewport_size().width) < RAIL_BELOW;
         let gutter = if compact { 24. } else { 40. };
         let nav = if compact {

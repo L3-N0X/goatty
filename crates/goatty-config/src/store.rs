@@ -606,8 +606,8 @@ mod tests {
         let l = set_key::<HostSettings>("", "history.size", "5000").unwrap();
         assert_eq!(l.value.history.size, 5000);
         let text = to_json(&l.value, &l.unknown);
-        let l = set_key::<HostSettings>(&text, "prompt.style", "minimal").unwrap();
-        assert_eq!(l.value.prompt.style, crate::PromptStyle::Minimal);
+        let l = set_key::<HostSettings>(&text, "prompt.style", "classic").unwrap();
+        assert_eq!(l.value.prompt.style, crate::PromptStyle::Classic);
         assert_eq!(l.value.history.size, 5000, "other values stay");
         let l = set_key::<HostSettings>(&to_json(&l.value, &[]), "shell.program", "/bin/zsh").unwrap();
         assert_eq!(l.value.shell.program.as_deref(), Some("/bin/zsh"));
@@ -620,7 +620,7 @@ mod tests {
 
         let l = unset_key::<HostSettings>(&to_json(&l.value, &[]), "history.size").unwrap();
         assert_eq!(l.value.history.size, HostSettings::default().history.size);
-        assert_eq!(get_key(&l.value, "prompt.style"), Some(Value::from("minimal")));
+        assert_eq!(get_key(&l.value, "prompt.style"), Some(Value::from("classic")));
         assert_eq!(get_key(&l.value, "prompt.nope"), None);
 
         let l = set_key::<ClientSettings>("", "keybindings.ctrl-k", "null").unwrap();

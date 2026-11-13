@@ -4,13 +4,13 @@
 //! The startup files themselves are static (`zsh/*.zsh` in this crate, so
 //! they can be read and syntax-checked as they are). Everything that
 //! depends on settings or paths goes into the generated `settings.zsh`
-//! (sourced first by `.zshenv`) and `starship.toml`. [`crate::generation`]
+//! (sourced first by `.zshenv`) and `starship.toml` ([`crate::starship`]). [`crate::generation`]
 //! turns the rendered files into an activated generation. See
 //! `docs/managed-zsh.md` for the startup sequence.
 
 use std::path::Path;
 
-use goatty_config::{HostSettings, PromptStyle};
+use goatty_config::HostSettings;
 use goatty_plugin::manifest::Load;
 
 use crate::builtins;
@@ -55,7 +55,7 @@ pub fn render(cfg: &ZshConfig<'_>) -> Vec<GeneratedFile> {
         GeneratedFile::new(".zprofile", ZPROFILE),
         GeneratedFile::new(".zshrc", ZSHRC),
         GeneratedFile::new("integration.zsh", INTEGRATION),
-        GeneratedFile::new("starship.toml", render_starship(cfg.settings)),
+        GeneratedFile::new("starship.toml", crate::starship::render(cfg.settings)),
         GeneratedFile::new("aliases.zsh", crate::aliases::render(cfg.settings)),
     ];
     files.extend(render_plugins(cfg));
@@ -154,6 +154,9 @@ fn render_settings(cfg: &ZshConfig<'_>) -> String {
     scalar("_goatty_user_rc", flag(s.shell.zsh.user_rc));
     scalar("_goatty_hist_size", &s.history.size.to_string());
     scalar("_goatty_prompt_two_line", flag(s.prompt.two_line));
+    scalar("_goatty_prompt_transient", flag(s.prompt.transient));
+    scalar("_goatty_transient_ok", &crate::starship::transient_prompt(&s.prompt, false));
+    scalar("_goatty_transient_err", &crate::starship::transient_prompt(&s.prompt, true));
 
     let h = &s.history;
     let mut hist = vec!["extended_history", "hist_expire_dups_first", "hist_reduce_blanks", "hist_verify"];
@@ -170,37 +173,6 @@ fn render_settings(cfg: &ZshConfig<'_>) -> String {
     let defaults: Vec<&str> =
         builtins::BUILTINS.iter().filter(|b| b.default_install && s.plugins.get(b.id).is_none_or(|c| c.enabled)).map(|b| b.id).collect();
     out.push_str(&format!("typeset -ga _goatty_setup_defaults=({})\n", defaults.join(" ")));
-    out
-}
-
-/// goatty's Starship config, from the `prompt` settings.
-fn render_starship(s: &HostSettings) -> String {
-    let p = &s.prompt;
-    let mut out = String::from(
-        "# goatty's Starship prompt, generated from the prompt settings in host.json.\n\
-         # Used when you have no ~/.config/starship.toml (or prompt.prefer_user_config is off).\n\
-         # Rewritten by goatty: to customise beyond the settings, copy it to ~/.config/starship.toml.\n\
-         \"$schema\" = \"https://starship.rs/config-schema.json\"\n\n",
-    );
-    if p.style == PromptStyle::Minimal {
-        // Plain characters only: renders with any monospace font.
-        out.push_str("format = \"$directory$git_branch$git_status$cmd_duration$line_break$character\"\n");
-    }
-    out.push_str(&format!("add_newline = {}\n", p.newline_before));
-    out.push_str("# Never let a slow module (e.g. a huge git repo) hold up the prompt for long.\ncommand_timeout = 500\n\n");
-    out.push_str("[directory]\ntruncation_length = 4\ntruncation_symbol = \"…/\"\n");
-    if p.style == PromptStyle::Minimal {
-        out.push_str("read_only = \" ro\"\n\n[git_branch]\nsymbol = \"\"\nformat = \"[$branch]($style) \"\n\n");
-        out.push_str("[git_status]\nformat = \"([$all_status$ahead_behind]($style) )\"\n");
-    }
-    out.push('\n');
-    if p.duration_threshold_ms == 0 {
-        out.push_str("[cmd_duration]\ndisabled = true\n\n");
-    } else {
-        out.push_str(&format!("[cmd_duration]\nmin_time = {}\nformat = \"took [$duration]($style) \"\n\n", p.duration_threshold_ms));
-    }
-    out.push_str(&format!("[line_break]\ndisabled = {}\n\n", !p.two_line));
-    out.push_str("[character]\nsuccess_symbol = \"[❯](bold green)\"\nerror_symbol = \"[❯](bold red)\"\n");
     out
 }
 
@@ -261,25 +233,5 @@ mod tests {
         assert!(get("plugins-last.zsh").contains("_goatty_src[syntax-highlighting]"));
         assert!(!get("plugins.zsh").contains("# ---"), "nothing in the normal slot");
         assert!(files.iter().any(|f| f.name == "plugins/starship/zsh/init.zsh"), "the shipped init file");
-    }
-
-    #[test]
-    fn starship_follows_prompt_settings() {
-        let mut s = HostSettings::default();
-        let rich = render_starship(&s);
-        assert!(rich.contains("add_newline = false"));
-        assert!(rich.contains("[line_break]\ndisabled = false"));
-        assert!(rich.contains("min_time = 2000"));
-        assert!(!rich.contains("format = \"$directory"));
-        s.prompt.style = PromptStyle::Minimal;
-        s.prompt.two_line = false;
-        s.prompt.duration_threshold_ms = 0;
-        s.prompt.newline_before = true;
-        let min = render_starship(&s);
-        assert!(min.starts_with("# goatty"));
-        assert!(min.contains("format = \"$directory$git_branch"));
-        assert!(min.contains("[line_break]\ndisabled = true"));
-        assert!(min.contains("[cmd_duration]\ndisabled = true"));
-        assert!(min.contains("add_newline = true"));
     }
 }
