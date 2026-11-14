@@ -242,7 +242,7 @@ impl Workspace {
         match initial {
             Initial::Ready { startup, spawner } => {
                 this.home = Some(spawner.clone());
-                crate::shell_setup::offer(spawner.host_link(), cx);
+                crate::shell_sync::on_connect(spawner.host_link(), false, cx);
                 match startup {
                     Startup::Session(session) => this.insert_pane(session, Placement::NewTab, spawner, window, cx),
                     Startup::Restore(r) => {
@@ -537,9 +537,9 @@ impl Workspace {
             ConnectEvent::Cancelled => self.remove_tab(index, window, cx),
             ConnectEvent::Ready => {
                 let Some((view, _)) = &self.tabs[index].connecting else { return };
-                let (ready, settings) = view.update(cx, |v, _| (v.take_ready(), v.take_open_settings()));
+                let (ready, settings, installed) = view.update(cx, |v, _| (v.take_ready(), v.take_open_settings(), v.take_installed()));
                 let Some((startup, spawner)) = ready else { return };
-                self.connected(index, startup, spawner, window, cx);
+                self.connected(index, startup, spawner, installed, window, cx);
                 if let Some(page) = settings {
                     crate::settings_window::open_at(cx, crate::settings_window::Page::from_name(&page));
                 }
@@ -549,12 +549,21 @@ impl Workspace {
 
     /// The connecting tab at `index` got its session: show it there (a
     /// restored layout replaces the tab with its tabs).
-    fn connected(&mut self, index: usize, startup: Startup, spawner: Spawner, window: &mut Window, cx: &mut Context<'_, Self>) {
+    fn connected(
+        &mut self,
+        index: usize,
+        startup: Startup,
+        spawner: Spawner,
+        installed: bool,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         if self.home.is_none() {
             self.home = Some(spawner.clone());
         }
-        // Missing shell tools there: offer them (once per host and run).
-        crate::shell_setup::offer(spawner.host_link(), cx);
+        // Another host: bring the shell setup there (asks, once per change
+        // made here); this computer: offer missing tools (once per run).
+        crate::shell_sync::on_connect(spawner.host_link(), installed, cx);
         let was_active = index == self.active;
         let show = match startup {
             Startup::Session(session) => {

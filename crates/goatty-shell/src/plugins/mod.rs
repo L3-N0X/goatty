@@ -156,6 +156,7 @@ impl Plugins<'_> {
                 fetched_unix: snap.as_ref().map(|x| x.fetched),
                 plugins: snap.as_ref().map_or(0, |x| x.index.plugins.len()),
                 error,
+                keys: s.keys.clone(),
             });
             snaps.extend(snap);
         }

@@ -49,10 +49,17 @@ pub fn export(client: &ClientSettings, host: &HostSettings) -> String {
     let mut root = Map::new();
     root.insert("goatty_profile".into(), Value::from(PROFILE_VERSION));
     root.insert("client".into(), section(&store::to_json(client, &[]), "client"));
-    root.insert("host".into(), section(&store::to_json(host, &[]), "host"));
+    root.insert("host".into(), shareable_host(host));
     let mut s = serde_json::to_string_pretty(&Value::Object(root)).expect("json");
     s.push('\n');
     s
+}
+
+/// The host settings as they travel to another machine (an export's
+/// `host` part, and what goatty copies to a host it connects to): non-default
+/// values only, without machine-specific ones like the shell's path.
+pub fn shareable_host(host: &HostSettings) -> Value {
+    section(&store::to_json(host, &[]), "host")
 }
 
 /// Client and host settings from a profile, each `None` when the profile
