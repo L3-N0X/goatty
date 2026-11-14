@@ -106,6 +106,9 @@ pub struct Ask {
 const PLAIN_NOTE: &str = "Plain SSH opens a normal ssh session in a local goatty session instead. Nothing is installed on the host, \
                           and goatty's shell setup, settings and plugins don't reach it there.";
 
+const SETUP_NOTE: &str = "Your shell setup comes along: this computer's prompt, aliases, plugins and their settings, and goatty's \
+                          tools, so the shell there feels like the one here (Settings → Hosts can turn that off).";
+
 fn mib(path: &std::path::Path) -> String {
     std::fs::metadata(path).map(|m| format!("{:.1} MiB", m.len() as f64 / (1024. * 1024.))).unwrap_or_else(|_| "? MiB".into())
 }
@@ -142,6 +145,7 @@ pub fn describe(problem: &RemoteProblem, find: impl Fn(&str) -> Option<Bundled>)
                             mib(&bundled.path)
                         ),
                     ];
+                    body.push(SETUP_NOTE.into());
                     if bundled.this_build {
                         body.push(
                             "This development build copies its own goattyd, which may not run on a host with an older C library. \
@@ -336,6 +340,10 @@ pub struct ConnectView {
     outdated: Option<Outdated>,
     /// The local daemon was restarted on the way (tell the user).
     restarted: Arc<AtomicBool>,
+    /// goattyd is being installed on the host (a fresh install, not an update).
+    installing: bool,
+    /// It was, and the connection works: the shell setup comes along.
+    installed: bool,
 }
 
 impl EventEmitter<ConnectEvent> for ConnectView {}
@@ -360,6 +368,8 @@ impl ConnectView {
             check_local: true,
             outdated: None,
             restarted: Arc::default(),
+            installing: false,
+            installed: false,
         };
         view.connect(window, cx);
         view
@@ -384,6 +394,13 @@ impl ConnectView {
     /// `--settings`, to open once connected.
     pub fn take_open_settings(&mut self) -> Option<String> {
         self.plan.open_settings.take()
+    }
+
+    /// goattyd was freshly installed on the host for this connection (then
+    /// the shell setup is synced without asking again: the install
+    /// question said it comes along).
+    pub fn take_installed(&mut self) -> bool {
+        std::mem::take(&mut self.installed)
     }
 
     /// The result after [`ConnectEvent::Ready`].
@@ -426,12 +443,14 @@ impl ConnectView {
                         Toast::success("Restarted goattyd").body("It was an older build and had no sessions.").key("goattyd-restarted"),
                     );
                 }
+                self.installed = std::mem::take(&mut self.installing);
                 self.ready = Some(ready);
                 cx.emit(ConnectEvent::Ready);
             }
             Err(e) => {
                 log::warn!("connecting to {}: {e:#}", self.plan.endpoint.label());
                 self.outdated = None;
+                self.installing = false;
                 let ask = if let Some(problem) = e.downcast_ref::<RemoteProblem>() {
                     describe(problem, remote::find_bundled)
                 } else if let Some(problem) = e.downcast_ref::<LocalProblem>() {
@@ -506,6 +525,7 @@ impl ConnectView {
                 let Some(target) = self.ssh_target() else { return };
                 let (endpoint, mode) = (self.plan.endpoint.clone(), self.plan.mode);
                 let restart = choice == Choice::Restart;
+                self.installing = choice == Choice::Install;
                 let label = if upload.is_some() {
                     format!("Installing goattyd on {}…", target.host)
                 } else {

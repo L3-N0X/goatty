@@ -19,6 +19,7 @@ mod session;
 mod settings;
 mod settings_window;
 mod shell_setup;
+mod shell_sync;
 mod terminal;
 mod toast;
 mod ui;

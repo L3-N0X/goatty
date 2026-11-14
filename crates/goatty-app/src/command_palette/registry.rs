@@ -253,6 +253,8 @@ pub fn builtins() -> Vec<Command> {
             .keywords(&["remote", "server", "hosts", "goattyd", "open"]),
         Command::action("shell.reload", "Shell", "Reload running shells", "reload_shells")
             .keywords(&["restart", "refresh", "zsh", "apply", "source"]),
+        Command::handler("shell.sync", "Shell", "Sync shell setup to this host", |_, cx| crate::shell_sync::sync_now(cx))
+            .keywords(&["copy", "mirror", "remote", "plugins", "aliases", "prompt", "dotfiles", "same"]),
         Command::action("terminal.copy", "Terminal", "Copy the selection", "copy").keywords(&["clipboard"]),
         Command::action("terminal.paste", "Terminal", "Paste", "paste").keywords(&["clipboard"]),
         Command::action("terminal.scroll_page_up", "Terminal", "Scroll back one screen", "scroll_page_up"),

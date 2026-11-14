@@ -3,13 +3,13 @@
 //! `~/.ssh/config` are client settings (`ssh` in `settings.json`), saved
 //! right away.
 
-use goatty_config::{OpenIn, SshHost, ssh_host_problem};
+use goatty_config::{OpenIn, SshHost, SyncMode, ssh_host_problem};
 use gpui::{
     AnyElement, App, Context, Entity, FontWeight, IntoElement, ParentElement, SharedString, Styled, Subscription, div, prelude::*, px,
 };
 
 use super::SettingsWindow;
-use super::kit::{self, card, divider, field, row, section};
+use super::kit::{self, card, divider, field, opt, row, section};
 use crate::hosts::{self, HostEntry, HostList};
 use crate::settings::AppSettings;
 use crate::ui::controls::{ButtonKind, Tone, banner, button_with, icon_button, segmented, toggle, tooltip};
@@ -65,7 +65,7 @@ impl SettingsWindow {
             return;
         }
         let name = (!name.is_empty() && name != host).then_some(name);
-        AppSettings::update(cx, |s| s.ssh.hosts.push(SshHost { host, name, plain: false }));
+        AppSettings::update(cx, |s| s.ssh.hosts.push(SshHost { host, name, ..Default::default() }));
         for input in [&self.hosts.host, &self.hosts.name] {
             input.update(cx, |i, cx| i.set_text("", cx));
         }
@@ -73,8 +73,39 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    fn host_row(&self, ui: Ui, e: &HostEntry) -> AnyElement {
+    /// The choices for bringing the shell setup to hosts; `default` adds
+    /// "As set above" for a host's own choice.
+    fn sync_options(default: Option<SyncMode>) -> Vec<kit::Opt<Option<SyncMode>>> {
+        let name = |m: SyncMode| match m {
+            SyncMode::Ask => "Ask",
+            SyncMode::Always => "Always",
+            SyncMode::Never => "Never",
+        };
+        let mut out = Vec::new();
+        if let Some(d) = default {
+            out.push(opt(None, format!("Default ({})", name(d))).desc("Whatever “Bring your shell setup” above says"));
+        }
+        out.push(opt(Some(SyncMode::Ask), "Ask").desc("When it differs from this computer's, once for each change made here"));
+        out.push(opt(Some(SyncMode::Always), "Always").desc("Copy it without asking whenever the setup here changed"));
+        out.push(opt(Some(SyncMode::Never), "Never").desc("Leave the host's shell setup alone; only offer missing tools"));
+        out
+    }
+
+    fn host_row(&self, ui: Ui, e: &HostEntry, cx: &Context<'_, Self>) -> AnyElement {
         let (host, discovered, plain) = (e.host.clone(), e.discovered, e.plain);
+        let ssh = &cx.global::<AppSettings>().file.value.ssh;
+        let own_sync = ssh.get(&e.host).and_then(|h| h.sync);
+        let sync_select = (!plain).then(|| {
+            let host = host.clone();
+            div().w(px(150.)).min_w(px(110.)).flex_shrink(1.).child(self.select(
+                &format!("host-sync-{}", hash(&e.host)),
+                &format!("Bring the shell setup to {}", e.label),
+                Self::sync_options(Some(ssh.sync)),
+                &own_sync,
+                cx,
+                move |v, _, cx| AppSettings::update(cx, |s| s.ssh.edit(&host, !discovered, |h| h.sync = v)),
+            ))
+        });
         let gid = SharedString::from(format!("host-row-{}", hash(&e.host)));
         let mut detail: Vec<String> = Vec::new();
         if e.label != e.host {
@@ -146,6 +177,7 @@ impl SettingsWindow {
                         )
                     }),
             )
+            .children(sync_select)
             .child(plain_toggle)
             .child(connect)
             .when(!discovered, |d| {
@@ -156,20 +188,20 @@ impl SettingsWindow {
             .into_any_element()
     }
 
-    fn host_list(&self, ui: Ui, entries: &[&HostEntry]) -> gpui::Div {
+    fn host_list(&self, ui: Ui, entries: &[&HostEntry], cx: &Context<'_, Self>) -> gpui::Div {
         let mut c = card(ui);
         for (i, e) in entries.iter().enumerate() {
             if i > 0 {
                 c = c.child(divider(ui));
             }
-            c = c.child(self.host_row(ui, e));
+            c = c.child(self.host_row(ui, e, cx));
         }
         c
     }
 
     pub(super) fn hosts_page(&self, ui: Ui, cx: &Context<'_, Self>) -> AnyElement {
         let settings = &cx.global::<AppSettings>().file.value.ssh;
-        let (discover, open_in) = (settings.discover, settings.open_in);
+        let (discover, open_in, sync) = (settings.discover, settings.open_in, settings.sync);
         let entries = hosts::current(cx);
         let (added, found): (Vec<&HostEntry>, Vec<&HostEntry>) = entries.iter().partition(|e| !e.discovered);
 
@@ -184,6 +216,23 @@ impl SettingsWindow {
             .footer(
                 "Ctrl+Shift+H lists your hosts and their sessions. goatty runs its session daemon on a host so shells survive \
                  disconnects; it asks before copying it there (to ~/.local/share/goatty, no sudo).",
+            );
+
+        let setup = section(ui, "Shell setup")
+            .child(row(ui, "Bring your shell setup").desc("To hosts goatty connects to, unless a host below says otherwise").control(
+                self.select("ssh-sync", "Bring your shell setup", Self::sync_options(None), &Some(sync), cx, |v, _, cx| {
+                    AppSettings::update(cx, |s| s.ssh.sync = v.unwrap_or_default())
+                }),
+            ))
+            .child(row(ui, "Sync the active tab's host now").desc("Compare it with this computer and copy what differs").control(
+                button_with("ssh-sync-now", Some(Icon::Refresh), "Sync now", ButtonKind::Normal, ui, |_, cx| {
+                    crate::shell_sync::sync_now(cx)
+                }),
+            ))
+            .footer(
+                "This computer's prompt, aliases, plugins with their settings, and goatty's tools go to the host, so its shell \
+                 feels like this one. Plugins come from the same signed registry at the same version (never downgraded); \
+                 nothing is uninstalled there, and the host keeps its own shell program.",
             );
 
         let form = card(ui)
@@ -204,7 +253,7 @@ impl SettingsWindow {
             .children(self.hosts.error.clone().map(|e| banner(ui, Tone::Danger, e, Vec::new())));
         let mut yours = section(ui, "Your hosts").plain().child(form);
         if !added.is_empty() {
-            yours = yours.child(self.host_list(ui, &added));
+            yours = yours.child(self.host_list(ui, &added, cx));
         }
 
         let mut config = section(ui, "From ~/.ssh/config").child(
@@ -219,10 +268,10 @@ impl SettingsWindow {
             config = if found.is_empty() {
                 config.child(kit::empty(ui, Icon::Server, "No hosts found", "~/.ssh/config has no Host entries without wildcards."))
             } else {
-                config.children(found.iter().map(|e| self.host_row(ui, e)))
+                config.children(found.iter().map(|e| self.host_row(ui, e, cx)))
             };
         }
-        div().flex().flex_col().gap(px(28.)).child(connecting).child(yours).child(config).into_any_element()
+        div().flex().flex_col().gap(px(28.)).child(connecting).child(setup).child(yours).child(config).into_any_element()
     }
 }
 

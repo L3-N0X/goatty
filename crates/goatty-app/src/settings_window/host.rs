@@ -61,6 +61,16 @@ impl HostLink {
         }
     }
 
+    /// Another host's name as goatty reaches it (the ssh destination, or
+    /// the `--via` command's label): what per-host choices and the shell
+    /// sync state are keyed by. `None` for this computer.
+    pub fn remote_key(&self) -> Option<String> {
+        match self {
+            HostLink::Daemon(c) if !c.endpoint().is_local() => Some(c.endpoint().label().to_owned()),
+            _ => None,
+        }
+    }
+
     /// "this computer" or `user@host`.
     pub fn label(&self) -> String {
         match self {
@@ -184,5 +194,27 @@ impl HostLink {
             HostLink::Daemon(c) => c.reload_shells()?,
             HostLink::Local(s) => u32::try_from(s.reload_shells()).unwrap_or(u32::MAX),
         })
+    }
+}
+
+impl goatty_shell::sync::Remote for HostLink {
+    fn plugin(&self, req: goatty_plugin::api::Request) -> Result<goatty_plugin::api::Reply> {
+        HostLink::plugin(self, req)
+    }
+
+    fn shell(&self, req: setup::Request) -> Result<setup::Reply> {
+        HostLink::shell(self, req)
+    }
+
+    fn settings_json(&self) -> Result<String> {
+        Ok(self.get()?.json)
+    }
+
+    fn apply(&self, json: String) -> Result<bool> {
+        let applied = self.set(json, true)?;
+        for issue in &applied.issues {
+            log::info!("host settings after the sync: {issue}");
+        }
+        Ok(applied.applied)
     }
 }

@@ -145,6 +145,10 @@ pub struct RegistryStatus {
     pub fetched_unix: Option<u64>,
     pub plugins: usize,
     pub error: Option<String>,
+    /// The public keys (hex) trusted to sign its index. Empty from a
+    /// goattyd that predates this field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<String>,
 }
 
 /// What installing a plugin will do, for the user to approve.

@@ -20,6 +20,7 @@
 //! * [`doctor`]: asks a real managed shell what it loaded,
 //! * [`service`]: host settings operations (goattyd's API, `goatty --local`),
 //! * [`setup`]: diagnostics and installing the built-in tools, for the GUI,
+//! * [`sync`]: what bringing this computer's shell setup to another host takes,
 //! * [`cmd`]: the `goattyd shell ...` commands.
 //!
 //! goatty never writes outside its own directories ([`dirs`]): no edits to
@@ -39,6 +40,7 @@ pub mod plugins;
 pub mod service;
 pub mod setup;
 pub mod starship;
+pub mod sync;
 pub mod zsh;
 
 pub use dirs::Dirs;

@@ -357,8 +357,8 @@ mod tests {
     fn added_hosts_and_discovered_ones_merge() {
         let mut s = ClientSettings::default();
         s.ssh.hosts = vec![
-            SshHost { host: "pi@10.0.0.5".into(), name: Some("Pi".into()), plain: false },
-            SshHost { host: "nas".into(), name: None, plain: true },
+            SshHost { host: "pi@10.0.0.5".into(), name: Some("Pi".into()), ..Default::default() },
+            SshHost { host: "nas".into(), name: None, plain: true, ..Default::default() },
         ];
         let found = vec![
             ConfigHost { alias: "nas".into(), hostname: Some("192.168.1.2".into()), user: Some("admin".into()) },

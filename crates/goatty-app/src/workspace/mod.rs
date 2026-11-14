@@ -242,7 +242,7 @@ impl Workspace {
         match initial {
             Initial::Ready { startup, spawner } => {
                 this.home = Some(spawner.clone());
-                crate::shell_setup::offer(spawner.host_link(), cx);
+                crate::shell_sync::on_connect(spawner.host_link(), false, cx);
                 match startup {
                     Startup::Session(session) => this.insert_pane(session, Placement::NewTab, spawner, window, cx),
                     Startup::Restore(r) => {
@@ -276,9 +276,11 @@ impl Workspace {
 
     fn window_activated(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         cx.set_global(crate::hosts::LastWorkspace(window.window_handle()));
-        if let Some(host) = self.active_tab().and_then(|t| t.host.as_ref()) {
-            crate::settings_window::set_host_link(cx, Some(host.host_link()));
-        }
+        // A connecting tab has no host yet: clear the link rather than keep
+        // the previous tab's, so "sync", "reload shells" and the settings
+        // window never act on a host the user isn't looking at.
+        let link = self.active_tab().and_then(|t| t.host.as_ref()).map(Spawner::host_link);
+        crate::settings_window::set_host_link(cx, link);
     }
 
     /// The layout entry for `conn` (a new one for a host the window had no tabs on).
@@ -483,10 +485,9 @@ impl Workspace {
         self.active = index;
         self.focus_active(window, cx);
         self.update_window_title(window, cx);
-        if window.is_window_active()
-            && let Some(host) = &self.tabs[index].host
-        {
-            crate::settings_window::set_host_link(cx, Some(host.host_link()));
+        if window.is_window_active() {
+            // None while the tab connects (see `window_activated`).
+            crate::settings_window::set_host_link(cx, self.tabs[index].host.as_ref().map(Spawner::host_link));
         }
         self.save_layout(cx);
         cx.notify();
@@ -537,9 +538,9 @@ impl Workspace {
             ConnectEvent::Cancelled => self.remove_tab(index, window, cx),
             ConnectEvent::Ready => {
                 let Some((view, _)) = &self.tabs[index].connecting else { return };
-                let (ready, settings) = view.update(cx, |v, _| (v.take_ready(), v.take_open_settings()));
+                let (ready, settings, installed) = view.update(cx, |v, _| (v.take_ready(), v.take_open_settings(), v.take_installed()));
                 let Some((startup, spawner)) = ready else { return };
-                self.connected(index, startup, spawner, window, cx);
+                self.connected(index, startup, spawner, installed, window, cx);
                 if let Some(page) = settings {
                     crate::settings_window::open_at(cx, crate::settings_window::Page::from_name(&page));
                 }
@@ -549,12 +550,21 @@ impl Workspace {
 
     /// The connecting tab at `index` got its session: show it there (a
     /// restored layout replaces the tab with its tabs).
-    fn connected(&mut self, index: usize, startup: Startup, spawner: Spawner, window: &mut Window, cx: &mut Context<'_, Self>) {
+    fn connected(
+        &mut self,
+        index: usize,
+        startup: Startup,
+        spawner: Spawner,
+        installed: bool,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         if self.home.is_none() {
             self.home = Some(spawner.clone());
         }
-        // Missing shell tools there: offer them (once per host and run).
-        crate::shell_setup::offer(spawner.host_link(), cx);
+        // Another host: bring the shell setup there (asks, once per change
+        // made here); this computer: offer missing tools (once per run).
+        crate::shell_sync::on_connect(spawner.host_link(), installed, cx);
         let was_active = index == self.active;
         let show = match startup {
             Startup::Session(session) => {
