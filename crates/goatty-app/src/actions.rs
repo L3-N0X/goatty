@@ -66,6 +66,13 @@ actions!(
         SelectTab8,
         SelectLastTab,
         RenameTab,
+        /// A new tab on the same host, in the same directory.
+        DuplicateTab,
+        CloseOtherTabs,
+        /// Fold the vertical tab sidebar into a rail of icons, or unfold it.
+        ToggleTabSidebar,
+        /// Switch `tabs.style` between vertical and horizontal.
+        ToggleVerticalTabs,
         SplitRight,
         SplitDown,
         FocusPaneLeft,
@@ -114,6 +121,10 @@ pub fn action_by_name(name: &str) -> Option<Box<dyn Action>> {
         "select_tab_8" => Box::new(SelectTab8),
         "select_last_tab" => Box::new(SelectLastTab),
         "rename_tab" => Box::new(RenameTab),
+        "duplicate_tab" => Box::new(DuplicateTab),
+        "close_other_tabs" => Box::new(CloseOtherTabs),
+        "toggle_tab_sidebar" => Box::new(ToggleTabSidebar),
+        "toggle_vertical_tabs" => Box::new(ToggleVerticalTabs),
         "split_right" => Box::new(SplitRight),
         "split_down" => Box::new(SplitDown),
         "focus_pane_left" => Box::new(FocusPaneLeft),

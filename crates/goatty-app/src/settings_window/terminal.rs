@@ -1,7 +1,9 @@
 //! The Terminal page (links, selection, pasting) and the Workspace page
 //! (startup, tabs, panes).
 
-use goatty_config::{CopyOnSelect, LinkClick, MiddleClick, OnLaunch, PaneSettings, PasteConfirm, TabActivity, TabBarShow, TabStyle};
+use goatty_config::{
+    CopyOnSelect, LinkClick, MiddleClick, OnLaunch, PaneSettings, PasteConfirm, TabActivity, TabBarShow, TabSettings, TabStyle,
+};
 use gpui::{AnyElement, Context, FontWeight, IntoElement, ParentElement, SharedString, Styled, div, prelude::*, px};
 
 use super::appearance::opts;
@@ -135,6 +137,37 @@ impl SettingsWindow {
         );
         let modern = div().h(px(60.)).flex().flex_col().child(modern_bar).child(screen());
         let compact = div().h(px(60.)).flex().flex_col().child(compact_bar).child(screen());
+        // A sidebar of rows, the active one raised, beside a rounded card.
+        let side_row = |name: &'static str, on: bool| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .h(px(15.))
+                .px(px(4.))
+                .rounded(px(4.))
+                .when(on, |d| d.bg(bg))
+                .text_size(px(9.))
+                .text_color(if on { fg } else { fg.opacity(0.6) })
+                .child(Icon::Terminal.svg().size(px(8.)).text_color(if on { ui.accent } else { fg.opacity(0.5) }))
+                .child(name)
+        };
+        let vertical = div()
+            .h(px(60.))
+            .flex()
+            .bg(bar)
+            .child(
+                div()
+                    .w(px(56.))
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .p(px(4.))
+                    .child(side_row("zsh", true))
+                    .child(side_row("nvim", false)),
+            )
+            .child(div().flex_1().flex().py(px(4.)).pr(px(4.)).child(screen().rounded(px(5.)).pt(px(5.))));
         div()
             .flex()
             .gap(px(10.))
@@ -146,11 +179,17 @@ impl SettingsWindow {
                 choice_card(ui, "tabs-compact", "Compact", s.tabs.style == TabStyle::Compact, compact)
                     .on_click(|_, _, cx| AppSettings::update(cx, |s| s.tabs.style = TabStyle::Compact)),
             )
+            .child(
+                choice_card(ui, "tabs-vertical", "Vertical", s.tabs.style == TabStyle::Vertical, vertical)
+                    .on_click(|_, _, cx| AppSettings::update(cx, |s| s.tabs.style = TabStyle::Vertical)),
+            )
     }
 
     pub(super) fn workspace(&self, ui: Ui, cx: &Context<'_, Self>) -> AnyElement {
         let s = &cx.global::<AppSettings>().file.value;
         let dim = s.panes.dim_inactive;
+        let vertical = s.tabs.style == TabStyle::Vertical;
+        let (width, min_w, max_w) = (s.tabs.sidebar_width, TabSettings::MIN_SIDEBAR_WIDTH, TabSettings::MAX_SIDEBAR_WIDTH);
         let startup = section(ui, "Startup")
             .child(row(ui, "When goatty starts").desc("Sessions keep running when you close a window").control(self.select(
                 "on-launch",
@@ -173,6 +212,51 @@ impl SettingsWindow {
                 ui,
                 |v, _, cx| AppSettings::update(cx, |s| s.tabs.show = v),
             )))
+            .child(
+                row(ui, "Sidebar width")
+                    .desc(if vertical { "Or drag the sidebar's edge" } else { "Only with vertical tabs" })
+                    .disabled(!vertical)
+                    .control(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(slider("tabs-sidebar-width", (width - min_w) / (max_w - min_w), ui, move |t, done, _, cx| {
+                                let v = (min_w + t * (max_w - min_w)).round().clamp(min_w, max_w);
+                                if done {
+                                    AppSettings::update(cx, |s| s.tabs.sidebar_width = v);
+                                } else if cx.global::<AppSettings>().file.value.tabs.sidebar_width != v {
+                                    AppSettings::preview(cx, |s| s.tabs.sidebar_width = v);
+                                }
+                            }))
+                            .child(
+                                div()
+                                    .w(px(48.))
+                                    .text_size(px(text::LABEL))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(SharedString::from(format!("{width:.0} px"))),
+                            ),
+                    ),
+            )
+            .child(
+                row(ui, "Fold the sidebar to icons")
+                    .desc(if vertical { "Ctrl+Shift+B folds and unfolds it" } else { "Only with vertical tabs" })
+                    .disabled(!vertical)
+                    .control(toggle(
+                        "tabs-sidebar-collapsed",
+                        s.tabs.sidebar_collapsed,
+                        ui,
+                        client(|s| s.tabs.sidebar_collapsed = !s.tabs.sidebar_collapsed),
+                    )),
+            )
+            .child(row(ui, "Switch tabs with the mouse wheel").desc("Scroll over the tabs to go to the next or previous one").control(
+                toggle(
+                    "tabs-scroll-to-switch",
+                    s.tabs.scroll_to_switch,
+                    ui,
+                    client(|s| s.tabs.scroll_to_switch = !s.tabs.scroll_to_switch),
+                ),
+            ))
             .child(row(ui, "Program icons").desc("nvim, git, docker, python… in each tab").control(toggle(
                 "tabs-icons",
                 s.tabs.icons,
@@ -197,7 +281,7 @@ impl SettingsWindow {
                 cx,
                 |v, _, cx| AppSettings::update(cx, |s| s.tabs.mark_activity = v),
             )))
-            .footer("Double-click a tab to rename it, middle-click to close it, drag to move it.");
+            .footer("Double-click a tab to rename it, middle-click to close it, right-click for more, drag to move it.");
         let max = PaneSettings::MAX_DIM;
         let panes = section(ui, "Panes")
             .child(

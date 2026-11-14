@@ -58,6 +58,10 @@ pub static ACTIONS: &[ActionInfo] = &[
     ActionInfo { name: "select_tab_8", label: "Go to tab 8", group: "Tabs" },
     ActionInfo { name: "select_last_tab", label: "Go to the last tab", group: "Tabs" },
     ActionInfo { name: "rename_tab", label: "Rename the tab", group: "Tabs" },
+    ActionInfo { name: "duplicate_tab", label: "Duplicate the tab (a new shell in the same directory)", group: "Tabs" },
+    ActionInfo { name: "close_other_tabs", label: "Close the other tabs", group: "Tabs" },
+    ActionInfo { name: "toggle_tab_sidebar", label: "Fold or unfold the tab sidebar", group: "Tabs" },
+    ActionInfo { name: "toggle_vertical_tabs", label: "Switch between vertical and horizontal tabs", group: "Tabs" },
     ActionInfo { name: "split_right", label: "Split: new pane on the right", group: "Panes" },
     ActionInfo { name: "split_down", label: "Split: new pane below", group: "Panes" },
     ActionInfo { name: "focus_pane_left", label: "Focus the pane on the left", group: "Panes" },
@@ -116,6 +120,8 @@ pub static DEFAULT_BINDINGS: &[(&str, &str)] = &[
     ("alt-7", "select_tab_7"),
     ("alt-8", "select_tab_8"),
     ("alt-9", "select_last_tab"),
+    // Like a browser's sidebar toggle; outside the vertical style it reaches the shell.
+    ("ctrl-shift-b", "toggle_tab_sidebar"),
     // Panes (Terminator's split keys, Windows Terminal's focus/resize keys).
     ("ctrl-shift-e", "split_right"),
     ("ctrl-shift-o", "split_down"),

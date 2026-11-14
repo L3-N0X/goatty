@@ -64,6 +64,8 @@ icons! {
     Link2 => "link-2.svg",
     Menu => "menu.svg",
     Package => "package.svg",
+    PanelLeftClose => "panel-left-close.svg",
+    PanelLeftOpen => "panel-left-open.svg",
     Palette => "palette.svg",
     Pencil => "pencil.svg",
     Puzzle => "puzzle.svg",

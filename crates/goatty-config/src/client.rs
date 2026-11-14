@@ -308,6 +308,9 @@ pub enum TabStyle {
     Modern,
     /// One line of small text, like kitty's tab bar.
     Compact,
+    /// A sidebar on the left with a tab per row, like Arc or Zen; it can
+    /// fold into a rail of icons (`sidebar_collapsed`).
+    Vertical,
 }
 
 /// When the tab bar shows.
@@ -333,7 +336,7 @@ pub enum TabActivity {
     Off,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TabSettings {
     pub style: TabStyle,
@@ -345,11 +348,33 @@ pub struct TabSettings {
     pub mark_bell: bool,
     /// When to mark a background tab as having new activity.
     pub mark_activity: TabActivity,
+    /// Turning the mouse wheel over the tabs switches to the next or
+    /// previous tab (instead of scrolling the tabs).
+    pub scroll_to_switch: bool,
+    /// Vertical tabs: the sidebar's width in logical pixels.
+    pub sidebar_width: f32,
+    /// Vertical tabs: the sidebar is folded into a rail of icons.
+    pub sidebar_collapsed: bool,
+}
+
+impl TabSettings {
+    pub const MIN_SIDEBAR_WIDTH: f32 = 140.0;
+    pub const MAX_SIDEBAR_WIDTH: f32 = 480.0;
+    pub const DEFAULT_SIDEBAR_WIDTH: f32 = 220.0;
 }
 
 impl Default for TabSettings {
     fn default() -> Self {
-        Self { style: TabStyle::Modern, show: TabBarShow::Always, icons: true, mark_bell: true, mark_activity: TabActivity::Finished }
+        Self {
+            style: TabStyle::Modern,
+            show: TabBarShow::Always,
+            icons: true,
+            mark_bell: true,
+            mark_activity: TabActivity::Finished,
+            scroll_to_switch: false,
+            sidebar_width: Self::DEFAULT_SIDEBAR_WIDTH,
+            sidebar_collapsed: false,
+        }
     }
 }
 
@@ -684,6 +709,13 @@ impl Document for ClientSettings {
             }
         }
         clamp(&mut self.panes.dim_inactive, 0.0, PaneSettings::MAX_DIM, "panes.dim_inactive", &mut issues);
+        clamp(
+            &mut self.tabs.sidebar_width,
+            TabSettings::MIN_SIDEBAR_WIDTH,
+            TabSettings::MAX_SIDEBAR_WIDTH,
+            "tabs.sidebar_width",
+            &mut issues,
+        );
         clamp(&mut self.terminal.opacity, TerminalSettings::MIN_OPACITY, 1.0, "terminal.opacity", &mut issues);
         // Theme names are checked against the theme library (user themes
         // live in their own files): `ThemeLibrary::resolve`.
@@ -879,6 +911,25 @@ mod tests {
         let s = with(&[("GOATTY_FONT_SIZE", "huge"), ("GOATTY_RENDER", "fancy"), ("GOATTY_FONT", ""), ("GOATTY_UI_FONT", "  ")]);
         assert_eq!(s, ClientSettings::default());
         assert_eq!(with(&[("GOATTY_FONT_SIZE", "500")]).font.size, FontSettings::MAX_SIZE);
+    }
+
+    #[test]
+    fn vertical_tabs() {
+        let t = TabSettings::default();
+        assert_eq!((t.style, t.sidebar_width, t.sidebar_collapsed, t.scroll_to_switch), (TabStyle::Modern, 220.0, false, false));
+        let t: TabSettings =
+            serde_json::from_str(r#"{"style": "vertical", "sidebar_width": 300, "sidebar_collapsed": true, "scroll_to_switch": true}"#)
+                .unwrap();
+        assert_eq!((t.style, t.sidebar_width, t.sidebar_collapsed, t.scroll_to_switch), (TabStyle::Vertical, 300.0, true, true));
+
+        let mut s = ClientSettings::default();
+        s.tabs.sidebar_width = 9000.0;
+        let issues = s.validate();
+        assert_eq!(s.tabs.sidebar_width, TabSettings::MAX_SIDEBAR_WIDTH);
+        assert_eq!(issues.iter().map(|i| i.path.as_str()).collect::<Vec<_>>(), ["tabs.sidebar_width"]);
+        s.tabs.sidebar_width = 10.0;
+        s.validate();
+        assert_eq!(s.tabs.sidebar_width, TabSettings::MIN_SIDEBAR_WIDTH);
     }
 
     #[test]
