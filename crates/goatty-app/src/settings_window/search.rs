@@ -73,8 +73,12 @@ pub const INDEX: &[Entry] = &[
     e(Page::Terminal, "Pasting", "Middle click pastes", "middle mouse button paste").keys(&["paste.middle_click"]),
     e(Page::Terminal, "Pasting", "Ask before pasting", "paste confirm protection bracketed multiline").keys(&["paste.confirm"]),
     e(Page::Workspace, "Startup", "When goatty starts", "restore reattach session launch open").keys(&["workspace.on_launch"]),
-    e(Page::Workspace, "Tabs", "Style", "tab style modern compact").keys(&["tabs.style"]),
+    e(Page::Workspace, "Tabs", "Style", "tab style modern compact vertical sidebar side arc zen").keys(&["tabs.style"]),
     e(Page::Workspace, "Tabs", "Show the tab bar", "hide tabs").keys(&["tabs.show"]),
+    e(Page::Workspace, "Tabs", "Sidebar width", "vertical tabs side panel size resize wide narrow").keys(&["tabs.sidebar_width"]),
+    e(Page::Workspace, "Tabs", "Fold the sidebar to icons", "vertical tabs collapse rail compact hide").keys(&["tabs.sidebar_collapsed"]),
+    e(Page::Workspace, "Tabs", "Switch tabs with the mouse wheel", "scroll wheel tab change next previous")
+        .keys(&["tabs.scroll_to_switch"]),
     e(Page::Workspace, "Tabs", "Program icons", "nerd font icon tab").keys(&["tabs.icons"]),
     e(Page::Workspace, "Tabs", "Mark tabs that ring the bell", "bell alert notify background attention").keys(&["tabs.mark_bell"]),
     e(Page::Workspace, "Tabs", "Mark tabs with activity", "activity output command finished done notify background osc 133")

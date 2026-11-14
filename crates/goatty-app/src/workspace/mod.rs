@@ -5,7 +5,13 @@
 //! `crate::close_confirm`) and the window's toasts (`crate::toast`).
 //!
 //! - `layout`: the split tree of a tab (pure, unit-tested).
-//! - `tab_bar`: the tab strip in its two styles (`tabs.style`).
+//! - `tab_bar`: the horizontal tab strip (`tabs.style` modern / compact)
+//!   and what every style shares: switching, closing, renaming, dragging
+//!   to reorder, the mouse wheel.
+//! - `sidebar`: the vertical tab style, a resizable sidebar that folds into
+//!   a rail of icons, next to the panes drawn as a rounded card.
+//! - `tab_menu`: a tab's right-click menu.
+//! - `gestures`: the pointer maths of the above (pure, unit-tested).
 //! - `icons`: Nerd Font icons for the program running in a tab.
 //! - `saved`: the layout goattyd keeps for the window, so the next
 //!   `goatty` restores every tab and split (#118).
@@ -27,21 +33,24 @@
 //! active, the settings window and "reload shells" act on its active tab's
 //! host (`settings_window::set_host_link`).
 
+mod gestures;
 mod icons;
 mod layout;
 pub mod saved;
+mod sidebar;
 mod tab_bar;
+mod tab_menu;
 
 use std::path::Path;
 use std::sync::Arc;
 
 use goatty_client::Connection;
-use goatty_config::{TabActivity, TabBarShow, TabSettings};
+use goatty_config::{TabActivity, TabBarShow, TabSettings, TabStyle};
 use goatty_proto::LayoutId;
 use goatty_term::TermSize;
 use gpui::{
-    AppContext, Context, DragMoveEvent, Entity, Focusable, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, Styled,
-    Subscription, Task, Window, div, prelude::*, px, relative,
+    AppContext, Context, DragMoveEvent, Entity, Focusable, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render,
+    ScrollHandle, Styled, Subscription, Task, Window, div, prelude::*, px, relative,
 };
 
 use crate::actions::*;
@@ -57,8 +66,10 @@ use crate::terminal::{Activity, PasteRequest, TerminalEvent, TerminalView};
 use crate::toast::{self, Toast, ToastLayer};
 use crate::ui::style::Ui;
 use crate::ui::text_input::{TextInput, TextInputEvent};
+use gestures::{Sidebar, WheelSwitch};
 use layout::{Axis, Direction, Node, PaneId, Rect};
 use saved::{SavedTab, SavedWindow, SavedWorkspace, Startup};
+use tab_menu::TabMenu;
 
 /// Width of the line between panes.
 const DIVIDER: f32 = 1.0;
@@ -124,11 +135,13 @@ enum Placement {
 }
 
 /// What a close confirmation is about.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum CloseTarget {
     Pane(PaneId),
     /// By tab id.
     Tab(u64),
+    /// Several tabs, by id ("Close the other tabs").
+    Tabs(Vec<u64>),
 }
 
 /// A tab being renamed in place.
@@ -153,6 +166,8 @@ struct DividerDrag {
 pub(super) struct DraggedTab {
     id: u64,
     label: gpui::SharedString,
+    /// The program's icon (glyph, color), when the tab shows one.
+    icon: Option<(char, gpui::Hsla)>,
 }
 
 /// The layout one goattyd keeps for this window's tabs on it.
@@ -190,6 +205,23 @@ pub struct Workspace {
     window: SavedWindow,
     /// A layout save waiting for the window to stop resizing.
     save_window: Option<Task<()>>,
+    /// The tab strip's or sidebar's scroll position; scrolls the active tab
+    /// into view.
+    tab_scroll: ScrollHandle,
+    /// Mouse wheel over the tabs (`tabs.scroll_to_switch`).
+    wheel: WheelSwitch,
+    /// The tab being dragged, drawn faded where it is.
+    dragging: Option<u64>,
+    /// A dragged tab moved and the tabs haven't been laid out again: their
+    /// bounds are from before the move.
+    moved_unpainted: bool,
+    /// The vertical sidebar while its edge is being dragged (as it was when
+    /// the drag started, and now); saved to the settings shortly after it
+    /// stops and when the drag ends.
+    sidebar_drag: Option<(Sidebar, Sidebar)>,
+    save_sidebar: Option<Task<()>>,
+    /// A tab's right-click menu.
+    tab_menu: Option<TabMenu>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -237,6 +269,13 @@ impl Workspace {
             layouts: Vec::new(),
             window: SavedWindow::from_bounds(window.window_bounds()),
             save_window: None,
+            tab_scroll: ScrollHandle::new(),
+            wheel: WheelSwitch::default(),
+            dragging: None,
+            moved_unpainted: false,
+            sidebar_drag: None,
+            save_sidebar: None,
+            tab_menu: None,
             _subscriptions: vec![appearance, settings, activation, bounds],
         };
         match initial {
@@ -483,6 +522,7 @@ impl Workspace {
         }
         self.finish_rename(true, window, cx);
         self.active = index;
+        self.tab_scroll.scroll_to_item(index);
         self.focus_active(window, cx);
         self.update_window_title(window, cx);
         if window.is_window_active() {
@@ -744,9 +784,14 @@ impl Workspace {
         if self.paste.as_ref().is_some_and(|(_, pane, _)| tab.pane(*pane).is_some()) {
             self.paste = None;
         }
-        if self.close.as_ref().is_some_and(|(_, target, _)| match *target {
-            CloseTarget::Tab(t) => t == tab.id,
-            CloseTarget::Pane(p) => tab.pane(p).is_some(),
+        if self.tab_menu.as_ref().is_some_and(|m| m.tab == tab.id) {
+            self.tab_menu = None;
+        }
+        if self.close.as_ref().is_some_and(|(_, target, _)| match target {
+            CloseTarget::Tab(t) => *t == tab.id,
+            CloseTarget::Pane(p) => tab.pane(*p).is_some(),
+            // The others still get closed; this one is gone already.
+            CloseTarget::Tabs(_) => false,
         }) {
             self.close = None;
         }
@@ -795,6 +840,29 @@ impl Workspace {
         }
     }
 
+    /// Close the tabs `ids` (by id), asking once first when programs run
+    /// in them.
+    fn close_tabs(&mut self, ids: Vec<u64>, window: &mut Window, cx: &mut Context<'_, Self>) {
+        match ids[..] {
+            [] => {}
+            [id] => {
+                if let Some(index) = self.tab_index(id) {
+                    self.close_tab_at(index, window, cx);
+                }
+            }
+            _ => {
+                let panes = self.tabs.iter().filter(|t| ids.contains(&t.id)).flat_map(|t| t.panes.iter());
+                let busy = busy_programs(panes, cx);
+                let closing = Closing::Tabs { tabs: ids.len() };
+                if self.should_confirm(&busy, cx) {
+                    self.confirm_close(CloseTarget::Tabs(ids), closing, busy, window, cx);
+                } else {
+                    self.force_close(CloseTarget::Tabs(ids), window, cx);
+                }
+            }
+        }
+    }
+
     fn should_confirm(&self, busy: &[String], cx: &gpui::App) -> bool {
         !busy.is_empty() && cx.global::<AppSettings>().client.panes.confirm_close
     }
@@ -802,14 +870,18 @@ impl Workspace {
     /// End the shells of `target` and take it out.
     fn force_close(&mut self, target: CloseTarget, window: &mut Window, cx: &mut Context<'_, Self>) {
         let session_of = |p: &Pane| p.view.read(cx).session().clone();
-        let (sessions, last): (Vec<_>, bool) = match target {
+        let (sessions, last): (Vec<_>, bool) = match &target {
             CloseTarget::Pane(id) => {
-                let Some((index, pane)) = self.find_pane(id) else { return };
+                let Some((index, pane)) = self.find_pane(*id) else { return };
                 (vec![session_of(pane)], self.tabs.len() == 1 && self.tabs[index].panes.len() == 1)
             }
             CloseTarget::Tab(id) => {
-                let Some(index) = self.tab_index(id) else { return };
+                let Some(index) = self.tab_index(*id) else { return };
                 (self.tabs[index].panes.iter().map(session_of).collect(), self.tabs.len() == 1)
+            }
+            CloseTarget::Tabs(ids) => {
+                let closing = self.tabs.iter().filter(|t| ids.contains(&t.id));
+                (closing.flat_map(|t| t.panes.iter()).map(session_of).collect(), self.tabs.iter().all(|t| ids.contains(&t.id)))
             }
         };
         let kill = self.kill_sessions(sessions, cx);
@@ -834,6 +906,13 @@ impl Workspace {
             CloseTarget::Tab(id) => {
                 if let Some(index) = self.tab_index(id) {
                     self.remove_tab(index, window, cx);
+                }
+            }
+            CloseTarget::Tabs(ids) => {
+                for id in ids {
+                    if let Some(index) = self.tab_index(id) {
+                        self.remove_tab(index, window, cx);
+                    }
                 }
             }
         }
@@ -983,6 +1062,55 @@ impl Workspace {
 
     fn rename_tab(&mut self, _: &RenameTab, window: &mut Window, cx: &mut Context<'_, Self>) {
         self.start_rename(self.active, window, cx);
+    }
+
+    /// A new tab next to tab `index`, on its host and in its focused pane's
+    /// directory.
+    fn duplicate_tab_at(&mut self, index: usize, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if index < self.tabs.len() {
+            self.activate(index, window, cx);
+            self.spawn(Placement::NewTab, window, cx);
+        }
+    }
+
+    fn duplicate_tab(&mut self, _: &DuplicateTab, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.duplicate_tab_at(self.active, window, cx);
+    }
+
+    /// The ids of every tab but the one at `index`.
+    fn other_tabs(&self, index: usize) -> Vec<u64> {
+        self.tabs.iter().enumerate().filter(|&(i, _)| i != index).map(|(_, t)| t.id).collect()
+    }
+
+    fn close_other_tabs(&mut self, _: &CloseOtherTabs, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.close_tabs(self.other_tabs(self.active), window, cx);
+    }
+
+    /// Ctrl+Shift+B: fold or unfold the vertical sidebar. With horizontal
+    /// tabs the key goes on to the shell.
+    fn toggle_tab_sidebar(&mut self, _: &ToggleTabSidebar, _window: &mut Window, cx: &mut Context<'_, Self>) {
+        if cx.global::<AppSettings>().client.tabs.style != TabStyle::Vertical {
+            cx.propagate();
+            return;
+        }
+        self.sidebar_drag = None;
+        self.save_sidebar = None;
+        AppSettings::update(cx, |s| s.tabs.sidebar_collapsed = !s.tabs.sidebar_collapsed);
+    }
+
+    fn toggle_vertical_tabs(&mut self, _: &ToggleVerticalTabs, _window: &mut Window, cx: &mut Context<'_, Self>) {
+        AppSettings::update(cx, |s| {
+            s.tabs.style = if s.tabs.style == TabStyle::Vertical { TabStyle::Modern } else { TabStyle::Vertical };
+        });
+    }
+
+    /// Move `steps` tabs forward (negative: back), stopping at the ends.
+    fn step_tab(&mut self, steps: isize, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let last = self.tabs.len().saturating_sub(1) as isize;
+        let to = (self.active as isize + steps).clamp(0, last) as usize;
+        if to != self.active {
+            self.activate(to, window, cx);
+        }
     }
 
     // ---- actions: panes ---------------------------------------------------------
@@ -1143,6 +1271,7 @@ impl Workspace {
             .id("panes")
             .flex_1()
             .min_h_0()
+            .min_w_0()
             .relative()
             .overflow_hidden()
             .bg(ui.border)
@@ -1235,6 +1364,21 @@ fn dir_label(dir: &Path, home: Option<&Path>) -> String {
     dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.to_string_lossy().into_owned())
 }
 
+/// A directory for the vertical tabs' second line: `~/…` under the home
+/// directory, and only the last two components when it's deeper than three.
+fn short_dir(dir: &Path, home: Option<&Path>) -> String {
+    let (prefix, rest) = match home.and_then(|h| dir.strip_prefix(h).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => return "~".into(),
+        Some(rest) => ("~/", rest),
+        None => ("/", dir.strip_prefix("/").unwrap_or(dir)),
+    };
+    let parts: Vec<_> = rest.iter().map(|p| p.to_string_lossy()).collect();
+    if parts.len() > 3 {
+        return format!("…/{}", parts[parts.len() - 2..].join("/"));
+    }
+    format!("{prefix}{}", parts.join("/"))
+}
+
 /// Opaque unless the terminal background is see-through.
 pub fn background_appearance(t: &goatty_config::TerminalSettings) -> gpui::WindowBackgroundAppearance {
     use gpui::WindowBackgroundAppearance as W;
@@ -1251,14 +1395,26 @@ impl Render for Workspace {
         if let Some(tab) = self.tabs.get_mut(self.active) {
             tab.activity = None;
         }
+        // A drag that ended anywhere (even outside the window) is over.
+        if !cx.has_active_drag() {
+            self.dragging = None;
+        }
+        self.moved_unpainted = false;
         let tabs = &cx.global::<AppSettings>().client.tabs;
         let show_bar = tabs.show == TabBarShow::Always || self.tabs.len() > 1;
-        div()
-            .size_full()
-            .relative()
-            .flex()
-            .flex_col()
-            .on_action(cx.listener(Self::toggle_palette))
+        let vertical = show_bar && tabs.style == TabStyle::Vertical;
+        // Where the panes start: the palette centers over them.
+        let panes_left = if vertical { self.sidebar_width(window, cx) } else { 0.0 };
+        let root = div().id("workspace").size_full().relative().flex();
+        let root = if vertical {
+            let sidebar = self.render_sidebar(window, cx);
+            let card = self.render_card(cx);
+            let handle = self.render_sidebar_handle(window, cx);
+            self.sidebar_frame(root, cx).child(sidebar).child(card).child(handle)
+        } else {
+            root.flex_col().when(show_bar, |d| d.child(self.render_tab_bar(window, cx))).child(self.render_panes(cx))
+        };
+        root.on_action(cx.listener(Self::toggle_palette))
             .on_action(cx.listener(Self::connect_to_host))
             .on_action(cx.listener(Self::new_tab))
             .on_action(cx.listener(Self::close_pane))
@@ -1277,6 +1433,10 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &SelectTab8, w, cx| this.select_tab(Some(7), w, cx)))
             .on_action(cx.listener(|this, _: &SelectLastTab, w, cx| this.select_tab(this.tabs.len().checked_sub(1), w, cx)))
             .on_action(cx.listener(Self::rename_tab))
+            .on_action(cx.listener(Self::duplicate_tab))
+            .on_action(cx.listener(Self::close_other_tabs))
+            .on_action(cx.listener(Self::toggle_tab_sidebar))
+            .on_action(cx.listener(Self::toggle_vertical_tabs))
             .on_action(cx.listener(|this, _: &SplitRight, w, cx| this.split(Direction::Right, w, cx)))
             .on_action(cx.listener(|this, _: &SplitDown, w, cx| this.split(Direction::Down, w, cx)))
             .on_action(cx.listener(|this, _: &FocusPaneLeft, w, cx| this.focus_pane(Direction::Left, w, cx)))
@@ -1289,11 +1449,10 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ResizePaneDown, _, cx| this.resize_pane(Direction::Down, cx)))
             .on_action(cx.listener(Self::toggle_pane_zoom))
             .on_action(cx.listener(Self::equalize_panes))
-            .when(show_bar, |d| d.child(self.render_tab_bar(window, cx)))
-            .child(self.render_panes(cx))
+            .children(self.render_tab_menu(window, cx))
             .child(self.toasts.clone())
             .when_some(self.palette.as_ref(), |d, (palette, _)| {
-                d.child(div().absolute().top(px(48.)).left_0().right_0().px_4().flex().justify_center().child(palette.clone()))
+                d.child(div().absolute().top(px(48.)).left(px(panes_left)).right_0().px_4().flex().justify_center().child(palette.clone()))
             })
             .when_some(self.paste.as_ref(), |d, (dialog, _, _)| d.child(modal(dialog.clone())))
             .when_some(self.close.as_ref(), |d, (dialog, _, _)| d.child(modal(dialog.clone())))
@@ -1311,5 +1470,17 @@ mod tests {
         assert_eq!(dir_label(Path::new("/home/me/coding/goatty"), Some(home)), "goatty");
         assert_eq!(dir_label(Path::new("/"), Some(home)), "/");
         assert_eq!(dir_label(Path::new("/etc"), None), "etc");
+    }
+
+    #[test]
+    fn short_directories() {
+        let home = Some(Path::new("/home/me"));
+        assert_eq!(short_dir(Path::new("/home/me"), home), "~");
+        assert_eq!(short_dir(Path::new("/home/me/coding/goatty"), home), "~/coding/goatty");
+        assert_eq!(short_dir(Path::new("/home/me/a/b/c/d"), home), "…/c/d");
+        assert_eq!(short_dir(Path::new("/"), home), "/");
+        assert_eq!(short_dir(Path::new("/etc/nginx"), home), "/etc/nginx");
+        assert_eq!(short_dir(Path::new("/var/lib/docker/volumes"), None), "…/docker/volumes");
+        assert_eq!(short_dir(Path::new("/home/meow"), home), "/home/meow");
     }
 }

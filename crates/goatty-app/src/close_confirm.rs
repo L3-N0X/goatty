@@ -33,6 +33,10 @@ pub enum Closing {
     Tab {
         panes: usize,
     },
+    /// This many tabs ("Close the other tabs").
+    Tabs {
+        tabs: usize,
+    },
 }
 
 pub enum CloseConfirmEvent {
@@ -67,6 +71,7 @@ pub fn describe(closing: Closing, programs: &[String]) -> (String, String) {
         Closing::Pane => "Close this pane?".to_string(),
         Closing::Tab { panes: 1 } => "Close this tab?".to_string(),
         Closing::Tab { panes } => format!("Close this tab and its {panes} panes?"),
+        Closing::Tabs { tabs } => format!("Close {tabs} tabs?"),
     };
     let verb = if programs.len() > 1 { "are" } else { "is" };
     let body = format!("{list} {verb} still running. Closing ends it, and anything it hasn't saved is lost.");
@@ -111,6 +116,7 @@ impl Render for CloseConfirm {
         let label = match self.closing {
             Closing::Pane => "Close pane",
             Closing::Tab { .. } => "Close tab",
+            Closing::Tabs { .. } => "Close tabs",
         };
         let this = cx.entity().downgrade();
         let flip = move |_: &mut Window, cx: &mut App| {
@@ -183,5 +189,6 @@ mod tests {
         assert_eq!(title, "Close this tab and its 3 panes?");
         assert!(body.starts_with("cargo, ssh and htop are still running."), "{body}");
         assert_eq!(describe(Closing::Tab { panes: 1 }, &p(&["make"])).0, "Close this tab?");
+        assert_eq!(describe(Closing::Tabs { tabs: 4 }, &p(&["make"])).0, "Close 4 tabs?");
     }
 }

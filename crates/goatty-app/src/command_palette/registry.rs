@@ -205,7 +205,7 @@ pub fn builtins() -> Vec<Command> {
             "settings.workspace",
             "Workspace: tabs, panes and sessions",
             Page::Workspace,
-            &["launch", "tab bar", "style", "compact", "icons", "split", "dim"],
+            &["launch", "tab bar", "style", "compact", "vertical", "sidebar", "icons", "split", "dim"],
         ),
         page("settings.profile", "Profile: export and import", Page::Profile, &["backup", "sync"]),
         page("settings.hosts", "Hosts: add hosts, plain SSH", Page::Hosts, &["ssh", "remote", "servers", "connect"]),
@@ -269,6 +269,12 @@ pub fn builtins() -> Vec<Command> {
         Command::action("tab.move_left", "Tabs", "Move the tab left", "move_tab_left").keywords(&["reorder"]),
         Command::action("tab.move_right", "Tabs", "Move the tab right", "move_tab_right").keywords(&["reorder"]),
         Command::action("tab.rename", "Tabs", "Rename the tab", "rename_tab").keywords(&["title", "name", "label"]),
+        Command::action("tab.duplicate", "Tabs", "Duplicate the tab", "duplicate_tab").keywords(&["copy", "clone", "same directory"]),
+        Command::action("tab.close_others", "Tabs", "Close the other tabs", "close_other_tabs").keywords(&["kill", "only", "rest"]),
+        Command::action("tab.toggle_sidebar", "Tabs", "Fold or unfold the tab sidebar", "toggle_tab_sidebar")
+            .keywords(&["vertical", "collapse", "expand", "rail", "hide", "panel"]),
+        Command::action("tab.toggle_vertical", "Tabs", "Switch between vertical and horizontal tabs", "toggle_vertical_tabs")
+            .keywords(&["sidebar", "side", "arc", "zen", "layout", "style"]),
         Command::action("tab.select_1", "Tabs", "Go to tab 1", "select_tab_1").keywords(&["first"]),
         Command::action("tab.select_2", "Tabs", "Go to tab 2", "select_tab_2"),
         Command::action("tab.select_3", "Tabs", "Go to tab 3", "select_tab_3"),
