@@ -18,7 +18,8 @@
 //! against the one approved here, `sync::check_plan`), the built-in tools,
 //! then the settings as one new generation, then a reload of its shells.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
+use std::sync::{Mutex, PoisonError};
 
 use anyhow::Result;
 use goatty_config::SyncMode;
@@ -33,42 +34,54 @@ use crate::settings_window::{self, HostLink, Page};
 use crate::shell_setup;
 use crate::toast::{self, Toast};
 
-/// Hosts checked in this run (by [`HostLink::remote_key`]).
+/// The local setup's fingerprint each host was last compared against in
+/// this run (by [`HostLink::remote_key`]): connecting again compares again
+/// only after the setup here changed.
 #[derive(Default)]
-struct Checked(HashSet<String>);
+struct Checked(HashMap<String, String>);
 
 impl Global for Checked {}
+
+/// Serializes changes to the answers file: `record` loads, changes and
+/// saves the whole document.
+static STATE_LOCK: Mutex<()> = Mutex::new(());
 
 fn toast_key(key: &str) -> String {
     format!("shell.sync:{key}")
 }
 
-/// What the host needs, and this computer's setup's fingerprint.
+/// What the host needs, and what the user said about this setup before.
 struct Check {
     plan: Plan,
-    fingerprint: String,
     /// The user answered for this fingerprint already.
     answered: bool,
-    /// This fingerprint was synced there already.
+    /// This fingerprint was synced there completely.
     synced: bool,
 }
 
-/// Compare this computer's setup with the host's. Blocks: run it off the
-/// UI thread.
-fn check(link: &HostLink, key: &str) -> Result<Check> {
+/// This computer's setup (only its files; quick). Off the UI thread.
+fn local_setup() -> Result<(LocalSetup, String)> {
     let local = LocalSetup::read(&HostService::from_env(None))?;
-    let plan = sync::plan(&local, &sync::fetch(link)?);
     let fingerprint = local.fingerprint();
+    Ok((local, fingerprint))
+}
+
+/// Compare `local` with the host's setup. Blocks (the host may fetch its
+/// registries and starts a shell): run it off the UI thread.
+fn check(link: &HostLink, key: &str, local: &LocalSetup, fingerprint: &str) -> Result<Check> {
+    let plan = sync::plan(local, &sync::fetch(link)?);
     let state = sync_state::state_file().map(|f| SyncState::load(&f)).unwrap_or_default();
-    let (answered, synced) = (state.answered(key, &fingerprint), state.synced(key, &fingerprint));
-    Ok(Check { plan, fingerprint, answered, synced })
+    Ok(Check { plan, answered: state.answered(key, fingerprint), synced: state.synced(key, fingerprint) })
 }
 
 /// Remember the answer for this version of the setup (off the UI thread).
+/// `synced`: the setup arrived completely (a "Not now" or a sync with
+/// failures is `false`, so hosts set to always sync try again).
 fn record(key: String, fingerprint: String, synced: bool, cx: &mut App) {
     cx.background_executor()
         .spawn(async move {
             let Some(file) = sync_state::state_file() else { return };
+            let _guard = STATE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
             let mut state = SyncState::load(&file);
             state.record(&key, &fingerprint, synced);
             if let Err(e) = state.save(&file) {
@@ -78,40 +91,68 @@ fn record(key: String, fingerprint: String, synced: bool, cx: &mut App) {
         .detach();
 }
 
+/// Bringing the setup to `key` as the settings say now (they may change
+/// while a host is being compared).
+fn mode(key: &str, cx: &App) -> SyncMode {
+    cx.global::<AppSettings>().file.value.ssh.sync_mode(key)
+}
+
 /// A tab connected to `link`'s host. For another host's goattyd: bring
 /// the setup there as `ssh.sync`/`ssh.hosts[].sync` say (`after_install`:
 /// goatty just installed goattyd there, and the question said the setup
-/// comes along). For this computer, or a host that's never synced: offer
+/// comes along). For this computer, or a host set to never sync: offer
 /// missing tools only.
 pub fn on_connect(link: HostLink, after_install: bool, cx: &mut App) {
     let Some(key) = link.remote_key() else { return shell_setup::offer(link, cx) };
-    let mode = cx.global::<AppSettings>().file.value.ssh.sync_mode(&key);
-    if mode == SyncMode::Never {
+    if mode(&key, cx) == SyncMode::Never {
         return shell_setup::offer(link, cx);
     }
-    if !cx.default_global::<Checked>().0.insert(key.clone()) && !after_install {
-        return;
-    }
     cx.spawn(async move |cx| {
-        let (l, k) = (link.clone(), key.clone());
-        let checked = cx.background_executor().spawn(async move { check(&l, &k) }).await;
+        let local = cx.background_executor().spawn(async move { local_setup() }).await;
+        let (local, fingerprint) = match local {
+            Ok(l) => l,
+            Err(e) => {
+                log::warn!("couldn't read this computer's shell setup: {e:#}");
+                cx.update(|cx| shell_setup::offer(link, cx));
+                return;
+            }
+        };
+        // Compared against this version of the setup in this run already.
+        let fresh = cx.update(|cx| {
+            let checked = &mut cx.default_global::<Checked>().0;
+            if checked.get(&key) == Some(&fingerprint) && !after_install {
+                return false;
+            }
+            checked.insert(key.clone(), fingerprint.clone());
+            true
+        });
+        if !fresh {
+            return;
+        }
+        let (l, k, f) = (link.clone(), key.clone(), fingerprint.clone());
+        let checked = cx.background_executor().spawn(async move { check(&l, &k, &local, &f) }).await;
         cx.update(|cx| {
             let c = match checked {
                 Ok(c) => c,
                 Err(e) => {
                     log::info!("not syncing the shell setup to {key}: {e:#}");
+                    // Try again on the next connection.
+                    cx.default_global::<Checked>().0.remove(&key);
                     return shell_setup::offer(link, cx);
                 }
             };
             // The sync covers missing tools: no second offer for them.
             shell_setup::mark_asked(&link, cx);
+            let mode = mode(&key, cx);
             if c.plan.is_empty() {
-                record(key, c.fingerprint, true, cx);
+                record(key, fingerprint, true, cx);
+            } else if mode == SyncMode::Never {
+                // Turned off while comparing.
             } else if after_install || (mode == SyncMode::Always && !c.synced) {
-                start(link, key, c.plan, c.fingerprint, cx);
-            } else if !c.answered {
+                start(link, key, c.plan, fingerprint, cx);
+            } else if mode == SyncMode::Ask && !c.answered {
                 tell_offered(&link, &c.plan, cx);
-                show_offer(link, key, c.plan, c.fingerprint, cx);
+                show_offer(link, key, c.plan, fingerprint, cx);
             }
         });
     })
@@ -198,14 +239,20 @@ fn sync_link(link: HostLink, cx: &mut App) {
     let id = toast::show(cx, Toast::loading(format!("Comparing your shell setup with {}…", link.label())).key(toast_key(&key)));
     cx.spawn(async move |cx| {
         let (l, k) = (link.clone(), key.clone());
-        let checked = cx.background_executor().spawn(async move { check(&l, &k) }).await;
+        let checked = cx
+            .background_executor()
+            .spawn(async move {
+                let (local, fingerprint) = local_setup()?;
+                check(&l, &k, &local, &fingerprint).map(|c| (c, fingerprint))
+            })
+            .await;
         cx.update(|cx| match checked {
-            Ok(c) if c.plan.is_empty() => {
+            Ok((c, fingerprint)) if c.plan.is_empty() => {
                 let body = skipped_note(&c.plan).unwrap_or_else(|| "Settings, plugins and tools match this computer's.".into());
                 toast::update(cx, id, Toast::success(format!("{} has your shell setup", link.label())).body(body).key(toast_key(&key)));
-                record(key, c.fingerprint, true, cx);
+                record(key, fingerprint, true, cx);
             }
-            Ok(c) => start(link, key, c.plan, c.fingerprint, cx),
+            Ok((c, fingerprint)) => start(link, key, c.plan, fingerprint, cx),
             Err(e) => toast::update(
                 cx,
                 id,
@@ -243,9 +290,10 @@ fn start(link: HostLink, key: String, plan: Plan, fingerprint: String, cx: &mut 
             }
         }
         cx.update(|cx| {
-            // Also after failures: the toast offers Retry, and asking again
-            // on every connect wouldn't fix what failed.
-            record(key.clone(), fingerprint, true, cx);
+            // Keep the answer (no second question for this setup), but only
+            // a complete sync counts as synced: hosts set to always sync
+            // try again on a later connection.
+            record(key.clone(), fingerprint, failures.is_empty(), cx);
             let t = if failures.is_empty() {
                 let mut body = format!("{}. Shells there reload at their next idle prompt.", plan.parts().join(", "));
                 if let Some(note) = skipped_note(&plan) {

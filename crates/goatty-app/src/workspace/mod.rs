@@ -276,9 +276,11 @@ impl Workspace {
 
     fn window_activated(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         cx.set_global(crate::hosts::LastWorkspace(window.window_handle()));
-        if let Some(host) = self.active_tab().and_then(|t| t.host.as_ref()) {
-            crate::settings_window::set_host_link(cx, Some(host.host_link()));
-        }
+        // A connecting tab has no host yet: clear the link rather than keep
+        // the previous tab's, so "sync", "reload shells" and the settings
+        // window never act on a host the user isn't looking at.
+        let link = self.active_tab().and_then(|t| t.host.as_ref()).map(Spawner::host_link);
+        crate::settings_window::set_host_link(cx, link);
     }
 
     /// The layout entry for `conn` (a new one for a host the window had no tabs on).
@@ -483,10 +485,9 @@ impl Workspace {
         self.active = index;
         self.focus_active(window, cx);
         self.update_window_title(window, cx);
-        if window.is_window_active()
-            && let Some(host) = &self.tabs[index].host
-        {
-            crate::settings_window::set_host_link(cx, Some(host.host_link()));
+        if window.is_window_active() {
+            // None while the tab connects (see `window_activated`).
+            crate::settings_window::set_host_link(cx, self.tabs[index].host.as_ref().map(Spawner::host_link));
         }
         self.save_layout(cx);
         cx.notify();

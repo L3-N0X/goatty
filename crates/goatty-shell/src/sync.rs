@@ -61,6 +61,8 @@ pub struct LocalPlugin {
     pub version: String,
     /// Registry name, or `local` for a plugin installed from a directory.
     pub source: String,
+    /// Plugins it needs installed first (`requires.plugins`).
+    pub requires: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,11 +87,15 @@ impl LocalSetup {
                 .plugins
                 .iter()
                 .filter(|(id, _)| crate::builtins::get(id).is_none())
-                .map(|(id, e)| LocalPlugin {
-                    id: id.clone(),
-                    name: lock::manifest_of(p.dirs, id, e).map(|m| m.name).unwrap_or_else(|_| id.clone()),
-                    version: e.version.clone(),
-                    source: e.source.clone(),
+                .map(|(id, e)| {
+                    let manifest = lock::manifest_of(p.dirs, id, e).ok();
+                    LocalPlugin {
+                        id: id.clone(),
+                        name: manifest.as_ref().map_or_else(|| id.clone(), |m| m.name.clone()),
+                        version: e.version.clone(),
+                        source: e.source.clone(),
+                        requires: manifest.map(|m| m.requires.plugins).unwrap_or_default(),
+                    }
                 })
                 .collect();
             let registries = p.sources().0.into_iter().map(|s| Registry { name: s.name, keys: s.keys, builtin: s.builtin }).collect();
@@ -145,8 +151,11 @@ pub struct Skipped {
 /// What syncing a host takes.
 #[derive(Debug, Clone, Default)]
 pub struct Plan {
-    /// The settings document to apply on the host.
+    /// The settings document to apply on the host, as of the comparison
+    /// (the settings step merges the host's values in again when it runs).
     pub settings_json: String,
+    /// This computer's settings it was made from.
+    pub local_settings: Value,
     /// How it differs from the host's settings now (empty: same settings).
     pub changes: Vec<SettingChange>,
     pub plugins: Vec<PluginStep>,
@@ -209,14 +218,12 @@ impl Plan {
 
 /// Compare this computer's setup with the host's.
 pub fn plan(local: &LocalSetup, host: &HostSetup) -> Plan {
-    let remote: Value = serde_json::from_str(&host.settings_json).unwrap_or_else(|_| Value::Object(Map::new()));
     let local_ids: BTreeSet<&str> = local.plugins.iter().map(|p| p.id.as_str()).collect();
     let remote_installed: BTreeMap<&str, &api::Installed> =
         host.catalog.installed.iter().filter(|i| !i.builtin).map(|i| (i.id.as_str(), i)).collect();
     let kept: Vec<String> = remote_installed.keys().filter(|id| !local_ids.contains(*id)).map(|id| (*id).to_owned()).collect();
 
-    let target = merge_settings(&local.settings, &remote, &kept);
-    let settings_json = store::to_json(&store::parse::<HostSettings>(&target.to_string()).value, &[]);
+    let settings_json = settings_document(&local.settings, &host.settings_json, &kept);
     let changes = history::settings_changes(&host.settings_json, &settings_json);
 
     let mut plugins = Vec::new();
@@ -240,8 +247,14 @@ pub fn plan(local: &LocalSetup, host: &HostSetup) -> Plan {
             skipped.push(skip(reason));
             continue;
         }
-        if let Some(why) =
-            host.catalog.available.iter().find(|a| a.id == lp.id && a.registry == lp.source).and_then(|a| a.incompatible.as_ref())
+        // The catalog only describes the newest version; another one is
+        // checked by the host's install plan.
+        if let Some(why) = host
+            .catalog
+            .available
+            .iter()
+            .find(|a| a.id == lp.id && a.registry == lp.source && a.version == lp.version)
+            .and_then(|a| a.incompatible.as_ref())
         {
             skipped.push(skip(format!("not for that host ({why})")));
             continue;
@@ -255,6 +268,9 @@ pub fn plan(local: &LocalSetup, host: &HostSetup) -> Plan {
         });
     }
 
+    let requires: BTreeMap<&str, &[String]> = local.plugins.iter().map(|p| (p.id.as_str(), p.requires.as_slice())).collect();
+    let plugins = dependencies_first(plugins, &requires);
+
     let synced = store::parse::<HostSettings>(&settings_json).value;
     let tools = host
         .tools
@@ -263,7 +279,31 @@ pub fn plan(local: &LocalSetup, host: &HostSetup) -> Plan {
         .cloned()
         .collect();
 
-    Plan { settings_json, changes, plugins, tools, skipped, kept }
+    Plan { settings_json, local_settings: local.settings.clone(), changes, plugins, tools, skipped, kept }
+}
+
+/// Order `steps` so a plugin comes after the ones it requires (a host
+/// refuses to plan it before); otherwise as given. A cycle keeps the rest
+/// in their order.
+fn dependencies_first(mut steps: Vec<PluginStep>, requires: &BTreeMap<&str, &[String]>) -> Vec<PluginStep> {
+    let mut out: Vec<PluginStep> = Vec::with_capacity(steps.len());
+    while !steps.is_empty() {
+        let pending: BTreeSet<String> = steps.iter().map(|s| s.id.clone()).collect();
+        let ready = steps
+            .iter()
+            .position(|s| requires.get(s.id.as_str()).is_none_or(|deps| deps.iter().all(|d| d == &s.id || !pending.contains(d))));
+        out.push(steps.remove(ready.unwrap_or(0)));
+    }
+    out
+}
+
+/// The document a settings step applies: this computer's settings merged
+/// with the host's current values (read just before, so a change made
+/// there meanwhile isn't overwritten).
+fn settings_document(local: &Value, remote_json: &str, kept: &[String]) -> String {
+    let remote: Value = serde_json::from_str(remote_json).unwrap_or_else(|_| Value::Object(Map::new()));
+    let target = merge_settings(local, &remote, kept);
+    store::to_json(&store::parse::<HostSettings>(&target.to_string()).value, &[])
 }
 
 /// The settings the host gets: this computer's, with the host's shell
@@ -379,7 +419,12 @@ pub fn fetch(host: &dyn Remote) -> Result<HostSetup> {
 pub enum Step {
     Plugin(PluginStep),
     Tool(Tool),
-    Settings(String),
+    /// This computer's settings, and the plugins whose entries the host
+    /// keeps.
+    Settings {
+        local: Value,
+        kept: Vec<String>,
+    },
 }
 
 impl Step {
@@ -389,7 +434,7 @@ impl Step {
             Step::Plugin(p) if p.replaces.is_some() => format!("Updating {}", p.name),
             Step::Plugin(p) => format!("Installing {}", p.name),
             Step::Tool(t) => format!("Installing {}", t.name),
-            Step::Settings(_) => "Applying your settings".into(),
+            Step::Settings { .. } => "Applying your settings".into(),
         }
     }
 
@@ -402,12 +447,11 @@ impl Step {
                 setup::Reply::Installed(r) => bail!("{}", r.lines.join(" ")),
                 other => bail!("unexpected reply from the host: {other:?}"),
             },
-            Step::Settings(json) => {
-                if host.apply(json.clone())? {
-                    Ok(())
-                } else {
-                    bail!("the host didn't apply them")
-                }
+            Step::Settings { local, kept } => {
+                // Read the host's settings again: the offer may have waited,
+                // and installs take a while.
+                let json = settings_document(local, &host.settings_json()?, kept);
+                if host.apply(json)? { Ok(()) } else { bail!("the host didn't apply them") }
             }
         }
     }
@@ -417,8 +461,10 @@ impl Plan {
     pub fn steps(&self) -> Vec<Step> {
         let mut steps: Vec<Step> = self.plugins.iter().cloned().map(Step::Plugin).collect();
         steps.extend(self.tools.iter().cloned().map(Step::Tool));
-        if !self.changes.is_empty() {
-            steps.push(Step::Settings(self.settings_json.clone()));
+        // Installing a plugin switches it on in the host's settings, so
+        // after installs the settings are applied even when they matched.
+        if !self.changes.is_empty() || !self.plugins.is_empty() {
+            steps.push(Step::Settings { local: self.local_settings.clone(), kept: self.kept.clone() });
         }
         steps
     }
@@ -460,7 +506,13 @@ mod tests {
             settings: serde_json::from_str(settings).unwrap(),
             plugins: plugins
                 .iter()
-                .map(|(id, v, src)| LocalPlugin { id: (*id).into(), name: id.to_uppercase(), version: (*v).into(), source: (*src).into() })
+                .map(|(id, v, src)| LocalPlugin {
+                    id: (*id).into(),
+                    name: id.to_uppercase(),
+                    version: (*v).into(),
+                    source: (*src).into(),
+                    requires: Vec::new(),
+                })
                 .collect(),
             registries: vec![
                 Registry { name: "official".into(), keys: vec!["aa".into()], builtin: true },
@@ -584,6 +636,45 @@ mod tests {
     }
 
     #[test]
+    fn dependencies_install_first_and_settings_follow_installs() {
+        let mut l = local(r#"{"version": 4}"#, &[("addon", "1.0.0", "official"), ("base", "1.0.0", "official")]);
+        l.plugins[0].requires = vec!["base".into()];
+        let h = host(r#"{"version": 4}"#, vec![], vec![registry("official", &[], true)], vec![]);
+        let p = plan(&l, &h);
+        assert!(p.changes.is_empty());
+        assert_eq!(p.plugins.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["base", "addon"]);
+        // Installing enables a plugin there: the settings are applied after.
+        assert!(matches!(p.steps().last(), Some(Step::Settings { .. })));
+        // A cycle doesn't hang.
+        l.plugins[1].requires = vec!["addon".into()];
+        assert_eq!(plan(&l, &h).plugins.len(), 2);
+    }
+
+    #[test]
+    fn only_the_synced_versions_compatibility_counts() {
+        let l = local(r#"{"version": 4}"#, &[("eza", "1.0.0", "official")]);
+        let mut h = host(r#"{"version": 4}"#, vec![], vec![registry("official", &[], true)], vec![]);
+        let newest = |version: &str| api::Available {
+            id: "eza".into(),
+            name: "eza".into(),
+            summary: String::new(),
+            publisher: String::new(),
+            category: Default::default(),
+            keywords: vec![],
+            homepage: None,
+            registry: "official".into(),
+            version: version.into(),
+            permissions: vec![],
+            incompatible: Some("needs goatty 9".into()),
+            installed: None,
+        };
+        h.catalog.available = vec![newest("2.0.0")];
+        assert_eq!(plan(&l, &h).plugins.len(), 1, "2.0.0's needs say nothing about 1.0.0");
+        h.catalog.available = vec![newest("1.0.0")];
+        assert!(plan(&l, &h).plugins.is_empty());
+    }
+
+    #[test]
     fn install_plans_are_checked_against_the_step() {
         let step =
             PluginStep { id: "eza".into(), name: "eza".into(), version: "1.0.0".into(), registry: "official".into(), replaces: None };
@@ -700,13 +791,15 @@ mod tests {
         assert_eq!(p.plugins.len(), 1, "{:?}", p.lines());
         assert_eq!(p.plugins[0].replaces.as_deref(), Some("0.1.0"));
         assert!(p.changes.iter().any(|c| c.key == "history.size"), "{:?}", p.lines());
+        // Changed on the host while the offer waited: the sync keeps it.
+        there.edit(|h| h.shell.program = Some("/usr/local/bin/zsh".into())).unwrap();
         for step in p.steps() {
             step.run(&NoTools(&there)).unwrap_or_else(|e| panic!("{}: {e:#}", step.label()));
         }
 
         let after = there.settings().file.value;
         assert_eq!(after.history.size, 4242);
-        assert_eq!(after.shell.program.as_deref(), Some("/bin/zsh"), "the host keeps its shell");
+        assert_eq!(after.shell.program.as_deref(), Some("/usr/local/bin/zsh"), "the host keeps its shell");
         assert_eq!(after.plugins["greet"].settings["name"], Value::from("ada"));
         let api::Reply::Catalog(cat) = there.plugin(api::Request::Catalog { refresh: false }).unwrap() else { panic!("catalog") };
         assert_eq!(cat.installed.iter().find(|i| i.id == "greet").unwrap().version, "0.2.0");
